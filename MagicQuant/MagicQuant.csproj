@@ -12,4 +12,14 @@
       <PackageReference Include="Spectre.Console" Version="0.54.0" />
     </ItemGroup>
 
+    <ItemGroup>
+      <None Update="Helpers\pip_runner.py">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="Helpers\WindowsHelpers\" />
+    </ItemGroup>
+
 </Project>
