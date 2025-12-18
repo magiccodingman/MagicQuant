@@ -8,6 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
       <PackageReference Include="Spectre.Console" Version="0.54.0" />
     </ItemGroup>
 
