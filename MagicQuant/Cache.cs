@@ -8,4 +8,6 @@ public class Cache
     public static string? LlamaBin;
     public static string? ConvertScript;
     public static  SystemInfo? SysInfo;
+    public static string? MagicQuantDirectory;
+    public static string? ModelDirectory;
 }
