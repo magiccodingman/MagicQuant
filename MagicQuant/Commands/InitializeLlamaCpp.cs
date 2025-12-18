@@ -185,7 +185,7 @@ public class InitializeLlamaCpp : ICommand
         await EnsurePackage("torch", torchCmd);
 
         // C. Install Core Utilities
-        string coreDeps = "gguf tokenizers transformers mistral-common sentencepiece";
+        string coreDeps = "gguf tokenizers transformers mistral-common sentencepiece datasets";
         
         if (!update && await pyManager.GetInstalledVersionAsync("transformers") != null)
         {
