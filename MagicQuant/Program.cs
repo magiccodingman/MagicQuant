@@ -5,19 +5,18 @@ using MagicQuant.Helpers;
 using MagicQuant.Models;
 using Spectre.Console;
 
-// 1. OS & Permission Check
-if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+#if DEBUG
+// If we are in Debug and no arguments were passed, default to "evolution"
+if (args.Length == 0)
 {
-    // On Linux, the effective user ID for root is 0
-    // We check if we are running as root to ensure file/env access
-    if (GetLinuxUserId() != 0)
-    {
-        AnsiConsole.Write(new Rule("[red]Permission Denied[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine("[red]Error:[/] MagicQuant must be run with [bold]sudo[/] on Linux to manage environments and files.");
-        AnsiConsole.MarkupLine("[grey]Please try:[/] [yellow]sudo dotnet MagicQuant.dll[/] (or your binary name)");
-        return;
-    }
+    args = new[] { "evolution" };
 }
+
+// OPTIONAL: Manually append hardcoded flags for testing specific scenarios
+// Example: If you want to test "evolution --iterations 10" every time you debug
+// string manualFlags = "--iterations 10 --verbose";
+// args = args.Concat(manualFlags.Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToArray();
+#endif
 
 // 2. Define the Command Registry
 var commands = new Dictionary<string, (string Description, Func<ICommand> Factory)>(StringComparer.OrdinalIgnoreCase)
