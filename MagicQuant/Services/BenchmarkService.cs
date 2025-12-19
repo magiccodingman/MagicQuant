@@ -21,6 +21,18 @@ public class BenchmarkService
 
     private static readonly int[] NglCandidates = { 35, 30, 24, 20, 16, 12, 8, 4, 0 };
 
+    // ----------------------------------------------------------------
+    // Concurrency Controls
+    // ----------------------------------------------------------------
+    
+    // 1. Exclusive Lock: When LlamaBench runs, it must be the ONLY thing running.
+    // Higher-level logic should acquire this before calling RunLlamaBenchAsync.
+    public static readonly SemaphoreSlim ExclusiveBenchLock = new(1, 1);
+
+    // 2. VRAM Lock: Only one VRAM-heavy task (Perplexity) can run at a time.
+    // However, it CAN run alongside CPU tasks (like quantization if VRAM allows).
+    public static readonly SemaphoreSlim VramLock = new(1, 1);
+
     public BenchmarkService(string llamaRoot, PythonManager pyManager)
     {
         _bins = new LlamaBinaries(llamaRoot);
@@ -43,11 +55,21 @@ public class BenchmarkService
         Directory.CreateDirectory(benchDir);
         var result = new BenchmarkResult();
 
-        // 1. Run Llama-Bench
-        AnsiConsole.MarkupLine("[yellow]Running Llama-Bench...[/]");
-        result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, startNgl);
+        // 1. Run Llama-Bench (Exclusive Mode)
+        // We acquire the exclusive lock to ensure stability
+        await ExclusiveBenchLock.WaitAsync();
+        try
+        {
+            AnsiConsole.MarkupLine("[yellow]Running Llama-Bench (Exclusive Mode)...[/]");
+            result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, startNgl);
+        }
+        finally
+        {
+            ExclusiveBenchLock.Release();
+        }
 
         // 2. Run Perplexity (General, Code, Math)
+        // We prepare folders first so we don't block locks unnecessarily
         var domains = new[] { "general", "code", "math" };
         var corporaRoot = Path.Combine(Path.GetDirectoryName(benchDir)!, "_ppl_corpora");
         Directory.CreateDirectory(corporaRoot);
@@ -57,19 +79,26 @@ public class BenchmarkService
 
         foreach (var domain in domains)
         {
-            AnsiConsole.MarkupLine($"[yellow]Running Perplexity ({domain})...[/]");
-            
-            // A. Prepare Corpus
+            // A. Prepare Corpus (CPU bound, low risk)
             string corpusPath = Path.Combine(corporaRoot, $"ppl_corpus_{domain}.txt");
             await PreparePplCorpusAsync(domain, corpusPath, tokenTarget);
 
-            // B. Run Benchmark
-            var metrics = await RunPplBenchmarkAsync(
-                modelPath, benchDir, domain, corpusPath, 
-                startNgl, klLogitsDir, saveLogits
-            );
-
-            result.Perplexity[domain] = metrics;
+            // B. Run Benchmark (VRAM Intensive)
+            // We acquire VRAM lock so we don't run 2 perplexities at once
+            await VramLock.WaitAsync();
+            try 
+            {
+                AnsiConsole.MarkupLine($"[yellow]Running Perplexity ({domain})...[/]");
+                var metrics = await RunPplBenchmarkAsync(
+                    modelPath, benchDir, domain, corpusPath, 
+                    startNgl, klLogitsDir, saveLogits
+                );
+                result.Perplexity[domain] = metrics;
+            }
+            finally
+            {
+                VramLock.Release();
+            }
         }
 
         // Save Results JSON
@@ -93,6 +122,7 @@ public class BenchmarkService
             : NglCandidates.ToList();
 
         // Command Builder
+        // Note: Keeping -p 8 -t 16 as requested ("just like we're now")
         string BuildCmd(int ngl) => 
             $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -ngl {ngl} -o md";
 
@@ -104,7 +134,7 @@ public class BenchmarkService
         {
             AnsiConsole.MarkupLine("[red]GPU Failed. Fallback to CPU backend...[/]");
             string cpuCmd = $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -backend cpu -o md";
-            await RunShellCommandAsync(cpuCmd, logFile); // Just run, no parsing check here usually
+            await RunShellCommandAsync(cpuCmd, logFile); 
         }
 
         return ParseLlamaBench(logFile);
@@ -117,7 +147,6 @@ public class BenchmarkService
 
         var lines = File.ReadAllLines(logPath);
         
-        // Find header row starting with | model | ... | backend |
         int headerIdx = -1;
         for (int i = 0; i < lines.Length; i++)
         {
@@ -130,7 +159,6 @@ public class BenchmarkService
 
         if (headerIdx == -1 || lines.Length <= headerIdx + 2) return metrics;
 
-        // Parse Header and Data Row
         var headers = lines[headerIdx].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(h => h.Trim()).ToList();
         var dataRow = lines[headerIdx + 2].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(d => d.Trim()).ToList();
 
@@ -138,7 +166,6 @@ public class BenchmarkService
 
         var row = headers.Zip(dataRow, (h, d) => new { Header = h, Data = d }).ToDictionary(x => x.Header, x => x.Data);
 
-        // Extract TPS
         string tpsStr = row.ContainsKey("t/s") ? row["t/s"] : (row.ContainsKey("tps") ? row["tps"] : "0");
         var match = Regex.Match(tpsStr, @"([0-9.]+)");
         
@@ -172,17 +199,18 @@ public class BenchmarkService
         {
             string logitsFile = Path.Combine(klLogitsDir, $"kld_logits_{domain}.bin");
             if (saveLogits)
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\""; // Save to this file
+                kldArgs = $"--kl-divergence-base \"{logitsFile}\""; 
             else if (File.Exists(logitsFile))
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence"; // Load from file
+                kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence"; 
         }
 
+        // Command Builder
+        // Added "-t 4" to limit thread usage as requested
         string BuildCmd(int ngl) => 
-            $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {ngl} -c 2048 --file \"{corpusPath}\" {kldArgs}";
+            $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {ngl} -t 4 -c 2048 --file \"{corpusPath}\" {kldArgs}";
 
         await RunWithRetryAsync(BuildCmd, logFile, candidates, $"perplexity-{domain}");
 
-        // Parsing
         bool expectKld = (!saveLogits && !string.IsNullOrEmpty(klLogitsDir));
         return ParsePerplexity(logFile, expectKld);
     }
@@ -195,7 +223,6 @@ public class BenchmarkService
         string text = File.ReadAllText(logPath);
         string cleanText = StripAnsi(text);
 
-        // Regex for PPL: "Mean PPL(Q) : 8.88 +/- 0.20" OR "PPL = 8.88 +/- 0.20"
         var pplMatch = Regex.Match(cleanText, @"(?:Mean PPL\(Q\)|PPL)\s*[:=]\s*([0-9.]+)\s*(?:±|\+/-)\s*([0-9.]+)", RegexOptions.IgnoreCase);
         
         if (pplMatch.Success)
@@ -208,7 +235,6 @@ public class BenchmarkService
             AnsiConsole.MarkupLine($"[red]Error parsing PPL from {logPath}[/]");
         }
 
-        // Regex for KLD: "Mean KLD : 0.0008" OR "KL divergence: 0.1234"
         var kldMatch = Regex.Match(cleanText, @"(?:Mean\s+KLD|KL[-_\s]*divergence|kl[-_\s]*div)\s*[:=]\s*([0-9.]+)", RegexOptions.IgnoreCase);
         
         if (kldMatch.Success)
@@ -217,7 +243,6 @@ public class BenchmarkService
         }
         else if (!allowMissingKld && cleanText.Contains("KL", StringComparison.OrdinalIgnoreCase))
         {
-             // Warn if expected but not found
              AnsiConsole.MarkupLine("[yellow]Warning: 'KL' found in log but regex failed to parse value.[/]");
         }
 
@@ -225,7 +250,7 @@ public class BenchmarkService
     }
 
     // ----------------------------------------------------------------
-    // 3. Corpus Preparation (Using Python Interop)
+    // 3. Corpus Preparation
     // ----------------------------------------------------------------
 
     private async Task PreparePplCorpusAsync(string domain, string outPath, int tokenTarget)
@@ -234,10 +259,6 @@ public class BenchmarkService
 
         AnsiConsole.MarkupLine($"[grey]Generating corpus for domain: {domain}[/]");
 
-        // We use the PythonManager to run a script that uses 'datasets' library
-        // This mirrors your 'prepare_ppl_corpus' python function
-        // We pass the python code as a string to the python environment
-        
         string pyScript = $@"
 import sys
 from datasets import load_dataset
@@ -270,30 +291,25 @@ for ds, conf, split, field in get_sources(domain):
 with open(out_path, 'w', encoding='utf-8') as f:
     f.write(''.join(parts))
 ";
-        // Create a temp python file to run this script safely
         string scriptPath = Path.Combine(Path.GetDirectoryName(outPath)!, $"gen_{domain}.py");
         await File.WriteAllTextAsync(scriptPath, pyScript);
 
-        // Run it via PythonManager
         string pythonExe = _pyManager.GetPythonExecutable();
         string args = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) 
             ? $"/c \"{pythonExe}\" \"{scriptPath}\"" 
             : $"\"{scriptPath}\"";
         
         string runner = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd.exe" : pythonExe;
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) args = scriptPath; // Correct linux arg
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) args = scriptPath;
 
-        // We need 'datasets' installed
         await _pyManager.RunPipInstallAsync("datasets");
+        await RunShellCommandAsync(runner + " " + args, null);
         
-        await RunShellCommandAsync(runner + " " + args, null); // Run the generation script
-        
-        // Cleanup script
         if(File.Exists(scriptPath)) File.Delete(scriptPath);
     }
 
     // ----------------------------------------------------------------
-    // 4. Helper: Retry Logic (OOM Handling)
+    // 4. Retry Logic
     // ----------------------------------------------------------------
 
     private async Task<int?> RunWithRetryAsync(
@@ -311,14 +327,12 @@ with open(out_path, 'w', encoding='utf-8') as f:
 
             string logContent = File.Exists(logPath) ? File.ReadAllText(logPath) : "";
             
-            // Check for OOM
             if (OomMarkers.Any(m => logContent.Contains(m, StringComparison.OrdinalIgnoreCase)))
             {
                 AnsiConsole.MarkupLine($"[yellow][WARN] {label}: OOM at -ngl {ngl}, retrying...[/]");
                 continue;
             }
 
-            // Simple check: if log is empty or super short, it crashed non-OOM
             if (logContent.Length < 50) 
             {
                 AnsiConsole.MarkupLine($"[yellow][WARN] {label}: Failed at -ngl {ngl} (Unknown Error), trying next...[/]");
@@ -351,7 +365,6 @@ with open(out_path, 'w', encoding='utf-8') as f:
 
         using var process = new Process { StartInfo = startInfo };
         
-        // If logPath is provided, we stream output to it
         FileStream? fs = null;
         StreamWriter? sw = null;
 
@@ -381,7 +394,6 @@ with open(out_path, 'w', encoding='utf-8') as f:
 
     private string GetRelativePath(string fullPath)
     {
-        // Ideally make this relative to the project root, but for now returning filename is safer for display
         return Path.GetFileName(fullPath); 
     }
 }
