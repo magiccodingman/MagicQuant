@@ -2,7 +2,7 @@ namespace MagicQuant.Models;
 
 public class HybridTensor
 {
-    public TensorGroup TensorGroup { get; set; }
+    public TensorGroup TensorGroup { get; set; } = null!;
     public string TensorType { get; set; }
 }
 

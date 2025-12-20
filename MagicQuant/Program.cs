@@ -18,6 +18,8 @@ if (args.Length == 0)
  args = args.Concat(manualFlags.Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToArray();
 #endif
 
+CliHelpers.PrintTotalCombinationCount();
+
 // 2. Define the Command Registry
 var commands = new Dictionary<string, (string Description, Func<ICommand> Factory)>(StringComparer.OrdinalIgnoreCase)
 {
