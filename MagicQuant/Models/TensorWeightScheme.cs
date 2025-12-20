@@ -31,7 +31,7 @@ public record TensorWeightScheme(
             1,
             false,
             ["BF16", "F16"],
-            []
+            ImmutableArray<TensorGroup>.Empty
         );
 
     public static readonly TensorWeightScheme MXFP4 =
@@ -47,10 +47,10 @@ public record TensorWeightScheme(
         );
 
     public static readonly TensorWeightScheme Q8_0 =
-        new(3, false, ["Q8_0"], []);
+        new(3, false, ["Q8_0"], ImmutableArray<TensorGroup>.Empty);
 
     public static readonly TensorWeightScheme Q6_K =
-        new(4, false, ["Q6_K"], []);
+        new(4, false, ["Q6_K"], ImmutableArray<TensorGroup>.Empty);
 
     public static readonly TensorWeightScheme Q5_K =
         new(

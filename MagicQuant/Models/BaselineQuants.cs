@@ -6,8 +6,7 @@ public record BaselineQuants(
     sbyte UniqueId,
     bool RequiresImatrix,
     ImmutableArray<string> Names,
-    bool AllowedAsBaseConversion = false,
-    bool AlwaysBuild = true)
+    bool AllowedAsBaseConversion = false)
 {
     public static readonly BaselineQuants Q8_0 = new(0, false, ["Q8_0"]);
     public static readonly BaselineQuants Q6_K = new(1, false, ["Q6_K"]);
