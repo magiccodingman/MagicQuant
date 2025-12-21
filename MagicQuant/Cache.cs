@@ -39,5 +39,12 @@ public class Cache
     /// <summary>
     /// Aka BF16, F16, or F32
     /// </summary>
-    public static string? TorchType;
+    public static MainTorchType? TorchType;
+
+    public enum MainTorchType
+    {
+        BF16 = 1,
+        F16 = 2,
+        F32 = 3
+    }
 }

@@ -54,6 +54,8 @@ public class Evolution : ICommand
         Cache.ModelDirectory = fullModelPath;
         Cache.MagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
 
+        JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
+
         // Create the MagicQuant directory immediately so it's ready for future steps
         if (!Directory.Exists(Cache.MagicQuantDirectory))
         {
