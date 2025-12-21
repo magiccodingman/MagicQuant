@@ -4,6 +4,11 @@ using System.Linq;
 
 namespace MagicQuant.Models;
 
+public class TensorGroupInfo
+{   
+    public TensorGroup Group { get; set; }
+}
+
 /// <summary>
 /// Represents a categorized group of tensors with a unique name and matching patterns.
 /// </summary>

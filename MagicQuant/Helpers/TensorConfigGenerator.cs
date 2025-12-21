@@ -9,7 +9,7 @@ public static class TensorConfigGenerator
 {
     public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? MissingTensorGroup = null)
     {
-        var allowedBaselines = BaselineQuants.All.Where(x => x.AllowedAsBaseConversion).ToList();
+        var allowedBaselines = BaselineQuants.All.Where(x => x.BaseConversionBase != null).ToList();
         var hybridQuants = new List<HybridQuant>();
 
         // Fast lookup for missing groups

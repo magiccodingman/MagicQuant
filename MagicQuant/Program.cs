@@ -62,7 +62,7 @@ try
                 await initializer.Run(validationArgs);
             });
 
-        AnsiConsole.MarkupLine("[bold green]✓[/] Environment validated.");
+        AnsiConsole.MarkupLine("[bold green][/] Environment validated.");
         AnsiConsole.WriteLine();
     }
 
@@ -84,17 +84,17 @@ static void ValidateCombinationLogicWorks()
 {
     CliHelpers.PrintTotalCombinationCount();
 
-// ----------------------------------------
-// Pre-compute expected total (source of truth)
-// ----------------------------------------
+    // ----------------------------------------
+    // Pre-compute expected total
+    // ----------------------------------------
     var expectedTotal = ComboCounter.CountAll();
 
     AnsiConsole.MarkupLine(
         $"[bold cyan]Expected total combinations:[/] [bold yellow]{expectedTotal:N0}[/]");
 
-// ----------------------------------------
-// Generation + timing
-// ----------------------------------------
+    // ----------------------------------------
+    // Generation + timing
+    // ----------------------------------------
     var sw = Stopwatch.StartNew();
 
     long actualTotal = 0;
@@ -132,9 +132,9 @@ static void ValidateCombinationLogicWorks()
 
     sw.Stop();
 
-// ----------------------------------------
-// Verification
-// ----------------------------------------
+    // ----------------------------------------
+    // Verification
+    // ----------------------------------------
     bool match = actualTotal == expectedTotal;
 
     AnsiConsole.MarkupLine(
@@ -145,9 +145,9 @@ static void ValidateCombinationLogicWorks()
             ? "[bold green] Counts match expected total[/]"
             : $"[bold red] MISMATCH! Expected {expectedTotal:N0} but generated {actualTotal:N0}[/]");
 
-// ----------------------------------------
-// Human-readable elapsed time
-// ----------------------------------------
+    // ----------------------------------------
+    // Human-readable elapsed time
+    // ----------------------------------------
     var t = sw.Elapsed;
 
     AnsiConsole.MarkupLine(
