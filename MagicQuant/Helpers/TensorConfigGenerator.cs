@@ -1,8 +1,6 @@
 using MagicQuant.Models;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
-using System.Numerics;
-using Spectre.Console;
 
 namespace MagicQuant.Helpers;
 
@@ -48,6 +46,9 @@ public static class TensorConfigGenerator
         // ---------------------------
         int dop = ComputeWorkerThreads(GetThreadCountSafe());
 
+        // Cache baseQuant.UniqueId once (perf)
+        sbyte baseId = baseQuant.UniqueId;
+
         var queue = new BlockingCollection<List<TensorConfig>>(
             boundedCapacity: Math.Max(2, dop * 2));
 
@@ -58,7 +59,6 @@ public static class TensorConfigGenerator
         {
             try
             {
-                // Partition on first dimension
                 Parallel.ForEach(
                     Partitioner.Create(0, allowed[0].Length),
                     new ParallelOptions
@@ -68,10 +68,21 @@ public static class TensorConfigGenerator
                     },
                     range =>
                     {
-                        var batch = new List<TensorConfig>(
-                            Math.Min(batchSize, 250_000));
-
+                        var batch = new List<TensorConfig>(Math.Min(batchSize, 250_000));
                         var idx = new int[dims];
+
+                        // Hot-path aliases (perf)
+                        // NOTE: This assumes group count is stable at 9 (Embeddings..MoeRouter),
+                        // which matches your TensorConfig mapping.
+                        var d0 = allowed[0];
+                        var d1 = allowed[1];
+                        var d2 = allowed[2];
+                        var d3 = allowed[3];
+                        var d4 = allowed[4];
+                        var d5 = allowed[5];
+                        var d6 = allowed[6];
+                        var d7 = allowed[7];
+                        var d8 = allowed[8];
 
                         for (int i0 = range.Item1; i0 < range.Item2; i0++)
                         {
@@ -82,13 +93,24 @@ public static class TensorConfigGenerator
 
                             while (true)
                             {
-                                batch.Add(BuildTensorConfig(allowed, idx));
+                                // Inline-build (perf): avoids helper call overhead and repeated bounds checks
+                                batch.Add(new TensorConfig(
+                                    baseQuant:  baseId,
+                                    embeddings: d0[idx[0]],
+                                    lmHead:     d1[idx[1]],
+                                    attnQ:      d2[idx[2]],
+                                    attnKV:     d3[idx[3]],
+                                    attnOutput: d4[idx[4]],
+                                    ffnUpGate:  d5[idx[5]],
+                                    ffnDown:    d6[idx[6]],
+                                    moeExperts: d7[idx[7]],
+                                    moeRouter:  d8[idx[8]]
+                                ));
 
                                 if (batch.Count >= batchSize)
                                 {
                                     queue.Add(batch, ct);
-                                    batch = new List<TensorConfig>(
-                                        Math.Min(batchSize, 250_000));
+                                    batch = new List<TensorConfig>(Math.Min(batchSize, 250_000));
                                 }
 
                                 // Mixed-radix increment (dims-1 → 1)
@@ -127,28 +149,10 @@ public static class TensorConfigGenerator
         producer.GetAwaiter().GetResult();
     }
 
-    private static TensorConfig BuildTensorConfig(
-        ImmutableArray<sbyte[]> allowed,
-        int[] idx)
-    {
-        // Order MUST match ComboLogic.GroupsOrdered
-        return new TensorConfig(
-            embeddings: allowed[0][idx[0]],
-            lmHead: allowed[1][idx[1]],
-            attnQ: allowed[2][idx[2]],
-            attnKV: allowed[3][idx[3]],
-            attnOutput: allowed[4][idx[4]],
-            ffnUpGate: allowed[5][idx[5]],
-            ffnDown: allowed[6][idx[6]],
-            moeExperts: allowed[7][idx[7]],
-            moeRouter: allowed[8][idx[8]]
-        );
-    }
-
     private static int GetThreadCountSafe()
     {
         // Cache.SysInfo might not be initialized this early; fall back safely
-        var tc = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
+        int tc = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
         return Math.Max(1, tc);
     }
 
@@ -157,14 +161,12 @@ public static class TensorConfigGenerator
         if (threadCount <= 1)
             return 1;
 
-        int workers;
-        if (threadCount < 16)
-            workers = threadCount - 1;
-        else
-            workers = (int)Math.Floor(threadCount * 0.90);
+        int workers =
+            threadCount < 16
+                ? threadCount - 1
+                : (int)Math.Floor(threadCount * 0.90);
 
         // Always leave at least 1 thread free
-        workers = Math.Clamp(workers, 1, Math.Max(1, threadCount - 1));
-        return workers;
+        return Math.Clamp(workers, 1, Math.Max(1, threadCount - 1));
     }
 }

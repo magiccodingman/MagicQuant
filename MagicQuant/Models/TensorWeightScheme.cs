@@ -60,21 +60,23 @@ public record TensorWeightScheme(
             [TReg.MoeRouter]
         );
 
-    public static readonly TensorWeightScheme IQ4_NL =
+    public static readonly TensorWeightScheme IQ4_XS =
         new(
             6,
+            false,
+            ["IQ4_XS"],
+            [TReg.MoeRouter]
+        );
+    
+    public static readonly TensorWeightScheme IQ4_NL =
+        new(
+            7,
             false,
             ["IQ4_NL"],
             [TReg.MoeRouter]
         );
 
-    public static readonly TensorWeightScheme IQ4_XS =
-        new(
-            7,
-            false,
-            ["IQ4_XS"],
-            [TReg.MoeRouter]
-        );
+  
 
     // IQ3 levels
     public static readonly TensorWeightScheme IQ3_S =
@@ -162,8 +164,9 @@ public record TensorWeightScheme(
         Q8_0,
         Q6_K,
         Q5_K,
-        IQ4_NL,
+        
         IQ4_XS,
+        //IQ4_NL,
         /*IQ3_S,
         IQ3_XS,
         IQ3_XXS,

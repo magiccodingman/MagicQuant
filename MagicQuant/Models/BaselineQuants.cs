@@ -14,9 +14,9 @@ public record BaselineQuants(
     public static readonly BaselineQuants Q4_K_M = new(3, false, ["Q4_K_M"]);
 
     public static readonly BaselineQuants MXFP4_MOE = new(4, false, ["MXFP4_MOE"], true);
-    public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"], true);
+    public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"]);
     
-    public static readonly BaselineQuants IQ4_XS = new(6, false, ["IQ4_NL"]);
+    public static readonly BaselineQuants IQ4_XS = new(6, false, ["IQ4_XS"], true);
 
     // IQ3 and lower require imatrix
     //public static readonly BaselineQuants IQ3_M = new(7, true,  ["IQ3_M"], true);
