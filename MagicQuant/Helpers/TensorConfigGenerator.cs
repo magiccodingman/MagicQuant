@@ -1,11 +1,102 @@
 using MagicQuant.Models;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
+using Spectre.Console;
 
 namespace MagicQuant.Helpers;
 
 public static class TensorConfigGenerator
 {
+    public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? MissingTensorGroup = null)
+    {
+        var allowedBaselines = BaselineQuants.All.Where(x => x.AllowedAsBaseConversion).ToList();
+        var hybridQuants = new List<HybridQuant>();
+
+        // Fast lookup for missing groups
+        var missingIds = MissingTensorGroup?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<sbyte>();
+
+        // ---------------------------------------------------------
+        // 1. BASELINE CONTROLS (One pure sample per allowed baseline)
+        // ---------------------------------------------------------
+        int baseTestsRequired = 0;
+        foreach (var baseline in allowedBaselines)
+        {
+            baseTestsRequired++;
+            var hq = new HybridQuant
+            {
+                BaseQuant = baseline,
+                Tensors = TReg.All
+                    .Select(g => new HybridTensor
+                    {
+                        TGroup = g,
+                        // If missing, mark NULL. Else default to BF16.
+                        TensorType = missingIds.Contains(g.UniqueId)
+                            ? TensorWeightScheme.NULL
+                            : TensorWeightScheme.BF16_F16
+                    })
+                    .ToList()
+            };
+
+            hybridQuants.Add(hq);
+        }
+
+        AnsiConsole.MarkupLine($"[bold green]Required BF16 base hybrid tests:[/] {baseTestsRequired:N0}");
+
+        // ---------------------------------------------------------
+        // 2. ISOLATION SAMPLES (Always BF16 Base, isolate one tensor at a time)
+        // ---------------------------------------------------------
+        var tensorWeights = TensorWeightScheme.All
+            .Where(x => x != TensorWeightScheme.NULL && x != TensorWeightScheme.BF16_F16)
+            .ToList();
+
+        int isolatedSamplesRequired = 0;
+
+        // We always use the BF16 baseline for isolation tests
+        var isolationBase = BaselineQuants.GetBF16Quant();
+
+        foreach (var weight in tensorWeights)
+        {
+            // Get valid targets: Start with All, remove Banned by Scheme, remove Missing by User
+            var validTargets = TReg.All.Where(x => !weight.BannedGroups.Contains(x)).ToList();
+
+            if (missingIds.Count > 0)
+            {
+                validTargets.RemoveAll(x => missingIds.Contains(x.UniqueId));
+            }
+
+            foreach (var group in validTargets)
+            {
+                isolatedSamplesRequired++;
+
+                // Create fresh list with default logic
+                var tensors = TReg.All.Select(g => new HybridTensor
+                {
+                    TGroup = g,
+                    TensorType = missingIds.Contains(g.UniqueId)
+                        ? TensorWeightScheme.NULL
+                        : TensorWeightScheme.BF16_F16
+                }).ToList();
+
+                // Set the isolated target
+                var foundQuant = tensors.First(x => x.TGroup == group);
+                foundQuant.TensorType = weight;
+
+                var hq = new HybridQuant
+                {
+                    BaseQuant = isolationBase,
+                    Tensors = tensors
+                };
+
+                hybridQuants.Add(hq);
+            }
+        }
+
+        AnsiConsole.MarkupLine($"[bold green]Isolated Samples Required:[/] {isolatedSamplesRequired:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Total Samples Required:[/] {hybridQuants.Count:N0}");
+
+        return hybridQuants;
+    }
+
     public static IEnumerable<List<TensorConfig>> GenerateTensorConfigBatches(
         BaselineQuants baseQuant,
         int batchSize = 10_000_000,
@@ -95,16 +186,16 @@ public static class TensorConfigGenerator
                             {
                                 // Inline-build (perf): avoids helper call overhead and repeated bounds checks
                                 batch.Add(new TensorConfig(
-                                    baseQuant:  baseId,
+                                    baseQuant: baseId,
                                     embeddings: d0[idx[0]],
-                                    lmHead:     d1[idx[1]],
-                                    attnQ:      d2[idx[2]],
-                                    attnKV:     d3[idx[3]],
+                                    lmHead: d1[idx[1]],
+                                    attnQ: d2[idx[2]],
+                                    attnKV: d3[idx[3]],
                                     attnOutput: d4[idx[4]],
-                                    ffnUpGate:  d5[idx[5]],
-                                    ffnDown:    d6[idx[6]],
+                                    ffnUpGate: d5[idx[5]],
+                                    ffnDown: d6[idx[6]],
                                     moeExperts: d7[idx[7]],
-                                    moeRouter:  d8[idx[8]]
+                                    moeRouter: d8[idx[8]]
                                 ));
 
                                 if (batch.Count >= batchSize)

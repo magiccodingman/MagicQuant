@@ -18,6 +18,11 @@ public record BaselineQuants(
     
     public static readonly BaselineQuants IQ4_XS = new(6, false, ["IQ4_XS"], true);
 
+
+    public static BaselineQuants GetBF16Quant()
+    {
+        return new(0, false, [Cache.TorchType?.ToString() ?? "BF16"]);
+    }
     // IQ3 and lower require imatrix
     //public static readonly BaselineQuants IQ3_M = new(7, true,  ["IQ3_M"], true);
     //public static readonly BaselineQuants IQ2_M = new(8, true,  ["IQ2_M"], true);

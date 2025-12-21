@@ -4,7 +4,8 @@ public class HybridQuant
 {
     public BaselineQuants BaseQuant { get; set; } = default!;
     public List<HybridTensor> Tensors { get; set; } = new List<HybridTensor>();
-
+    public HybridQuant() { }
+    
     // Converting constructor: TensorConfig -> HybridQuant
     public HybridQuant(TensorConfig c)
     {

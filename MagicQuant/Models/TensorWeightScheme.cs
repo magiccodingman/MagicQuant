@@ -68,6 +68,7 @@ public record TensorWeightScheme(
             [TReg.MoeRouter]
         );
     
+    /*
     public static readonly TensorWeightScheme IQ4_NL =
         new(
             7,
@@ -155,6 +156,7 @@ public record TensorWeightScheme(
                 TReg.AttnKV
             ]
         );
+        */
 
     public static readonly ImmutableArray<TensorWeightScheme> All =
     [

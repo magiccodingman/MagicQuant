@@ -153,6 +153,22 @@ static void ValidateCombinationLogicWorks()
     AnsiConsole.MarkupLine(
         $"[bold]Elapsed:[/] " +
         $"{t.Hours}h {t.Minutes}m {t.Seconds}s {t.Milliseconds}ms");
+    Console.WriteLine();
+    Console.WriteLine("---------------");
+    Console.WriteLine();
+
+    var MOE = TensorConfigGenerator.GenerateRequiredDataSampleCombos();
+    
+    var Dense = TensorConfigGenerator.GenerateRequiredDataSampleCombos(//);
+        new List<TensorGroup>(){TReg.MoeRouter, TReg.MoeExperts});
+    
+    Console.WriteLine();
+    Console.WriteLine("---------------");
+    Console.WriteLine();
+    AnsiConsole.MarkupLine(
+        $"[bold green]Max MOE samples created:[/] {MOE.Count():N0}");
+    AnsiConsole.MarkupLine(
+        $"[bold green]Max Dense samples created:[/] {Dense.Count():N0}");
 }
 
 #endregion
