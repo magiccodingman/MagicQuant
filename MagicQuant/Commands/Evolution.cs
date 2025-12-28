@@ -84,6 +84,11 @@ public class Evolution : ICommand
         await qService.EnsureBaseModelAsync(true);
         
         
+        var dbService = new QuantDatabaseService();
+
+        // This ensures the DB is ready, populated, and valid before you proceed
+        await dbService.InitializeAsync();
+        
         
         
         // Todo: Have an end deletion process to remove the GGUF's and related success jsons, but not imatrix
