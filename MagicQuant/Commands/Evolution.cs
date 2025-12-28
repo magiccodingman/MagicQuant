@@ -81,7 +81,12 @@ public class Evolution : ICommand
         var bService = new BenchmarkService(pyManager);
         var qService = new QuantizationService(bService);
 
-        await qService.EnsureBaseModelAsync();
+        await qService.EnsureBaseModelAsync(true);
+        
+        
+        
+        
+        // Todo: Have an end deletion process to remove the GGUF's and related success jsons, but not imatrix
     }
 
     private void ShowEvolutionHelp()

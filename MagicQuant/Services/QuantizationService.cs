@@ -134,7 +134,7 @@ public class QuantizationService
     // ----------------------------------------------------------------
     // 2. Base Model Generation (Dynamic BF16 / F16 / F32)
     // ----------------------------------------------------------------
-    public async Task<string> EnsureBaseModelAsync()
+    public async Task<string> EnsureBaseModelAsync(bool deleteProcess = false)
     {
         // Resolve model name
         string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
@@ -147,6 +147,37 @@ public class QuantizationService
         string fileName = $"{modelName}-{typeStr}.gguf";
         string outputPath = Path.Combine(_ggufDir, fileName);
         string successFile = Path.Combine(_ggufDir, $"{fileName}.success.json");
+
+        if (deleteProcess)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                throw new ArgumentException("fileName is null or empty.", nameof(fileName));
+
+            if (!Directory.Exists(_ggufDir))
+                throw new DirectoryNotFoundException($"Directory does not exist: {_ggufDir}");
+
+            var normalizedFileName = Path.GetFileName(fileName);
+            var successFileName = normalizedFileName + ".success.json";
+            var successFilePath = Path.Combine(_ggufDir, successFileName);
+
+            // Only immune if the success file exists
+            bool isImmune = File.Exists(successFilePath);
+
+            foreach (var filePath in Directory.EnumerateFiles(_ggufDir, "*.gguf", SearchOption.TopDirectoryOnly))
+            {
+                var currentFileName = Path.GetFileName(filePath);
+
+                if (isImmune &&
+                    string.Equals(currentFileName, normalizedFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // This GGUF earned its right to live
+                    continue;
+                }
+
+                // HARD DELETE — Windows & Linux
+                File.Delete(filePath);
+            }
+        }
 
         // Already converted?
         if (!File.Exists(outputPath) || !File.Exists(successFile))
