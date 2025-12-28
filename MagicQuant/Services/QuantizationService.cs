@@ -3,6 +3,7 @@ using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using MagicQuant.Helpers;
 
 namespace MagicQuant.Services;
 
@@ -11,6 +12,8 @@ public class QuantizationService
     private readonly BenchmarkService _benchmarker;
     private readonly string _ggufDir;
     private readonly string _benchDir;
+
+    private readonly PythonManager _python;
 
     // Threading Control
     // We limit CPU-heavy quantization jobs to (TotalThreads / 8) to avoid choking the system
@@ -24,13 +27,13 @@ public class QuantizationService
     public QuantizationService(BenchmarkService benchmarker)
     {
         _benchmarker = benchmarker;
-
+        _python = _benchmarker._pyManager;
         // Setup Directories based on Cache (assumed populated by Evolution command)
         if (Cache.MagicQuantDirectory == null)
             throw new Exception("MagicQuant Directory not set. Run initialization first.");
 
-        _ggufDir = Path.Combine(Cache.MagicQuantDirectory, "GGUF");
-        _benchDir = Path.Combine(Cache.MagicQuantDirectory, "Benchmarks");
+        _ggufDir = Path.Combine(Cache.ModelMagicQuantDirectory, "GGUF");
+        _benchDir = Path.Combine(Cache.ModelMagicQuantDirectory, "Benchmarks");
 
         Directory.CreateDirectory(_ggufDir);
         Directory.CreateDirectory(_benchDir);
@@ -121,7 +124,7 @@ public class QuantizationService
             AnsiConsole.WriteException(ex);
         }
     }
-    
+
     private bool IsProtectedModel(string name)
     {
         // Don't delete the BF16/F16/F32 base files
@@ -131,70 +134,98 @@ public class QuantizationService
     // ----------------------------------------------------------------
     // 2. Base Model Generation (Dynamic BF16 / F16 / F32)
     // ----------------------------------------------------------------
-
     public async Task<string> EnsureBaseModelAsync()
     {
+        // Resolve model name
         string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
 
-        // Dynamic Type Detection
-        // Default to BF16 if detection failed or wasn't run
+        // Determine torch type (default BF16)
         var torchType = Cache.TorchType ?? Cache.MainTorchType.BF16;
-        string typeStr = torchType.ToString(); // "BF16", "F16", "F32"
+        string typeStr = torchType.ToString(); // BF16, F16, F32
 
+        // Output paths
         string fileName = $"{modelName}-{typeStr}.gguf";
-        string output = Path.Combine(_ggufDir, fileName);
+        string outputPath = Path.Combine(_ggufDir, fileName);
         string successFile = Path.Combine(_ggufDir, $"{fileName}.success.json");
 
-        if (File.Exists(output) && File.Exists(successFile))
-            return output;
-
-        // Create/Convert
-        AnsiConsole.MarkupLine($"[bold cyan]Converting to {typeStr}...[/]");
-
-        if (File.Exists(output)) File.Delete(output);
-
-        string convertScript = Cache.ConvertScript
-            ?? throw new Exception("ConvertScript path missing in Cache");
-
-        // map enum to CLI arg: BF16 -> bf16, F16 -> f16, F32 -> f32
-        string outTypeArg = typeStr.ToLowerInvariant();
-
-        var psi = new ProcessStartInfo
+        // Already converted?
+        if (!File.Exists(outputPath) || !File.Exists(successFile))
         {
-            FileName = "python",
-            Arguments = $"\"{convertScript}\" \"{Cache.ModelDirectory}\" --outtype {outTypeArg} --outfile \"{output}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+            // ---- Conversion ----
+            AnsiConsole.MarkupLine($"[bold cyan]Converting to {typeStr}...[/]");
 
-        using var p = Process.Start(psi);
-        p.OutputDataReceived += (s, e) => { if (e.Data != null) AnsiConsole.WriteLine(e.Data); };
-        p.ErrorDataReceived += (s, e) => { if (e.Data != null) AnsiConsole.WriteLine(e.Data); };
-        p.BeginOutputReadLine();
-        p.BeginErrorReadLine();
-        await p.WaitForExitAsync();
+            if (File.Exists(outputPath))
+                File.Delete(outputPath);
 
-        if (p.ExitCode != 0) throw new Exception($"{typeStr} Conversion Failed");
+            string convertScript = Cache.ConvertScript
+                                   ?? throw new Exception("ConvertScript path missing in Cache");
 
-        // Write Success JSON
-        await File.WriteAllTextAsync(successFile, "{\"status\":\"success\"}");
+            string outTypeArg = typeStr.ToLowerInvariant(); // bf16 / f16 / f32
 
-        // Run Benchmark on Base Model (Critical First Step)
-        string benchPath = Path.Combine(_benchDir, typeStr); // e.g., Benchmarks/BF16
+            string arguments =
+                $"\"{convertScript}\" \"{Cache.ModelDirectory}\" " +
+                $"--outtype {outTypeArg} " +
+                $"--outfile \"{outputPath}\"";
+
+            string python = _python.GetPythonExecutable();
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = python,
+                Arguments = arguments,
+                WorkingDirectory = Cache.LlamaRoot,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(psi)
+                                ?? throw new InvalidOperationException("Failed to start conversion process");
+
+            // UNTRUSTED OUTPUT → WriteLine ONLY
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data))
+                    AnsiConsole.WriteLine(e.Data);
+            };
+
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data))
+                    AnsiConsole.WriteLine(e.Data);
+            };
+
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+                throw new Exception($"{typeStr} conversion failed");
+
+            // Write success marker
+            await File.WriteAllTextAsync(successFile, "{\"status\":\"success\"}");
+        }
+
+        // ---- Benchmark Base Model ----
+        string benchPath = Path.Combine(_benchDir, typeStr);
         string logitsDir = Path.Combine(benchPath, "logits");
 
-        AnsiConsole.MarkupLine($"[bold yellow]Benchmarking Base {typeStr} (Saving Logits)...[/]");
+        AnsiConsole.MarkupLine(
+            $"[bold yellow]Benchmarking Base {typeStr} (Saving Logits)...[/]"
+        );
+
         await _benchmarker.RunAllBenchmarksAsync(
-            output,
-            benchPath,
+            modelPath: outputPath,
+            benchDir: benchPath,
             klLogitsDir: logitsDir,
             saveLogits: true
         );
 
-        return output;
+        return outputPath;
     }
+
 
     // ----------------------------------------------------------------
     // 3. Hybrid Quantization Execution
@@ -251,7 +282,7 @@ public class QuantizationService
         if (p.ExitCode != 0)
             throw new Exception($"Quantization failed for {outputFile}");
     }
-   
+
     private static string ResolveBaseName(BaselineQuants b)
     {
         if (b.Names.IsDefaultOrEmpty)
@@ -272,6 +303,7 @@ public class QuantizationService
             {
                 return "F16";
             }
+
             // Default to BF16 for BF16 or F32 types (safer modern default)
             return "BF16";
         }

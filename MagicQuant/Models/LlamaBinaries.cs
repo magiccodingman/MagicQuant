@@ -10,7 +10,7 @@ public class LlamaBinaries
 
     public LlamaBinaries(string root)
     {
-        var binDir = Path.Combine(root, "build", "bin");
+        var binDir = Cache.LlamaBin;
         Bench = Path.Combine(binDir, "llama-bench");
         Ppl = Path.Combine(binDir, "llama-perplexity");
         Cli = Path.Combine(binDir, "llama-cli");

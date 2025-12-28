@@ -36,6 +36,8 @@ public class Cache
     /// </summary>
     public static string? ModelDirectory;
     
+    public static string? ModelMagicQuantDirectory;
+    
     /// <summary>
     /// Aka BF16, F16, or F32
     /// </summary>

@@ -1,6 +1,7 @@
 using MagicQuant.Models;
 using MagicQuant.Helpers;
 using MagicQuant;
+using MagicQuant.Services;
 using Spectre.Console;
 
 namespace MagicQuant.Commands;
@@ -52,21 +53,21 @@ public class Evolution : ICommand
 
         // 5. Populate Cache
         Cache.ModelDirectory = fullModelPath;
-        Cache.MagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
+        Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
 
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
         // Create the MagicQuant directory immediately so it's ready for future steps
-        if (!Directory.Exists(Cache.MagicQuantDirectory))
+        if (!Directory.Exists(Cache.ModelMagicQuantDirectory))
         {
-            Directory.CreateDirectory(Cache.MagicQuantDirectory);
+            Directory.CreateDirectory(Cache.ModelMagicQuantDirectory);
         }
 
         // 6. Success Output
         AnsiConsole.MarkupLine("[green]✔ Model Directory Validated[/]");
         AnsiConsole.Write(new Rule("[yellow]Evolution Configuration[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"Model Path:   [blue]{Cache.ModelDirectory}[/]");
-        AnsiConsole.MarkupLine($"Output Path:  [blue]{Cache.MagicQuantDirectory}[/]");
+        AnsiConsole.MarkupLine($"Output Path:  [blue]{Cache.ModelMagicQuantDirectory}[/]");
         AnsiConsole.MarkupLine($"Files Found:  [green]{safeTensorFiles.Length}[/] safe tensors");
         
         // Ensure Llama paths are set (sanity check from InitializeLlamaCpp)
@@ -76,8 +77,11 @@ public class Evolution : ICommand
             // If not, we might want to warn or rely on defaults.
             AnsiConsole.MarkupLine("[yellow]Warning: Llama binaries path not set in Cache. (Did Initialization run?)[/]");
         }
+        var pyManager = new PythonManager(Cache.MagicQuantDirectory);
+        var bService = new BenchmarkService(pyManager);
+        var qService = new QuantizationService(bService);
 
-        // Next steps of evolution would go here...
+        await qService.EnsureBaseModelAsync();
     }
 
     private void ShowEvolutionHelp()

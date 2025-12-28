@@ -101,7 +101,7 @@ static void ValidateCombinationLogicWorks()
 
     var bases =
         BaselineQuants.All
-            .Where(b => b.AllowedAsBaseConversion)
+            .Where(b => b.BaseConversionBase != null)
             .ToImmutableArray();
 
     foreach (var b in bases)

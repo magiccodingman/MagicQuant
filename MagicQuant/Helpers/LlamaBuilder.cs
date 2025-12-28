@@ -14,6 +14,10 @@ public class LlamaBuilder
     public LlamaBuilder(string magicRoot, SystemInfo sysInfo)
     {
         _llamaRoot = Path.Combine(magicRoot, MagicConstants.LlamaRepoName);
+        Cache.LlamaRoot = _llamaRoot;
+        Cache.LlamaBin = Path.Combine(Cache.LlamaRoot, "build", "bin");
+        Cache.ConvertScript = Path.Combine(Cache.LlamaRoot, "convert_hf_to_gguf.py");;
+        
         _sysInfo = sysInfo;
     }
 

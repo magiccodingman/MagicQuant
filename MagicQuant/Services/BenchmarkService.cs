@@ -11,10 +11,10 @@ namespace MagicQuant.Services;
 public class BenchmarkService
 {
     private readonly LlamaBinaries _bins;
-    private readonly PythonManager _pyManager;
+    public readonly PythonManager _pyManager;
 
     // Constants
-    private static readonly string[] OomMarkers = 
+    private static readonly string[] OomMarkers =
     {
         "out of memory", "cudaMalloc failed", "unable to allocate cuda", "try reducing --n-gpu-layers"
     };
@@ -24,7 +24,7 @@ public class BenchmarkService
     // ----------------------------------------------------------------
     // Concurrency Controls
     // ----------------------------------------------------------------
-    
+
     // 1. Exclusive Lock: When LlamaBench runs, it must be the ONLY thing running.
     // Higher-level logic should acquire this before calling RunLlamaBenchAsync.
     public static readonly SemaphoreSlim ExclusiveBenchLock = new(1, 1);
@@ -33,9 +33,9 @@ public class BenchmarkService
     // However, it CAN run alongside CPU tasks (like quantization if VRAM allows).
     public static readonly SemaphoreSlim VramLock = new(1, 1);
 
-    public BenchmarkService(string llamaRoot, PythonManager pyManager)
+    public BenchmarkService(PythonManager pyManager)
     {
-        _bins = new LlamaBinaries(llamaRoot);
+        _bins = new LlamaBinaries(Cache.LlamaRoot);
         _bins.Validate();
         _pyManager = pyManager;
     }
@@ -52,6 +52,19 @@ public class BenchmarkService
         string? klLogitsDir = null,
         bool saveLogits = false)
     {
+        string jsonPath = Path.Combine(benchDir, "bench_metrics.json");
+
+        if (File.Exists(jsonPath))
+        {
+            var benchMetrics = File.ReadAllText(jsonPath);
+            if (!string.IsNullOrWhiteSpace(benchMetrics))
+            {
+                var deserializedMetrics = JsonSerializer.Deserialize<BenchmarkResult>(benchMetrics);
+                if (deserializedMetrics != null)
+                    return deserializedMetrics;
+            }
+        }
+
         Directory.CreateDirectory(benchDir);
         var result = new BenchmarkResult();
 
@@ -86,11 +99,11 @@ public class BenchmarkService
             // B. Run Benchmark (VRAM Intensive)
             // We acquire VRAM lock so we don't run 2 perplexities at once
             await VramLock.WaitAsync();
-            try 
+            try
             {
                 AnsiConsole.MarkupLine($"[yellow]Running Perplexity ({domain})...[/]");
                 var metrics = await RunPplBenchmarkAsync(
-                    modelPath, benchDir, domain, corpusPath, 
+                    modelPath, benchDir, domain, corpusPath,
                     startNgl, klLogitsDir, saveLogits
                 );
                 result.Perplexity[domain] = metrics;
@@ -102,9 +115,9 @@ public class BenchmarkService
         }
 
         // Save Results JSON
-        string jsonPath = Path.Combine(benchDir, "bench_metrics.json");
-        await File.WriteAllTextAsync(jsonPath, JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
-        
+        await File.WriteAllTextAsync(jsonPath,
+            JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+
         return result;
     }
 
@@ -115,15 +128,15 @@ public class BenchmarkService
     private async Task<LlamaBenchMetrics> RunLlamaBenchAsync(string modelPath, string benchDir, int? startNgl)
     {
         string logFile = Path.Combine(benchDir, "llamabench.md");
-        
+
         // Filter candidates
-        var candidates = startNgl.HasValue 
-            ? NglCandidates.Where(n => n <= startNgl.Value).ToList() 
+        var candidates = startNgl.HasValue
+            ? NglCandidates.Where(n => n <= startNgl.Value).ToList()
             : NglCandidates.ToList();
 
         // Command Builder
         // Note: Keeping -p 8 -t 16 as requested ("just like we're now")
-        string BuildCmd(int ngl) => 
+        string BuildCmd(int ngl) =>
             $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -ngl {ngl} -o md";
 
         // Retry Loop
@@ -134,7 +147,7 @@ public class BenchmarkService
         {
             AnsiConsole.MarkupLine("[red]GPU Failed. Fallback to CPU backend...[/]");
             string cpuCmd = $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -backend cpu -o md";
-            await RunShellCommandAsync(cpuCmd, logFile); 
+            await RunShellCommandAsync(cpuCmd, logFile);
         }
 
         return ParseLlamaBench(logFile);
@@ -146,7 +159,7 @@ public class BenchmarkService
         if (!File.Exists(logPath)) return metrics;
 
         var lines = File.ReadAllLines(logPath);
-        
+
         int headerIdx = -1;
         for (int i = 0; i < lines.Length; i++)
         {
@@ -160,7 +173,8 @@ public class BenchmarkService
         if (headerIdx == -1 || lines.Length <= headerIdx + 2) return metrics;
 
         var headers = lines[headerIdx].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(h => h.Trim()).ToList();
-        var dataRow = lines[headerIdx + 2].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(d => d.Trim()).ToList();
+        var dataRow = lines[headerIdx + 2].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(d => d.Trim())
+            .ToList();
 
         if (headers.Count != dataRow.Count) return metrics;
 
@@ -168,7 +182,7 @@ public class BenchmarkService
 
         string tpsStr = row.ContainsKey("t/s") ? row["t/s"] : (row.ContainsKey("tps") ? row["tps"] : "0");
         var match = Regex.Match(tpsStr, @"([0-9.]+)");
-        
+
         if (match.Success && double.TryParse(match.Groups[1].Value, out double tps))
         {
             metrics.Tps = tps;
@@ -185,12 +199,12 @@ public class BenchmarkService
     // ----------------------------------------------------------------
 
     private async Task<PplMetrics> RunPplBenchmarkAsync(
-        string modelPath, string benchDir, string domain, string corpusPath, 
+        string modelPath, string benchDir, string domain, string corpusPath,
         int? startNgl, string? klLogitsDir, bool saveLogits)
     {
         string logFile = Path.Combine(benchDir, $"perplexity_{domain}.log");
-        var candidates = startNgl.HasValue 
-            ? NglCandidates.Where(n => n <= startNgl.Value).ToList() 
+        var candidates = startNgl.HasValue
+            ? NglCandidates.Where(n => n <= startNgl.Value).ToList()
             : NglCandidates.ToList();
 
         // KL Divergence Logic
@@ -199,14 +213,14 @@ public class BenchmarkService
         {
             string logitsFile = Path.Combine(klLogitsDir, $"kld_logits_{domain}.bin");
             if (saveLogits)
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\""; 
+                kldArgs = $"--kl-divergence-base \"{logitsFile}\"";
             else if (File.Exists(logitsFile))
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence"; 
+                kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence";
         }
 
         // Command Builder
         // Added "-t 4" to limit thread usage as requested
-        string BuildCmd(int ngl) => 
+        string BuildCmd(int ngl) =>
             $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {ngl} -t 4 -c 2048 --file \"{corpusPath}\" {kldArgs}";
 
         await RunWithRetryAsync(BuildCmd, logFile, candidates, $"perplexity-{domain}");
@@ -223,8 +237,9 @@ public class BenchmarkService
         string text = File.ReadAllText(logPath);
         string cleanText = StripAnsi(text);
 
-        var pplMatch = Regex.Match(cleanText, @"(?:Mean PPL\(Q\)|PPL)\s*[:=]\s*([0-9.]+)\s*(?:±|\+/-)\s*([0-9.]+)", RegexOptions.IgnoreCase);
-        
+        var pplMatch = Regex.Match(cleanText, @"(?:Mean PPL\(Q\)|PPL)\s*[:=]\s*([0-9.]+)\s*(?:±|\+/-)\s*([0-9.]+)",
+            RegexOptions.IgnoreCase);
+
         if (pplMatch.Success)
         {
             metrics.Ppl = double.Parse(pplMatch.Groups[1].Value);
@@ -235,15 +250,16 @@ public class BenchmarkService
             AnsiConsole.MarkupLine($"[red]Error parsing PPL from {logPath}[/]");
         }
 
-        var kldMatch = Regex.Match(cleanText, @"(?:Mean\s+KLD|KL[-_\s]*divergence|kl[-_\s]*div)\s*[:=]\s*([0-9.]+)", RegexOptions.IgnoreCase);
-        
+        var kldMatch = Regex.Match(cleanText, @"(?:Mean\s+KLD|KL[-_\s]*divergence|kl[-_\s]*div)\s*[:=]\s*([0-9.]+)",
+            RegexOptions.IgnoreCase);
+
         if (kldMatch.Success)
         {
             metrics.Kld = double.Parse(kldMatch.Groups[1].Value);
         }
         else if (!allowMissingKld && cleanText.Contains("KL", StringComparison.OrdinalIgnoreCase))
         {
-             AnsiConsole.MarkupLine("[yellow]Warning: 'KL' found in log but regex failed to parse value.[/]");
+            AnsiConsole.MarkupLine("[yellow]Warning: 'KL' found in log but regex failed to parse value.[/]");
         }
 
         return metrics;
@@ -295,57 +311,70 @@ with open(out_path, 'w', encoding='utf-8') as f:
         await File.WriteAllTextAsync(scriptPath, pyScript);
 
         string pythonExe = _pyManager.GetPythonExecutable();
-        string args = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) 
-            ? $"/c \"{pythonExe}\" \"{scriptPath}\"" 
+        string args = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? $"/c \"{pythonExe}\" \"{scriptPath}\""
             : $"\"{scriptPath}\"";
-        
+
         string runner = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd.exe" : pythonExe;
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) args = scriptPath;
 
         await _pyManager.RunPipInstallAsync("datasets");
         await RunShellCommandAsync(runner + " " + args, null);
-        
-        if(File.Exists(scriptPath)) File.Delete(scriptPath);
+
+        if (File.Exists(scriptPath)) File.Delete(scriptPath);
     }
 
     // ----------------------------------------------------------------
     // 4. Retry Logic
     // ----------------------------------------------------------------
-
     private async Task<int?> RunWithRetryAsync(
-        Func<int, string> cmdBuilder, 
-        string logPath, 
-        List<int> candidates, 
+        Func<int, string> cmdBuilder,
+        string logPath,
+        List<int> candidates,
         string label)
     {
         foreach (int ngl in candidates)
         {
             string cmd = cmdBuilder(ngl);
-            AnsiConsole.MarkupLine($"[grey][*] {label}: trying -ngl {ngl}[/]");
+
+            // Untrusted / dynamic output → WriteLine ONLY
+            AnsiConsole.WriteLine($"[*] {label}: trying -ngl {ngl}");
 
             await RunShellCommandAsync(cmd, logPath);
 
-            string logContent = File.Exists(logPath) ? File.ReadAllText(logPath) : "";
-            
-            if (OomMarkers.Any(m => logContent.Contains(m, StringComparison.OrdinalIgnoreCase)))
+            string logContent = File.Exists(logPath)
+                ? File.ReadAllText(logPath)
+                : string.Empty;
+
+            if (OomMarkers.Any(m =>
+                    logContent.Contains(m, StringComparison.OrdinalIgnoreCase)))
             {
-                AnsiConsole.MarkupLine($"[yellow][WARN] {label}: OOM at -ngl {ngl}, retrying...[/]");
+                AnsiConsole.WriteLine(
+                    $"[WARN] {label}: OOM at -ngl {ngl}, retrying..."
+                );
                 continue;
             }
 
-            if (logContent.Length < 50) 
+            if (logContent.Length < 50)
             {
-                AnsiConsole.MarkupLine($"[yellow][WARN] {label}: Failed at -ngl {ngl} (Unknown Error), trying next...[/]");
+                AnsiConsole.WriteLine(
+                    $"[WARN] {label}: Failed at -ngl {ngl} (Unknown Error), trying next..."
+                );
                 continue;
             }
 
-            AnsiConsole.MarkupLine($"[green][OK] {label}: succeeded with -ngl {ngl}[/]");
+            AnsiConsole.WriteLine(
+                $"[OK] {label}: succeeded with -ngl {ngl}"
+            );
             return ngl;
         }
 
-        AnsiConsole.MarkupLine($"[red][!] {label}: All -ngl candidates failed.[/]");
+        AnsiConsole.WriteLine(
+            $"[ERROR] {label}: All -ngl candidates failed."
+        );
         return null;
     }
+
 
     // ----------------------------------------------------------------
     // 5. System Utilities
@@ -364,7 +393,7 @@ with open(out_path, 'w', encoding='utf-8') as f:
         };
 
         using var process = new Process { StartInfo = startInfo };
-        
+
         FileStream? fs = null;
         StreamWriter? sw = null;
 
@@ -374,15 +403,21 @@ with open(out_path, 'w', encoding='utf-8') as f:
             sw = new StreamWriter(fs);
         }
 
-        process.OutputDataReceived += (s, e) => { if (e.Data != null) sw?.WriteLine(e.Data); };
-        process.ErrorDataReceived += (s, e) => { if (e.Data != null) sw?.WriteLine(e.Data); };
+        process.OutputDataReceived += (s, e) =>
+        {
+            if (e.Data != null) sw?.WriteLine(e.Data);
+        };
+        process.ErrorDataReceived += (s, e) =>
+        {
+            if (e.Data != null) sw?.WriteLine(e.Data);
+        };
 
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
         await process.WaitForExitAsync();
-        
+
         sw?.Dispose();
         fs?.Dispose();
     }
@@ -394,6 +429,6 @@ with open(out_path, 'w', encoding='utf-8') as f:
 
     private string GetRelativePath(string fullPath)
     {
-        return Path.GetFileName(fullPath); 
+        return Path.GetFileName(fullPath);
     }
 }

@@ -19,11 +19,17 @@ public class PythonManager
 
     public async Task<string?> GetInstalledVersionAsync(string packageName)
     {
-        // We use a tiny python script to check importlib.metadata
-        // This is instant compared to pip
-        string script = $"import importlib.metadata; " +
-                        $"try: print(importlib.metadata.version('{packageName}')); " +
-                        $"except: print('NONE')";
+        // NOTE:
+        // - Empty stdout is treated as NOT installed
+        // - stderr is captured
+        // - Python errors fail fast instead of lying
+
+        string script =
+            $"import importlib.metadata, sys\n" +
+            $"try:\n" +
+            $"    print(importlib.metadata.version('{packageName}'))\n" +
+            $"except Exception:\n" +
+            $"    print('NONE')\n";
 
         string python = GetPythonExecutable();
         string exe, args;
@@ -39,27 +45,48 @@ public class PythonManager
             args = $"-c \"{script}\"";
         }
 
-        // Run without printing output to console
         var psi = new ProcessStartInfo
         {
-            FileName = exe, Arguments = args,
-            RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
+            FileName = exe,
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
         };
 
-        using var proc = Process.Start(psi);
-        string output = await proc!.StandardOutput.ReadToEndAsync();
+        using var proc = Process.Start(psi)
+                         ?? throw new InvalidOperationException("Failed to start Python process");
+
+        string stdout = await proc.StandardOutput.ReadToEndAsync();
+        string stderr = await proc.StandardError.ReadToEndAsync();
+
         await proc.WaitForExitAsync();
 
-        string version = output.Trim();
-        return version == "NONE" ? null : version;
+        if (proc.ExitCode != 0)
+        {
+            throw new Exception(
+                $"Python package check failed for '{packageName}'.\n{stderr}"
+            );
+        }
+
+        string version = stdout.Trim();
+
+        // CRITICAL FIX:
+        // Empty output MUST be treated as not installed
+        if (string.IsNullOrEmpty(version) || version == "NONE")
+            return null;
+
+        return version;
     }
+
     
     public string GetPythonExecutable()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return Path.Combine(_envPath, "python.exe");
         
-        return Path.Combine(_envPath, "bin", "python3");
+        return Path.Combine(_envPath, "bin", "python");
     }
 
     public async Task SetupEnvironmentAsync()
@@ -158,7 +185,7 @@ public class PythonManager
         }
     }
 
-    public async Task RunPipInstallAsync(string args, Dictionary<string, string>? envVars = null)
+    public async Task RunPipAsync(string pipArgs, Dictionary<string, string>? envVars = null)
     {
         string python = GetPythonExecutable();
         string exe, finalArgs;
@@ -166,16 +193,20 @@ public class PythonManager
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             exe = "cmd.exe";
-            finalArgs = $"/c \"{python}\" pip_runner.py install {args}";
+            finalArgs = $"/c \"{python}\" pip_runner.py {pipArgs}";
+            await RunShellCommand(exe, finalArgs, _envPath, envVars);
         }
         else
         {
             exe = python;
-            finalArgs = $"-m pip install {args}";
+            finalArgs = $"-m pip {pipArgs}";
+            await RunShellCommand(exe, finalArgs, _envPath, envVars);
         }
-
-        await RunShellCommand(exe, finalArgs, _envPath, envVars);
     }
+
+    public Task RunPipInstallAsync(string installArgs, Dictionary<string, string>? envVars = null)
+        => RunPipAsync($"install {installArgs}", envVars);
+
 
     private bool CheckSuccessMarker() => File.Exists(Path.Combine(_envPath, MagicConstants.SuccessJson));
     private void WriteSuccessMarker() => File.WriteAllText(Path.Combine(_envPath, MagicConstants.SuccessJson), "{\"status\":\"success\"}");
@@ -192,25 +223,26 @@ public class PythonManager
             UseShellExecute = false,
             CreateNoWindow = true
         };
-    
-        if (!string.IsNullOrEmpty(workingDir)) psi.WorkingDirectory = workingDir;
+
+        if (!string.IsNullOrEmpty(workingDir))
+            psi.WorkingDirectory = workingDir;
 
         if (envVars != null)
-        {
             foreach (var kvp in envVars)
-            {
-                psi.EnvironmentVariables[kvp.Key] = kvp.Value;
-            }
-        }
-        
+                psi.Environment[kvp.Key] = kvp.Value;
+
         using var proc = Process.Start(psi);
-        if (proc == null) return;
+        if (proc == null) throw new InvalidOperationException($"Failed to start: {exe}");
 
         proc.OutputDataReceived += (s, e) => { if (e.Data != null) AnsiConsole.MarkupLine($"[grey]{Markup.Escape(e.Data)}[/]"); };
-        proc.ErrorDataReceived += (s, e) => { if (e.Data != null) AnsiConsole.MarkupLine($"[red]{Markup.Escape(e.Data)}[/]"); };
-        
+        proc.ErrorDataReceived  += (s, e) => { if (e.Data != null) AnsiConsole.MarkupLine($"[red]{Markup.Escape(e.Data)}[/]"); };
+
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();
+
         await proc.WaitForExitAsync();
+
+        if (proc.ExitCode != 0)
+            throw new Exception($"Command failed (exit {proc.ExitCode}): {exe} {args}");
     }
 }

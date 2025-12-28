@@ -84,7 +84,7 @@ public static class ComboCounter
     {
         BigInteger sum = BigInteger.Zero;
 
-        foreach (var b in BaselineQuants.All.Where(b => b.AllowedAsBaseConversion))
+        foreach (var b in BaselineQuants.All.Where(b => b.BaseConversionBase != null))
             sum += CountForBase(b);
 
         return sum;

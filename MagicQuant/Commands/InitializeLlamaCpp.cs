@@ -121,6 +121,7 @@ public class InitializeLlamaCpp : ICommand
         // ---------------------------------------------------------
         // 6. Build Llama.cpp (Runs as Normal User)
         // ---------------------------------------------------------
+        Cache.MagicQuantDirectory = magicQuantPath;
         var builder = new LlamaBuilder(magicQuantPath, sysInfo);
         await builder.PrepareAndBuildAsync(update);
 
