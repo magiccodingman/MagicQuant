@@ -81,13 +81,18 @@ public class Evolution : ICommand
         var bService = new BenchmarkService(pyManager);
         var qService = new QuantizationService(bService);
 
-        await qService.EnsureBaseModelAsync(true);
+        var bf16ModelGgufPath = await qService.EnsureBaseModelAsync(true);
         
+        var compatibilityService = new ModelCompatibilityService(pyManager);
+        await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
         
+        CliHelpers.ValidateCombinationLogicWorks(true);
+            
         var dbService = new QuantDatabaseService();
 
         // This ensures the DB is ready, populated, and valid before you proceed
         await dbService.InitializeAsync();
+
         
         
         

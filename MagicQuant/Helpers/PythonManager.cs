@@ -80,12 +80,12 @@ public class PythonManager
         return version;
     }
 
-    
+
     public string GetPythonExecutable()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             return Path.Combine(_envPath, "python.exe");
-        
+
         return Path.Combine(_envPath, "bin", "python");
     }
 
@@ -93,7 +93,7 @@ public class PythonManager
     {
         AnsiConsole.MarkupLine("[cyan]Configuring Python Environment...[/]");
 
-        if (CheckSuccessMarker()) 
+        if (CheckSuccessMarker())
         {
             AnsiConsole.MarkupLine("[green]✔ Python Environment is ready.[/]");
             return;
@@ -114,14 +114,14 @@ public class PythonManager
 
         // Install Pip Runner logic
         await SetupPipRunnerAsync();
-        
+
         WriteSuccessMarker();
     }
 
     private async Task SetupWindowsEmbedAsync()
     {
         string zipPath = Path.Combine(_basePath, MagicConstants.WinPythonZip);
-        
+
         // Download
         if (!File.Exists(zipPath))
         {
@@ -134,7 +134,7 @@ public class PythonManager
         // Extract
         AnsiConsole.MarkupLine("Extracting Python...");
         ZipFile.ExtractToDirectory(zipPath, _envPath);
-        
+
         // Cleanup Zip
         File.Delete(zipPath);
 
@@ -157,7 +157,6 @@ public class PythonManager
 
     private async Task SetupPipRunnerAsync()
     {
-        // Copy pip_runner.py from Helpers to Env
         string source = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Helpers", "pip_runner.py");
         string dest = Path.Combine(_envPath, "pip_runner.py");
 
@@ -168,20 +167,18 @@ public class PythonManager
         }
         else
         {
-             AnsiConsole.MarkupLine("[yellow]Warning: pip_runner.py not found in Helpers.[/]");
+            AnsiConsole.MarkupLine("[yellow]Warning: pip_runner.py not found in Helpers.[/]");
         }
-
-        // Upgrade Pip using the runner or standard module
+        
         string python = GetPythonExecutable();
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-             // FIX 2: Added null for env vars (4th arg)
-             await RunShellCommand("cmd.exe", $"/c \"{python}\" pip_runner.py install --upgrade pip setuptools wheel", _envPath, null);
+            await RunShellCommand("cmd.exe", $"/c \"{python}\" pip_runner.py install --upgrade pip setuptools wheel",
+                _envPath, null);
         }
         else
         {
-             // FIX 3: Added null for env vars (4th arg)
-             await RunShellCommand(python, "-m pip install --upgrade pip setuptools wheel", _basePath, null);
+            await RunShellCommand(python, "-m pip install --upgrade pip setuptools wheel", _basePath, null);
         }
     }
 
@@ -209,10 +206,32 @@ public class PythonManager
 
 
     private bool CheckSuccessMarker() => File.Exists(Path.Combine(_envPath, MagicConstants.SuccessJson));
-    private void WriteSuccessMarker() => File.WriteAllText(Path.Combine(_envPath, MagicConstants.SuccessJson), "{\"status\":\"success\"}");
+
+    private void WriteSuccessMarker() =>
+        File.WriteAllText(Path.Combine(_envPath, MagicConstants.SuccessJson), "{\"status\":\"success\"}");
+
+    public Task RunPythonScriptAsync(string scriptPath, string args = "", Dictionary<string, string>? envVars = null)
+    {
+        string python = GetPythonExecutable();
+        string exe, finalArgs;
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            exe = "cmd.exe";
+            finalArgs = $"/c \"\"{python}\" \"{scriptPath}\" {args}\"";
+        }
+        else
+        {
+            exe = python;
+            finalArgs = $"\"{scriptPath}\" {args}";
+        }
+
+        return RunShellCommand(exe, finalArgs, _envPath, envVars);
+    }
 
     // The Method Signature causing the issue
-    private async Task RunShellCommand(string exe, string args, string workingDir, Dictionary<string, string>? envVars = null)
+    private async Task RunShellCommand(string exe, string args, string workingDir,
+        Dictionary<string, string>? envVars = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -234,8 +253,14 @@ public class PythonManager
         using var proc = Process.Start(psi);
         if (proc == null) throw new InvalidOperationException($"Failed to start: {exe}");
 
-        proc.OutputDataReceived += (s, e) => { if (e.Data != null) AnsiConsole.MarkupLine($"[grey]{Markup.Escape(e.Data)}[/]"); };
-        proc.ErrorDataReceived  += (s, e) => { if (e.Data != null) AnsiConsole.MarkupLine($"[red]{Markup.Escape(e.Data)}[/]"); };
+        proc.OutputDataReceived += (s, e) =>
+        {
+            if (e.Data != null) AnsiConsole.MarkupLine($"[grey]{Markup.Escape(e.Data)}[/]");
+        };
+        proc.ErrorDataReceived += (s, e) =>
+        {
+            if (e.Data != null) AnsiConsole.MarkupLine($"[red]{Markup.Escape(e.Data)}[/]");
+        };
 
         proc.BeginOutputReadLine();
         proc.BeginErrorReadLine();

@@ -7,8 +7,14 @@ public static class Config
     public static readonly int MaxDataCollectedPerCategory = 5;
     public static readonly int MaxSurvivalRounds = 4;
     public static readonly double CollapseMultiplier = 1.5;
-    
-    
+
+    /*
+     * This is properly updated, but not really used. More for generic logs because the
+     * TensorWeightScheme is what's actually updated with the real ban logic both from the
+     * start and during runtime
+     */
+    public static List<TensorGroup> UnusedTensorGroups = new List<TensorGroup>();
+
     public static readonly List<string> SensitivityProbeGroups = new()
     {
         "embeddings",

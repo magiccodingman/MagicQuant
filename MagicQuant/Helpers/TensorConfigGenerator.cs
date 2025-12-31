@@ -9,6 +9,9 @@ public static class TensorConfigGenerator
 {
     public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? MissingTensorGroup = null)
     {
+        if (MissingTensorGroup != null && !MissingTensorGroup.Any())
+            MissingTensorGroup = null;
+        
         var allowedBaselines = BaselineQuants.All.Where(x => x.BaseConversionBase != null).ToList();
         var hybridQuants = new List<HybridQuant>();
 

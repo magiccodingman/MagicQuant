@@ -29,8 +29,7 @@ public static class ComboLogic
             var ids =
                 schemesForBase
                     .Where(s =>
-                        s.BannedGroups.IsDefault ||
-                        s.BannedGroups.IsEmpty ||
+                        s.BannedGroups.Count == 0 ||
                         !s.BannedGroups.Contains(group))
                     .Select(s => s.UniqueId)
                     .ToArray();
