@@ -8,6 +8,8 @@ namespace MQ.DB.Data;
 
 public class AppDbContext : DbContext
 {
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+    
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         var directory = Cache.MagicQuantDirectory;
