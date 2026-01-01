@@ -8,7 +8,7 @@ namespace MQ.DB.Models.DbModels;
 /// </summary>
 public class AiModelHashToId : ISQLiteEntity<AiModelHashToId>
 {
-    public int Id { get; set; }
+    public uint Id { get; set; }
     public string UniqueHash { get; set; }
     
     public void Configure(EntityTypeBuilder<AiModelHashToId> builder)
