@@ -2,7 +2,7 @@ namespace MagicQuant.Models;
 
 public class TensorWeight
 {
-    public TensorWeight(sbyte uniqueId, bool requiresImatrix, string[] names, TensorGroup[]? bannedGroups = null)
+    public TensorWeight(byte uniqueId, bool requiresImatrix, string[] names, TensorGroup[]? bannedGroups = null)
     {
         Names = names.ToList();
         UniqueId = uniqueId;
@@ -41,7 +41,7 @@ public class TensorWeight
     }
     
     public List<string>? Names { get; }
-    public sbyte UniqueId { get; }
+    public byte UniqueId { get; }
     
     public bool RequiresImatrix { get; }
     

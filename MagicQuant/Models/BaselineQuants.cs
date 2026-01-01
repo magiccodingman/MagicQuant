@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 namespace MagicQuant.Models;
 
 public record BaselineQuants(
-    sbyte UniqueId,
+    byte UniqueId,
     bool RequiresImatrix,
     ImmutableArray<string> Names,
     HybridQuant? BaseConversionBase = null)

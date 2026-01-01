@@ -4,7 +4,7 @@ namespace MagicQuant.Models;
 
 public sealed class TensorWeightScheme
 {
-    public sbyte UniqueId { get; }
+    public byte UniqueId { get; }
     public bool RequiresImatrix { get; }
     public ImmutableArray<string> Names { get; }
     public List<TensorGroup> BannedGroups { get; }
@@ -13,7 +13,7 @@ public sealed class TensorWeightScheme
     public ushort? BlockNeo { get; }
 
     private TensorWeightScheme(
-        sbyte uniqueId,
+        byte uniqueId,
         bool requiresImatrix,
         ImmutableArray<string> names,
         IEnumerable<TensorGroup> bannedGroups,

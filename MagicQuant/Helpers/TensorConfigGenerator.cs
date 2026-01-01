@@ -16,7 +16,7 @@ public static class TensorConfigGenerator
         var hybridQuants = new List<HybridQuant>();
 
         // Fast lookup for missing groups
-        var missingIds = MissingTensorGroup?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<sbyte>();
+        var missingIds = MissingTensorGroup?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
 
         // ---------------------------------------------------------
         // 1. BASELINE CONTROLS (One pure sample per allowed baseline)
@@ -141,7 +141,7 @@ public static class TensorConfigGenerator
         int dop = ComputeWorkerThreads(GetThreadCountSafe());
 
         // Cache baseQuant.UniqueId once (perf)
-        sbyte baseId = baseQuant.UniqueId;
+        byte baseId = baseQuant.UniqueId;
 
         var queue = new BlockingCollection<List<TensorConfig>>(
             boundedCapacity: Math.Max(2, dop * 2));

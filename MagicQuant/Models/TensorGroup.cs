@@ -12,7 +12,7 @@ public class TensorGroupInfo
 /// <summary>
 /// Represents a categorized group of tensors with a unique name and matching patterns.
 /// </summary>
-public record TensorGroup(sbyte UniqueId, string Name, ImmutableArray<string> Tensors)
+public record TensorGroup(byte UniqueId, string Name, ImmutableArray<string> Tensors)
 {
     /// <summary>
     /// Helper to map the group name to a single-character identifier for CLI or UI display.

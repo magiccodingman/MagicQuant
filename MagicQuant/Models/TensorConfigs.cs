@@ -7,28 +7,28 @@ namespace MagicQuant.Models;
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
 public readonly struct TensorConfig
 {
-    public readonly sbyte BaseQuant;
-    public readonly sbyte Embeddings;
-    public readonly sbyte LmHead;
-    public readonly sbyte AttnQ;
-    public readonly sbyte AttnKV;
-    public readonly sbyte AttnOutput;
-    public readonly sbyte FfnUpGate;
-    public readonly sbyte FfnDown;
-    public readonly sbyte MoeExperts;
-    public readonly sbyte MoeRouter;
+    public readonly byte BaseQuant;
+    public readonly byte Embeddings;
+    public readonly byte LmHead;
+    public readonly byte AttnQ;
+    public readonly byte AttnKV;
+    public readonly byte AttnOutput;
+    public readonly byte FfnUpGate;
+    public readonly byte FfnDown;
+    public readonly byte MoeExperts;
+    public readonly byte MoeRouter;
 
     public TensorConfig(
-        sbyte baseQuant,
-        sbyte embeddings,
-        sbyte lmHead,
-        sbyte attnQ,
-        sbyte attnKV,
-        sbyte attnOutput,
-        sbyte ffnUpGate,
-        sbyte ffnDown,
-        sbyte moeExperts,
-        sbyte moeRouter)
+        byte baseQuant,
+        byte embeddings,
+        byte lmHead,
+        byte attnQ,
+        byte attnKV,
+        byte attnOutput,
+        byte ffnUpGate,
+        byte ffnDown,
+        byte moeExperts,
+        byte moeRouter)
     {
         BaseQuant   = baseQuant;
         Embeddings  = embeddings;
@@ -45,7 +45,7 @@ public readonly struct TensorConfig
     // Converting constructor: HybridQuant -> TensorConfig
     public TensorConfig(HybridQuant h)
         : this(
-            baseQuant:  checked((sbyte)h.BaseQuant.UniqueId),
+            baseQuant:  checked((byte)h.BaseQuant.UniqueId),
             embeddings: GetSchemeId(h, TReg.Embeddings),
             lmHead:     GetSchemeId(h, TReg.LmHead),
             attnQ:      GetSchemeId(h, TReg.AttnQ),
@@ -57,7 +57,7 @@ public readonly struct TensorConfig
             moeRouter:  GetSchemeId(h, TReg.MoeRouter))
     { }
 
-    private static sbyte GetSchemeId(HybridQuant h, TensorGroup group)
+    private static byte GetSchemeId(HybridQuant h, TensorGroup group)
     {
         if (h.Tensors == null)
             throw new ArgumentNullException(nameof(h.Tensors));
@@ -85,7 +85,7 @@ public readonly struct TensorConfig
             throw new InvalidOperationException(
                 $"HybridQuant missing tensor entry for group '{group.Name}' (UniqueId={group.UniqueId}).");
 
-        return checked((sbyte)found.UniqueId);
+        return checked((byte)found.UniqueId);
     }
     
     // Conversion operator: HybridQuant -> TensorConfig

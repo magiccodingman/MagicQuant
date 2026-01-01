@@ -10,7 +10,7 @@ public static class ComboLogic
     private static readonly ImmutableArray<TensorGroup> GroupsOrdered =
         TReg.All.OrderBy(g => g.UniqueId).ToImmutableArray();
 
-    public static ImmutableArray<sbyte[]> GetAllowedSchemeIdsPerGroup(BaselineQuants baseQuant)
+    public static ImmutableArray<byte[]> GetAllowedSchemeIdsPerGroup(BaselineQuants baseQuant)
     {
         bool baseRequiresImatrix = baseQuant.RequiresImatrix;
 
@@ -22,7 +22,7 @@ public static class ComboLogic
         if (schemesForBase.IsEmpty)
             throw new InvalidOperationException("No tensor schemes available for this base.");
 
-        var builder = ImmutableArray.CreateBuilder<sbyte[]>();
+        var builder = ImmutableArray.CreateBuilder<byte[]>();
 
         foreach (var group in GroupsOrdered)
         {

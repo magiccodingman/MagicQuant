@@ -9,7 +9,7 @@ namespace MagicQuant.Services;
 
 public class QuantDatabaseService
 {
-    private const string DbFileName = "MagicQuant.duckdb";
+    private const string DbFileName = "MagicQuant_Combinations.duckdb";
     private const string TableName = "tensor_configs";
     
     // Connection string points to the file in your cache directory
@@ -63,7 +63,7 @@ public class QuantDatabaseService
         var sw = Stopwatch.StartNew();
 
         // 1. Drop and Recreate Table
-        // We map sbyte (C#) to TINYINT (DuckDB)
+        // We map byte (C#) to TINYINT (DuckDB)
         var createCmd = connection.CreateCommand();
         createCmd.CommandText = $@"
             DROP TABLE IF EXISTS {TableName};
