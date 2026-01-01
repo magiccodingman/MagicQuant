@@ -1,4 +1,5 @@
-using MagicQuant.Models;
+using MQ.DB;
+using MQ.DB.Models;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using Spectre.Console;

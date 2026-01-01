@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MagicQuant.Models;
+namespace MQ.DB.Models;
 
 public class LlamaBinaries
 {

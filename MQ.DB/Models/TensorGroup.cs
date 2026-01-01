@@ -2,7 +2,7 @@ using System.Collections.Immutable;
 using System.Linq;
 
 
-namespace MagicQuant.Models;
+namespace MQ.DB.Models;
 
 public class TensorGroupInfo
 {   

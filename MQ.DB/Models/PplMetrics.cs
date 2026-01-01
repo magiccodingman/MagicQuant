@@ -1,4 +1,4 @@
-namespace MagicQuant.Models;
+namespace MQ.DB.Models;
 
 public class PplMetrics
 {

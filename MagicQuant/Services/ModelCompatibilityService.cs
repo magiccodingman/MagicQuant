@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MagicQuant.Helpers;
-using MagicQuant.Models;
+using MQ.DB;
+using MQ.DB.Models;
 using Spectre.Console;
 
 namespace MagicQuant.Services;
@@ -73,7 +74,7 @@ public class ModelCompatibilityService
             // ---------------------------------------------------------
             
             TensorWeightScheme.NULL.BannedGroups.Clear();
-            MagicQuant.Cache.UnusedTensorGroups.Clear();
+            Cache.UnusedTensorGroups.Clear();
 
             int unusedCount = 0;
             int usedCount = 0;
@@ -93,7 +94,7 @@ public class ModelCompatibilityService
                 else
                 {
                     unusedCount++;
-                    MagicQuant.Cache.UnusedTensorGroups.Add(group);
+                    Cache.UnusedTensorGroups.Add(group);
 
                     foreach (var scheme in TensorWeightScheme.All)
                     {
@@ -136,7 +137,7 @@ public class ModelCompatibilityService
             
             if (unusedCount > 0)
             {
-                string unusedNames = string.Join(", ", MagicQuant.Cache.UnusedTensorGroups.Select(g => g.Name));
+                string unusedNames = string.Join(", ", Cache.UnusedTensorGroups.Select(g => g.Name));
                 AnsiConsole.MarkupLine($"   Unused Groups: [grey]{unusedNames}[/] (Forced to NULL)");
             }
 

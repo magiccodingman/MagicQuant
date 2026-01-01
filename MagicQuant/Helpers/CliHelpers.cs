@@ -5,6 +5,8 @@ using System.Text.RegularExpressions;
 using MagicQuant.Commands;
 using MagicQuant.Models;
 using Spectre.Console;
+using MQ.DB;
+using MQ.DB.Models;
 
 namespace MagicQuant.Helpers;
 

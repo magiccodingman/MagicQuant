@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
 
-namespace MagicQuant.Models;
+namespace MQ.DB.Models;
 
 public record BaselineQuants(
     byte UniqueId,

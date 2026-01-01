@@ -3,6 +3,8 @@ using MagicQuant.Helpers;
 using Spectre.Console;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
+using MQ.DB;
+using MQ.DB.Models;
 
 namespace MagicQuant.Commands;
 

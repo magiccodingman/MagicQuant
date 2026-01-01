@@ -1,6 +1,7 @@
 using MagicQuant.Models;
 using MagicQuant.Helpers;
-using MagicQuant;
+using MQ.DB;
+using MQ.DB.Models;
 using MagicQuant.Services;
 using Spectre.Console;
 

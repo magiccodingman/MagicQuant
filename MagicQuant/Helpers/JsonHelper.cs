@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Spectre.Console;
+using MQ.DB;
+using MQ.DB.Models;
 
 namespace MagicQuant.Helpers;
 

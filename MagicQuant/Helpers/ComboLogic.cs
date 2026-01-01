@@ -1,5 +1,6 @@
 using System.Numerics;
-using MagicQuant.Models;
+using MQ.DB;
+using MQ.DB.Models;
 using System.Collections.Immutable;
 
 namespace MagicQuant.Helpers;

@@ -25,4 +25,8 @@
       <Folder Include="DuckDB\" />
     </ItemGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\MQ.DB\MQ.DB.csproj" />
+    </ItemGroup>
+
 </Project>

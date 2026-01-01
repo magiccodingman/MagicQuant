@@ -1,6 +1,6 @@
-using MagicQuant.Models;
+using MQ.DB.Models;
 
-namespace MagicQuant;
+namespace MQ.DB;
 
 public class Cache
 {

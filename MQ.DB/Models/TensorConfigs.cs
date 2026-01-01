@@ -2,7 +2,7 @@ using System;
 using System.Linq;
 using System.Runtime.InteropServices;
 
-namespace MagicQuant.Models;
+namespace MQ.DB.Models;
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
 public readonly struct TensorConfig

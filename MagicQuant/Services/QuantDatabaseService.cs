@@ -2,7 +2,8 @@ using System.Diagnostics;
 using System.Numerics;
 using DuckDB.NET.Data;
 using MagicQuant.Helpers;
-using MagicQuant.Models;
+using MQ.DB;
+using MQ.DB.Models;
 using Spectre.Console;
 
 namespace MagicQuant.Services;

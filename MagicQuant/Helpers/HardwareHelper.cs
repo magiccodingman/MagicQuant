@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
-using MagicQuant.Models;
+using MQ.DB;
+using MQ.DB.Models;
 using System.Diagnostics;
 
 namespace MagicQuant.Helpers;

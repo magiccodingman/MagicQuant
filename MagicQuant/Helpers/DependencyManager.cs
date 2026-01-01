@@ -1,7 +1,8 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
-using MagicQuant.Models;
+using MQ.DB;
+using MQ.DB.Models;
 using Spectre.Console;
 
 namespace MagicQuant.Helpers;

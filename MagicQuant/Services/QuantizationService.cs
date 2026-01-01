@@ -1,9 +1,10 @@
-using MagicQuant.Models;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using MagicQuant.Helpers;
+using MQ.DB;
+using MQ.DB.Models;
 
 namespace MagicQuant.Services;
 
