@@ -8,6 +8,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="Blake3" Version="2.2.0" />
       <PackageReference Include="DuckDB.NET.Data.Full" Version="1.4.3" />
       <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
       <PackageReference Include="Spectre.Console" Version="0.54.0" />

@@ -111,7 +111,7 @@ public static class CliHelpers
         }
         else
         {
-            var RealBans = TensorConfigGenerator.GenerateRequiredDataSampleCombos(Config.UnusedTensorGroups);
+            var RealBans = TensorConfigGenerator.GenerateRequiredDataSampleCombos(Cache.UnusedTensorGroups);
 
             Console.WriteLine();
             Console.WriteLine("---------------");

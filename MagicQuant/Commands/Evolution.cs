@@ -77,6 +77,10 @@ public class Evolution : ICommand
             // If not, we might want to warn or rely on defaults.
             AnsiConsole.MarkupLine("[yellow]Warning: Llama binaries path not set in Cache. (Did Initialization run?)[/]");
         }
+
+
+        var ID = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
+        
         var pyManager = new PythonManager(Cache.MagicQuantDirectory);
         var bService = new BenchmarkService(pyManager);
         var qService = new QuantizationService(bService);

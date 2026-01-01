@@ -49,4 +49,12 @@ public class Cache
         F16 = 2,
         F32 = 3
     }
+    
+    
+    /*
+     * This is properly updated, but not really used. More for generic logs because the
+     * TensorWeightScheme is what's actually updated with the real ban logic both from the
+     * start and during runtime
+     */
+    public static List<TensorGroup> UnusedTensorGroups = new List<TensorGroup>();
 }
