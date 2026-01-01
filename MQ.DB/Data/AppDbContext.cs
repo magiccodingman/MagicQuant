@@ -10,11 +10,28 @@ public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
     
+    public AppDbContext()
+    {
+    }
+    
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
-        var directory = Cache.MagicQuantDirectory;
-        var dbPath = Path.Combine(directory, "MagicQuant_SQLite.db");
-        optionsBuilder.UseSqlite($"Data Source={dbPath};Foreign Keys=True;");
+        // If the options are already configured, 
+        // skip this entire block so we don't touch the Cache.
+        if (!optionsBuilder.IsConfigured)
+        {
+            var directory = Cache.MagicQuantDirectory;
+
+            // If we are running a command and Cache is null, fallback to local folder.
+            // This prevents the "Value cannot be null" crash.
+            if (string.IsNullOrEmpty(directory))
+            {
+                directory = Directory.GetCurrentDirectory();
+            }
+
+            var dbPath = Path.Combine(directory, "MagicQuant_SQLite.db");
+            optionsBuilder.UseSqlite($"Data Source={dbPath};Foreign Keys=True;");
+        }
     }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
