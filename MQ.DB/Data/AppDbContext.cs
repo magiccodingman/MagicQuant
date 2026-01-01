@@ -17,36 +17,43 @@ public class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Fast and automatic EF config loading
+        // Load all configs found in this assembly.
+        // Pick up entities with ISQLiteEntity<T>
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
 
-        // Manual check to ensure all DbSet<T> have IAutoEntityTypeConfiguration<T>
-        var dbSetTypes = this.GetType()
+        // Ensure strict adherence to the pattern.
+        ValidateDbSetsImplementInterface();
+
+        base.OnModelCreating(modelBuilder);
+    }
+
+    private void ValidateDbSetsImplementInterface()
+    {
+        // Get all properties that are DbSet<T>
+        var dbSetGenericTypes = this.GetType()
             .GetProperties()
             .Where(p => p.PropertyType.IsGenericType &&
                         p.PropertyType.GetGenericTypeDefinition() == typeof(DbSet<>))
             .Select(p => p.PropertyType.GetGenericArguments()[0])
-            .ToList();
+            .ToHashSet();
 
-        var configuredTypes = Assembly.GetExecutingAssembly()
+        // Get all types in assembly that implement ISQLiteEntity<T>
+        var configuredTypes = typeof(AppDbContext).Assembly
             .GetTypes()
-            .Where(t => !t.IsInterface && !t.IsAbstract)
-            .SelectMany(t =>
-                t.GetInterfaces()
-                    .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ISQLiteEntity<>))
-                    .Select(i => i.GetGenericArguments()[0])
-            ).ToHashSet();
+            .Where(t => t.GetInterfaces().Any(i => 
+                i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ISQLiteEntity<>)))
+            .ToHashSet();
 
-        foreach (var dbSetType in dbSetTypes)
+        // Find the difference
+        var missingConfigs = dbSetGenericTypes.Except(configuredTypes).ToList();
+
+        if (missingConfigs.Any())
         {
-            if (!configuredTypes.Contains(dbSetType))
-            {
-                throw new InvalidOperationException(
-                    $"DbSet<{dbSetType.Name}> is declared but does not implement IAutoEntityTypeConfiguration<{dbSetType.Name}>."
-                );
-            }
+            var names = string.Join(", ", missingConfigs.Select(t => t.Name));
+            throw new InvalidOperationException(
+                $"STRICT MODE ERROR: The following DbSets do not implement ISQLiteEntity<T>: [{names}]. " +
+                "Please implement the interface to ensure configuration is centralized."
+            );
         }
-
-        base.OnModelCreating(modelBuilder);
     }
 }
