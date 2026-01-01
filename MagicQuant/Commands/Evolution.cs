@@ -78,8 +78,11 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine("[yellow]Warning: Llama binaries path not set in Cache. (Did Initialization run?)[/]");
         }
 
-
-        var ID = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
+        Console.WriteLine("Acquiring unique model ID...");
+        
+        Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
+        
+        AnsiConsole.MarkupLine($"[green] Model ID Created/Found: {Cache.CurrentModelId}[/]");
         
         var pyManager = new PythonManager(Cache.MagicQuantDirectory);
         var bService = new BenchmarkService(pyManager);

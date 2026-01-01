@@ -57,4 +57,6 @@ public class Cache
      * start and during runtime
      */
     public static List<TensorGroup> UnusedTensorGroups = new List<TensorGroup>();
+    
+    public static string CurrentModelId { get; set; }
 }
