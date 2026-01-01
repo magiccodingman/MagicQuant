@@ -23,6 +23,7 @@
 
     <ItemGroup>
       <Folder Include="DuckDB\" />
+      <Folder Include="Models\SqlData\" />
     </ItemGroup>
 
 </Project>

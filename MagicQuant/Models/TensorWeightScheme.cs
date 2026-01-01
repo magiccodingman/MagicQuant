@@ -8,8 +8,6 @@ public sealed class TensorWeightScheme
     public bool RequiresImatrix { get; }
     public ImmutableArray<string> Names { get; }
     public List<TensorGroup> BannedGroups { get; }
-    public bool AlwaysBuild { get; }
-    
     public ushort? BlockNeo { get; }
 
     private TensorWeightScheme(
