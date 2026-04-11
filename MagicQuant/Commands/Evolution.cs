@@ -101,10 +101,20 @@ public class Evolution : ICommand
         // This ensures the DB is ready, populated, and valid before you proceed
         await dbService.InitializeAsync();
 
+        AnsiConsole.Write(new Rule("[yellow]Required Sample Generation[/]") { Justification = Justify.Left });
+
+        var requiredSamples = TensorConfigGenerator.GenerateRequiredDataSampleCombos(Cache.UnusedTensorGroups);
+
+        AnsiConsole.MarkupLine($"[grey]Queued required samples:[/] [cyan]{requiredSamples.Count:N0}[/]");
+        AnsiConsole.MarkupLine("[grey]SQLite will be treated as the source of truth for completed samples.[/]");
+
+        var summary = await qService.ProcessHybridBatchAsync(requiredSamples);
+
+        AnsiConsole.MarkupLine("[bold green]Sample generation phase complete.[/]");
+        AnsiConsole.MarkupLine($"  [green]Completed:[/] {summary.Completed:N0}");
+        AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {summary.Skipped:N0}");
+        AnsiConsole.MarkupLine($"  [red]Failed:[/] {summary.Failed:N0}");
         
-        
-        
-        // Todo: Have an end deletion process to remove the GGUF's and related success jsons, but not imatrix
     }
 
     private void ShowEvolutionHelp()

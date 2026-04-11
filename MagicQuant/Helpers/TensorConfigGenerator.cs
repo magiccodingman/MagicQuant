@@ -12,7 +12,7 @@ public static class TensorConfigGenerator
     {
         if (MissingTensorGroup != null && !MissingTensorGroup.Any())
             MissingTensorGroup = null;
-        
+
         var allowedBaselines = BaselineQuants.All.Where(x => x.BaseConversionBase != null).ToList();
         var hybridQuants = new List<HybridQuant>();
 
@@ -20,34 +20,26 @@ public static class TensorConfigGenerator
         var missingIds = MissingTensorGroup?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
 
         // ---------------------------------------------------------
-        // 1. BASELINE CONTROLS (One pure sample per allowed baseline)
+        // 1. PURE BASELINE CONTROLS
         // ---------------------------------------------------------
+        // These must be TRUE baseline exports with NO tensor overrides at all.
+        // Otherwise you are not testing the baseline quant, you're testing a weird hybrid.
         int baseTestsRequired = 0;
         foreach (var baseline in allowedBaselines)
         {
             baseTestsRequired++;
-            var hq = new HybridQuant
+
+            hybridQuants.Add(new HybridQuant
             {
                 BaseQuant = baseline,
-                Tensors = TReg.All
-                    .Select(g => new HybridTensor
-                    {
-                        TGroup = g,
-                        // If missing, mark NULL. Else default to BF16.
-                        TensorType = missingIds.Contains(g.UniqueId)
-                            ? TensorWeightScheme.NULL
-                            : TensorWeightScheme.BF16_F16
-                    })
-                    .ToList()
-            };
-
-            hybridQuants.Add(hq);
+                Tensors = new List<HybridTensor>()
+            });
         }
 
-        AnsiConsole.MarkupLine($"[bold green]Required BF16 base hybrid tests:[/] {baseTestsRequired:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Required pure baseline hybrid tests:[/] {baseTestsRequired:N0}");
 
         // ---------------------------------------------------------
-        // 2. ISOLATION SAMPLES (Always BF16 Base, isolate one tensor at a time)
+        // 2. ISOLATION SAMPLES (BF16/F16/F32 source base, one tensor altered)
         // ---------------------------------------------------------
         var tensorWeights = TensorWeightScheme.All
             .Where(x => x != TensorWeightScheme.NULL && x != TensorWeightScheme.BF16_F16)
@@ -55,12 +47,10 @@ public static class TensorConfigGenerator
 
         int isolatedSamplesRequired = 0;
 
-        // We always use the BF16 baseline for isolation tests
         var isolationBase = BaselineQuants.GetBF16Quant();
 
         foreach (var weight in tensorWeights)
         {
-            // Get valid targets: Start with All, remove Banned by Scheme, remove Missing by User
             var validTargets = TReg.All.Where(x => !weight.BannedGroups.Contains(x)).ToList();
 
             if (missingIds.Count > 0)
@@ -72,7 +62,6 @@ public static class TensorConfigGenerator
             {
                 isolatedSamplesRequired++;
 
-                // Create fresh list with default logic
                 var tensors = TReg.All.Select(g => new HybridTensor
                 {
                     TGroup = g,
@@ -81,17 +70,14 @@ public static class TensorConfigGenerator
                         : TensorWeightScheme.BF16_F16
                 }).ToList();
 
-                // Set the isolated target
                 var foundQuant = tensors.First(x => x.TGroup == group);
                 foundQuant.TensorType = weight;
 
-                var hq = new HybridQuant
+                hybridQuants.Add(new HybridQuant
                 {
                     BaseQuant = isolationBase,
                     Tensors = tensors
-                };
-
-                hybridQuants.Add(hq);
+                });
             }
         }
 

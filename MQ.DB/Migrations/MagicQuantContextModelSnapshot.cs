@@ -73,9 +73,6 @@ namespace MQ.DB.Migrations
                     b.Property<uint>("AiBenchmarkId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<uint>("AiBenchmarkId1")
-                        .HasColumnType("INTEGER");
-
                     b.Property<byte>("Category")
                         .HasColumnType("INTEGER");
 
@@ -91,8 +88,6 @@ namespace MQ.DB.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("AiBenchmarkId");
-
-                    b.HasIndex("AiBenchmarkId1");
 
                     b.ToTable("CategoryBenchmark");
                 });
@@ -162,15 +157,9 @@ namespace MQ.DB.Migrations
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.CategoryBenchmark", b =>
                 {
-                    b.HasOne("MQ.DB.Models.DbModels.AiBenchmark", null)
+                    b.HasOne("MQ.DB.Models.DbModels.AiBenchmark", "AiBenchmark")
                         .WithMany("CategorBenchmarks")
                         .HasForeignKey("AiBenchmarkId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("MQ.DB.Models.DbModels.AiBenchmark", "AiBenchmark")
-                        .WithMany()
-                        .HasForeignKey("AiBenchmarkId1")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 

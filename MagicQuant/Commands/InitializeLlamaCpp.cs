@@ -62,6 +62,7 @@ public class InitializeLlamaCpp : ICommand
         // 3. Hardware Detection
         // ---------------------------------------------------------
         var sysInfo = HardwareHelper.GetSystemInfo();
+        Cache.SysInfo = sysInfo;
         AnsiConsole.Write(new Rule("[yellow]System Detection[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"Detected GPU: [green]{sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor}[/] ([blue]{sysInfo.GpuInfo.FirstOrDefault()?.GpuName}[/] - {sysInfo.GpuInfo.Sum(x => x.VramGb):F1} GB)");
         AnsiConsole.MarkupLine($"Detected RAM: [blue]{sysInfo.RamGb:F1} GB[/]");

@@ -17,6 +17,87 @@ public class BenchmarkService
     private readonly LlamaBinaries _bins;
     public readonly PythonManager _pyManager;
 
+    private static readonly string[] BaseDomains = { "general", "code", "math" };
+    private static readonly string[] SampleDomains = { "general" };
+
+    private static bool IsNativeBaseModel(HybridQuant quantConfig)
+    {
+        return quantConfig.BaseQuant.UniqueId == BaselineQuants.NativeSourceUniqueId;
+    }
+
+    private static IReadOnlyCollection<string> ResolveRequestedDomains(
+        HybridQuant quantConfig,
+        IReadOnlyCollection<string>? domainsOverride)
+    {
+        if (domainsOverride != null && domainsOverride.Count > 0)
+        {
+            return domainsOverride
+                .Select(x => x.Trim().ToLowerInvariant())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        return IsNativeBaseModel(quantConfig) ? BaseDomains : SampleDomains;
+    }
+
+    private static bool RequiresKld(HybridQuant quantConfig)
+    {
+        return !IsNativeBaseModel(quantConfig);
+    }
+
+    private static ulong TryGetModelSize(string modelPath)
+    {
+        return File.Exists(modelPath) ? (ulong)new FileInfo(modelPath).Length : 0UL;
+    }
+
+    private static bool IsPositiveKld(double? kld)
+    {
+        return kld.HasValue && kld.Value > 0d;
+    }
+
+    public async Task<bool> TryReuseExistingBenchmarksAsync(
+        HybridQuant quantConfig,
+        string modelPath,
+        string benchDir,
+        string? klLogitsDir,
+        IReadOnlyCollection<string>? domainsOverride = null)
+    {
+        var requestedDomains = ResolveRequestedDomains(quantConfig, domainsOverride);
+        bool requireKld = RequiresKld(quantConfig);
+
+        if (!TryReadExistingBenchmarkArtifacts(
+                benchDir: benchDir,
+                requestedDomains: requestedDomains,
+                requireKld: requireKld,
+                result: out var reused))
+        {
+            return false;
+        }
+
+        reused.ModelSizeBytes ??= TryGetModelSize(modelPath);
+
+        using var db = new MagicQuantContext();
+
+        var currentHashStr = Cache.CurrentModelId;
+        var aiModelHash = await db.AiModelHashes
+            .FirstOrDefaultAsync(x => x.UniqueHash == currentHashStr);
+
+        if (aiModelHash == null)
+        {
+            aiModelHash = new AiModelHash { UniqueHash = currentHashStr };
+            db.AiModelHashes.Add(aiModelHash);
+            await db.SaveChangesAsync();
+        }
+
+        var tensorCombo = await GetOrCreateTensorComboAsync(db, quantConfig);
+
+        await SaveBenchmarkToDbAsync(db, aiModelHash, tensorCombo, reused, modelPath);
+        await WriteMetricsJsonAsync(benchDir, reused);
+
+        return true;
+    }
+
     // Constants
     private static readonly string[] OomMarkers =
     {
@@ -50,14 +131,16 @@ public class BenchmarkService
         int tokenTarget = 32768,
         int? startNgl = null,
         string? klLogitsDir = null,
-        bool saveLogits = false)
+        bool saveLogits = false,
+        IReadOnlyCollection<string>? domainsOverride = null)
     {
         Directory.CreateDirectory(benchDir);
-        string jsonPath = Path.Combine(benchDir, "bench_metrics.json");
+
+        var requestedDomains = ResolveRequestedDomains(quantConfig, domainsOverride);
+        bool requireKld = RequiresKld(quantConfig);
 
         using var db = new MagicQuantContext();
-        
-        // 1. Resolve Model Hash
+
         var currentHashStr = Cache.CurrentModelId;
         var aiModelHash = await db.AiModelHashes
             .FirstOrDefaultAsync(x => x.UniqueHash == currentHashStr);
@@ -69,57 +152,78 @@ public class BenchmarkService
             await db.SaveChangesAsync();
         }
 
-        // 2. Resolve Tensor Combo (Fixed to use Constructor)
         var tensorCombo = await GetOrCreateTensorComboAsync(db, quantConfig);
 
-        // 3. Check if Benchmark already exists
         var existingBench = await db.AiBenchmarks
+            .Include(x => x.CategorBenchmarks)
+            .AsNoTracking()
             .FirstOrDefaultAsync(b => b.AiModelHashId == aiModelHash.Id && b.TensorComboId == tensorCombo.Id);
 
-        if (existingBench != null)
+        // 1. If DB already has everything required, trust DB first and don't rerun.
+        if (existingBench != null && HasRequiredCategories(existingBench, requestedDomains, requireKld))
         {
-            AnsiConsole.MarkupLine($"[green]Benchmark found in database for Combo ID {tensorCombo.Id}. Skipping execution.[/]");
-            
-            if (File.Exists(jsonPath))
+            if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var diskResult))
             {
-                var cachedJson = await File.ReadAllTextAsync(jsonPath);
-                if (!string.IsNullOrWhiteSpace(cachedJson))
-                {
-                    var deserializedMetrics = JsonSerializer.Deserialize<BenchmarkResult>(cachedJson);
-                    if (deserializedMetrics != null) return deserializedMetrics;
-                }
+                diskResult.ModelSizeBytes ??= existingBench.SizeBytes;
+                return diskResult;
             }
-            return new BenchmarkResult(); 
+
+            return BuildResultFromDb(existingBench, requestedDomains);
         }
 
-        // ----------------------------------------------------------------
-        // 4. Execution
-        // ----------------------------------------------------------------
-
-        var result = new BenchmarkResult();
-
-        // A. Run Llama-Bench
-        await ExclusiveBenchLock.WaitAsync();
-        try
+        // 2. If disk already has reusable artifacts, sync DB and return.
+        if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var reused))
         {
-            AnsiConsole.MarkupLine("[yellow]Running Llama-Bench (Exclusive Mode)...[/]");
-            result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, startNgl);
-        }
-        finally
-        {
-            ExclusiveBenchLock.Release();
+            reused.ModelSizeBytes ??= TryGetModelSize(modelPath);
+            await SaveBenchmarkToDbAsync(db, aiModelHash, tensorCombo, reused, modelPath);
+            await WriteMetricsJsonAsync(benchDir, reused);
+            return reused;
         }
 
-        // B. Run Perplexity
-        var domains = new[] { "general", "code", "math" };
+        // 3. Otherwise run only the pieces that are actually missing/invalid.
+        var result = new BenchmarkResult
+        {
+            ModelSizeBytes = TryGetModelSize(modelPath)
+        };
+
+        string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
+        if (TryReadExistingLlamaBenchLog(llamaBenchPath, out var existingLlamaBench))
+        {
+            result.LlamaBench = existingLlamaBench;
+        }
+        else
+        {
+            await ExclusiveBenchLock.WaitAsync();
+            try
+            {
+                AnsiConsole.MarkupLine("[yellow]Running Llama-Bench (Exclusive Mode)...[/]");
+                result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, startNgl);
+            }
+            finally
+            {
+                ExclusiveBenchLock.Release();
+            }
+        }
+
         var corporaRoot = Path.Combine(Path.GetDirectoryName(benchDir)!, "_ppl_corpora");
         Directory.CreateDirectory(corporaRoot);
 
         if (saveLogits && !string.IsNullOrEmpty(klLogitsDir))
             Directory.CreateDirectory(klLogitsDir);
 
-        foreach (var domain in domains)
+        foreach (var domain in requestedDomains)
         {
+            if (TryReadExistingPplLog(
+                    benchDir: benchDir,
+                    domain: domain,
+                    allowMissingKld: !requireKld,
+                    requirePositiveKld: requireKld,
+                    metrics: out var existingPpl))
+            {
+                result.Perplexity[domain] = existingPpl;
+                continue;
+            }
+
             string corpusPath = Path.Combine(corporaRoot, $"ppl_corpus_{domain}.txt");
             await PreparePplCorpusAsync(domain, corpusPath, tokenTarget);
 
@@ -128,9 +232,21 @@ public class BenchmarkService
             {
                 AnsiConsole.MarkupLine($"[yellow]Running Perplexity ({domain})...[/]");
                 var metrics = await RunPplBenchmarkAsync(
-                    modelPath, benchDir, domain, corpusPath,
-                    startNgl, klLogitsDir, saveLogits
-                );
+                    modelPath: modelPath,
+                    benchDir: benchDir,
+                    domain: domain,
+                    corpusPath: corpusPath,
+                    startNgl: startNgl,
+                    klLogitsDir: klLogitsDir,
+                    saveLogits: saveLogits);
+
+                if (requireKld && !IsPositiveKld(metrics.Kld))
+                {
+                    throw new InvalidOperationException(
+                        $"Non-base benchmark produced invalid KLD for domain '{domain}'. " +
+                        $"KLD must exist and be > 0. Parsed value: {(metrics.Kld.HasValue ? metrics.Kld.Value.ToString() : "null")}");
+                }
+
                 result.Perplexity[domain] = metrics;
             }
             finally
@@ -139,11 +255,7 @@ public class BenchmarkService
             }
         }
 
-        // 5. Save Results
-        await File.WriteAllTextAsync(jsonPath,
-            JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
-
-        // Pass modelPath so we can calculate SizeBytes
+        await WriteMetricsJsonAsync(benchDir, result);
         await SaveBenchmarkToDbAsync(db, aiModelHash, tensorCombo, result, modelPath);
 
         return result;
@@ -158,7 +270,7 @@ public class BenchmarkService
         // 1. Extract values into local variables. 
         //    Default to 0 (NULL scheme) if not present in the mutable list.
         byte baseQuant = quant.BaseQuant.UniqueId;
-        
+
         byte embeddings = 0;
         byte lmHead = 0;
         byte attnQ = 0;
@@ -225,91 +337,103 @@ public class BenchmarkService
     }
 
     private async Task SaveBenchmarkToDbAsync(
-        MagicQuantContext db, 
-        AiModelHash model, 
-        TensorCombo combo, 
+        MagicQuantContext db,
+        AiModelHash model,
+        TensorCombo combo,
         BenchmarkResult res,
         string modelPath)
     {
         using var transaction = await db.Database.BeginTransactionAsync();
+
         try
         {
-            // Calculate File Size
-            ulong sizeBytes = 0;
-            if (File.Exists(modelPath))
+            bool isBaseModel =
+                combo.BaseQuant == BaselineQuants.NativeSourceUniqueId &&
+                combo.Embeddings == 0 &&
+                combo.LmHead == 0 &&
+                combo.AttnQ == 0 &&
+                combo.AttnKV == 0 &&
+                combo.AttnOutput == 0 &&
+                combo.FfnUpGate == 0 &&
+                combo.FfnDown == 0 &&
+                combo.MoeExperts == 0 &&
+                combo.MoeRouter == 0;
+
+            ulong sizeBytes =
+                res.ModelSizeBytes.GetValueOrDefault() > 0
+                    ? res.ModelSizeBytes!.Value
+                    : (File.Exists(modelPath) ? (ulong)new FileInfo(modelPath).Length : 0UL);
+
+            var bench = await db.AiBenchmarks
+                .Include(x => x.CategorBenchmarks)
+                .FirstOrDefaultAsync(x =>
+                    x.AiModelHashId == model.Id &&
+                    x.TensorComboId == combo.Id);
+
+            if (bench == null)
             {
-                sizeBytes = (ulong)new FileInfo(modelPath).Length;
+                bench = new AiBenchmark
+                {
+                    AiModelHashId = model.Id,
+                    TensorComboId = combo.Id
+                };
+
+                db.AiBenchmarks.Add(bench);
             }
 
-            // 1. Create Parent Benchmark
-            var bench = new AiBenchmark
+            bench.TokensPerSecond = res.LlamaBench?.Tps ?? 0;
+            bench.Ngl = (byte)(res.LlamaBench?.Ngl ?? 0);
+            bench.SizeBytes = sizeBytes;
+
+            await db.SaveChangesAsync();
+
+            if (bench.CategorBenchmarks != null && bench.CategorBenchmarks.Count > 0)
             {
-                AiModelHashId = model.Id,
-                TensorComboId = combo.Id,
-                
-                // Map LlamaBench fields
-                TokensPerSecond = res.LlamaBench?.Tps ?? 0,
-                Ngl = (byte)(res.LlamaBench?.Ngl ?? 0),
-                SizeBytes = sizeBytes
-            };
+                db.Set<CategoryBenchmark>().RemoveRange(bench.CategorBenchmarks);
+                await db.SaveChangesAsync();
+            }
 
-            db.AiBenchmarks.Add(bench);
-            await db.SaveChangesAsync(); // Generates bench.Id
-
-            // 2. Create Child Category Benchmarks
             var categories = new List<CategoryBenchmark>();
 
-            // Helper to determine if we need to force 0.0 KLD for Base Model
-            // (Checks if everything is 0 except BaseQuant which is BF16/F16)
-            bool isBaseModel = combo.BaseQuant == TensorWeightScheme.BF16_F16.UniqueId &&
-                               combo.Embeddings == 0 && combo.LmHead == 0;
-
-            // Map "general" -> BenchmarkCategory.General (1)
-            if (res.Perplexity.ContainsKey("general"))
+            foreach (var kvp in res.Perplexity)
             {
-                var m = res.Perplexity["general"];
-                var cb = new CategoryBenchmark
+                string domain = kvp.Key.ToLowerInvariant();
+                var m = kvp.Value;
+
+                byte category = domain switch
+                {
+                    "general" => (byte)BenchmarkCategory.General,
+                    "math" => (byte)BenchmarkCategory.Math,
+                    "code" => (byte)BenchmarkCategory.Code,
+                    _ => throw new InvalidOperationException($"Unknown benchmark domain '{domain}'.")
+                };
+
+                double kld;
+                if (isBaseModel)
+                {
+                    kld = 0d;
+                }
+                else
+                {
+                    if (!IsPositiveKld(m.Kld))
+                    {
+                        throw new InvalidOperationException(
+                            $"Refusing to save non-base benchmark with invalid KLD. Domain='{domain}', KLD='{m.Kld?.ToString() ?? "null"}'");
+                    }
+
+                    kld = m.Kld!.Value;
+                }
+
+                categories.Add(new CategoryBenchmark
                 {
                     AiBenchmarkId = bench.Id,
-                    Category = (byte)BenchmarkCategory.General,
+                    Category = category,
                     Ppl = m.Ppl,
                     PplError = m.PplError,
-                    Kld = m.Kld ?? (isBaseModel ? 0.0 : 0.0) // Defaults to 0 if null
-                };
-                categories.Add(cb);
+                    Kld = kld
+                });
             }
 
-            // Map "code" -> BenchmarkCategory.Code (3)
-            if (res.Perplexity.ContainsKey("code"))
-            {
-                var m = res.Perplexity["code"];
-                var cb = new CategoryBenchmark
-                {
-                    AiBenchmarkId = bench.Id,
-                    Category = (byte)BenchmarkCategory.Code,
-                    Ppl = m.Ppl,
-                    PplError = m.PplError,
-                    Kld = m.Kld ?? (isBaseModel ? 0.0 : 0.0)
-                };
-                categories.Add(cb);
-            }
-
-            // Map "math" -> BenchmarkCategory.Math (2)
-            if (res.Perplexity.ContainsKey("math"))
-            {
-                var m = res.Perplexity["math"];
-                var cb = new CategoryBenchmark
-                {
-                    AiBenchmarkId = bench.Id,
-                    Category = (byte)BenchmarkCategory.Math,
-                    Ppl = m.Ppl,
-                    PplError = m.PplError,
-                    Kld = m.Kld ?? (isBaseModel ? 0.0 : 0.0)
-                };
-                categories.Add(cb);
-            }
-
-            // Batch Insert Categories
             if (categories.Count > 0)
             {
                 db.Set<CategoryBenchmark>().AddRange(categories);
@@ -317,13 +441,236 @@ public class BenchmarkService
             }
 
             await transaction.CommitAsync();
-            AnsiConsole.MarkupLine("[green]Benchmarks saved to Database successfully.[/]");
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Failed to save benchmarks to DB: {ex.Message}[/]");
             await transaction.RollbackAsync();
+
+            var inner = ex.InnerException?.Message;
+            if (!string.IsNullOrWhiteSpace(inner))
+            {
+                AnsiConsole.MarkupLine($"[red]Failed to save benchmarks to DB:[/] {Markup.Escape(ex.Message)}");
+                AnsiConsole.MarkupLine($"[red]Inner Exception:[/] {Markup.Escape(inner)}");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[red]Failed to save benchmarks to DB:[/] {Markup.Escape(ex.Message)}");
+            }
+
+            throw;
         }
+    }
+
+    private async Task WriteMetricsJsonAsync(string benchDir, BenchmarkResult result)
+    {
+        Directory.CreateDirectory(benchDir);
+
+        string jsonPath = Path.Combine(benchDir, "bench_metrics.json");
+        await File.WriteAllTextAsync(
+            jsonPath,
+            JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private bool TryReadExistingBenchmarkArtifacts(
+        string benchDir,
+        IReadOnlyCollection<string> requestedDomains,
+        bool requireKld,
+        out BenchmarkResult result)
+    {
+        result = new BenchmarkResult();
+
+        string jsonPath = Path.Combine(benchDir, "bench_metrics.json");
+        if (File.Exists(jsonPath))
+        {
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<BenchmarkResult>(File.ReadAllText(jsonPath));
+                if (parsed != null && IsReusableBenchmarkResult(parsed, requestedDomains, requireKld))
+                {
+                    result = parsed;
+                    return true;
+                }
+            }
+            catch
+            {
+                // fall through and try rebuilding from individual logs
+            }
+        }
+
+        string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
+        if (!TryReadExistingLlamaBenchLog(llamaBenchPath, out var llamaBench))
+            return false;
+
+        var rebuilt = new BenchmarkResult
+        {
+            LlamaBench = llamaBench
+        };
+
+        foreach (var domain in requestedDomains)
+        {
+            if (!TryReadExistingPplLog(
+                    benchDir: benchDir,
+                    domain: domain,
+                    allowMissingKld: !requireKld,
+                    requirePositiveKld: requireKld,
+                    metrics: out var ppl))
+            {
+                return false;
+            }
+
+            rebuilt.Perplexity[domain] = ppl;
+        }
+
+        result = rebuilt;
+        return true;
+    }
+
+    private bool IsReusableBenchmarkResult(
+        BenchmarkResult result,
+        IReadOnlyCollection<string> requestedDomains,
+        bool requireKld)
+    {
+        if (result.LlamaBench == null || !result.LlamaBench.Tps.HasValue || result.LlamaBench.Tps.Value <= 0)
+            return false;
+
+        foreach (var domain in requestedDomains)
+        {
+            if (!result.Perplexity.TryGetValue(domain, out var ppl))
+                return false;
+
+            if (ppl.Ppl <= 0 || ppl.PplError < 0)
+                return false;
+
+            if (requireKld && !IsPositiveKld(ppl.Kld))
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool TryReadExistingLlamaBenchLog(string logPath, out LlamaBenchMetrics metrics)
+    {
+        metrics = null!;
+
+        if (!File.Exists(logPath) || new FileInfo(logPath).Length == 0)
+            return false;
+
+        try
+        {
+            var parsed = ParseLlamaBench(logPath);
+            if (parsed.Tps.HasValue && parsed.Tps.Value > 0)
+            {
+                metrics = parsed;
+                return true;
+            }
+        }
+        catch
+        {
+            // ignore and return false
+        }
+
+        return false;
+    }
+
+    private bool TryReadExistingPplLog(
+        string benchDir,
+        string domain,
+        bool allowMissingKld,
+        bool requirePositiveKld,
+        out PplMetrics metrics)
+    {
+        metrics = null!;
+
+        string logPath = Path.Combine(benchDir, $"perplexity_{domain}.log");
+        if (!File.Exists(logPath) || new FileInfo(logPath).Length == 0)
+            return false;
+
+        try
+        {
+            var parsed = ParsePerplexity(logPath, allowMissingKld);
+
+            if (parsed.Ppl <= 0)
+                return false;
+
+            if (requirePositiveKld && !IsPositiveKld(parsed.Kld))
+                return false;
+
+            metrics = parsed;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool HasRequiredCategories(
+        AiBenchmark bench,
+        IReadOnlyCollection<string> requestedDomains,
+        bool requireKld)
+    {
+        if (bench.CategorBenchmarks == null || bench.CategorBenchmarks.Count == 0)
+            return false;
+
+        foreach (var domain in requestedDomains)
+        {
+            byte category = domain switch
+            {
+                "general" => (byte)BenchmarkCategory.General,
+                "math" => (byte)BenchmarkCategory.Math,
+                "code" => (byte)BenchmarkCategory.Code,
+                _ => throw new InvalidOperationException($"Unknown benchmark domain '{domain}'.")
+            };
+
+            var existing = bench.CategorBenchmarks.FirstOrDefault(x => x.Category == category);
+            if (existing == null)
+                return false;
+
+            if (existing.Ppl <= 0)
+                return false;
+
+            if (requireKld && existing.Kld <= 0)
+                return false;
+        }
+
+        return bench.TokensPerSecond > 0;
+    }
+
+    private BenchmarkResult BuildResultFromDb(
+        AiBenchmark bench,
+        IReadOnlyCollection<string> requestedDomains)
+    {
+        var result = new BenchmarkResult
+        {
+            ModelSizeBytes = bench.SizeBytes,
+            LlamaBench = new LlamaBenchMetrics
+            {
+                Ngl = bench.Ngl,
+                Tps = bench.TokensPerSecond
+            }
+        };
+
+        foreach (var domain in requestedDomains)
+        {
+            byte category = domain switch
+            {
+                "general" => (byte)BenchmarkCategory.General,
+                "math" => (byte)BenchmarkCategory.Math,
+                "code" => (byte)BenchmarkCategory.Code,
+                _ => throw new InvalidOperationException($"Unknown benchmark domain '{domain}'.")
+            };
+
+            var existing = bench.CategorBenchmarks.First(x => x.Category == category);
+
+            result.Perplexity[domain] = new PplMetrics
+            {
+                Ppl = existing.Ppl,
+                PplError = existing.PplError,
+                Kld = existing.Kld
+            };
+        }
+
+        return result;
     }
 
     // ----------------------------------------------------------------
@@ -371,7 +718,8 @@ public class BenchmarkService
         if (headerIdx == -1 || lines.Length <= headerIdx + 2) return metrics;
 
         var headers = lines[headerIdx].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(h => h.Trim()).ToList();
-        var dataRow = lines[headerIdx + 2].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(d => d.Trim()).ToList();
+        var dataRow = lines[headerIdx + 2].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(d => d.Trim())
+            .ToList();
 
         if (headers.Count != dataRow.Count) return metrics;
         var row = headers.Zip(dataRow, (h, d) => new { Header = h, Data = d }).ToDictionary(x => x.Header, x => x.Data);
@@ -395,8 +743,13 @@ public class BenchmarkService
     // ----------------------------------------------------------------
 
     private async Task<PplMetrics> RunPplBenchmarkAsync(
-        string modelPath, string benchDir, string domain, string corpusPath,
-        int? startNgl, string? klLogitsDir, bool saveLogits)
+        string modelPath,
+        string benchDir,
+        string domain,
+        string corpusPath,
+        int? startNgl,
+        string? klLogitsDir,
+        bool saveLogits)
     {
         string logFile = Path.Combine(benchDir, $"perplexity_{domain}.log");
         var candidates = startNgl.HasValue
@@ -404,13 +757,24 @@ public class BenchmarkService
             : NglCandidates.ToList();
 
         string kldArgs = "";
+        bool expectKld = false;
+
         if (!string.IsNullOrEmpty(klLogitsDir))
         {
             string logitsFile = Path.Combine(klLogitsDir, $"kld_logits_{domain}.bin");
+
             if (saveLogits)
+            {
+                // Base/native model path: save logits only, do not expect KLD yet.
                 kldArgs = $"--kl-divergence-base \"{logitsFile}\"";
+                expectKld = false;
+            }
             else if (File.Exists(logitsFile))
+            {
+                // Sample path: compare against the already saved base logits.
                 kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence";
+                expectKld = true;
+            }
         }
 
         string BuildCmd(int ngl) =>
@@ -418,39 +782,55 @@ public class BenchmarkService
 
         await RunWithRetryAsync(BuildCmd, logFile, candidates, $"perplexity-{domain}");
 
-        bool expectKld = (!saveLogits && !string.IsNullOrEmpty(klLogitsDir));
-        return ParsePerplexity(logFile, expectKld);
+        bool allowMissingKld = !expectKld;
+        var parsed = ParsePerplexity(logFile, allowMissingKld);
+
+        if (expectKld && !IsPositiveKld(parsed.Kld))
+        {
+            throw new InvalidOperationException(
+                $"Expected a real KLD for domain '{domain}', but parsed '{parsed.Kld?.ToString() ?? "null"}' from {logFile}");
+        }
+
+        return parsed;
     }
 
     private PplMetrics ParsePerplexity(string logPath, bool allowMissingKld)
     {
         var metrics = new PplMetrics { LogPath = GetRelativePath(logPath) };
-        if (!File.Exists(logPath)) return metrics;
+
+        if (!File.Exists(logPath))
+            throw new FileNotFoundException($"Perplexity log file was not created: {logPath}");
 
         string text = File.ReadAllText(logPath);
         string cleanText = StripAnsi(text);
 
-        var pplMatch = Regex.Match(cleanText, @"(?:Mean PPL\(Q\)|PPL)\s*[:=]\s*([0-9.]+)\s*(?:±|\+/-)\s*([0-9.]+)", RegexOptions.IgnoreCase);
+        var pplMatch = Regex.Match(
+            cleanText,
+            @"(?:Mean PPL\(Q\)|PPL)\s*[:=]\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*(?:±|\+/-)\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
+            RegexOptions.IgnoreCase);
 
-        if (pplMatch.Success)
+        if (!pplMatch.Success)
         {
-            metrics.Ppl = double.Parse(pplMatch.Groups[1].Value);
-            metrics.PplError = double.Parse(pplMatch.Groups[2].Value);
-        }
-        else
-        {
-            AnsiConsole.MarkupLine($"[red]Error parsing PPL from {logPath}[/]");
+            throw new InvalidOperationException(
+                $"Failed to parse PPL from log: {logPath}\n\nLast log content:\n{cleanText}");
         }
 
-        var kldMatch = Regex.Match(cleanText, @"(?:Mean\s+KLD|KL[-_\s]*divergence|kl[-_\s]*div)\s*[:=]\s*([0-9.]+)", RegexOptions.IgnoreCase);
+        metrics.Ppl = double.Parse(pplMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+        metrics.PplError = double.Parse(pplMatch.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+        var kldMatch = Regex.Match(
+            cleanText,
+            @"(?:Mean\s+KLD|Mean\s+KL|KL[-_\s]*divergence|KLD|kl[-_\s]*div)\s*[:=]\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
+            RegexOptions.IgnoreCase);
 
         if (kldMatch.Success)
         {
-            metrics.Kld = double.Parse(kldMatch.Groups[1].Value);
+            metrics.Kld = double.Parse(kldMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
         }
-        else if (!allowMissingKld && cleanText.Contains("KL", StringComparison.OrdinalIgnoreCase))
+        else if (!allowMissingKld)
         {
-            AnsiConsole.MarkupLine("[yellow]Warning: 'KL' found in log but regex failed to parse value.[/]");
+            throw new InvalidOperationException(
+                $"KLD was expected but could not be parsed from log: {logPath}\n\nLast log content:\n{cleanText}");
         }
 
         return metrics;
@@ -524,26 +904,57 @@ with open(out_path, 'w', encoding='utf-8') as f:
         List<int> candidates,
         string label)
     {
+        string? lastFailureDetails = null;
+
         foreach (int ngl in candidates)
         {
             string cmd = cmdBuilder(ngl);
             AnsiConsole.WriteLine($"[*] {label}: trying -ngl {ngl}");
 
-            await RunShellCommandAsync(cmd, logPath);
+            var result = await RunShellCommandAsync(cmd, logPath);
 
-            string logContent = File.Exists(logPath)
-                ? File.ReadAllText(logPath)
-                : string.Empty;
+            string logContent = !string.IsNullOrWhiteSpace(result.LogOutput)
+                ? result.LogOutput
+                : (File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty);
 
-            if (OomMarkers.Any(m => logContent.Contains(m, StringComparison.OrdinalIgnoreCase)))
+            bool looksLikeOom = OomMarkers.Any(m =>
+                logContent.Contains(m, StringComparison.OrdinalIgnoreCase));
+
+            bool looksLikeLoadFailure =
+                logContent.Contains("failed to load model", StringComparison.OrdinalIgnoreCase) ||
+                logContent.Contains("error:", StringComparison.OrdinalIgnoreCase);
+
+            if (!result.Success)
             {
-                AnsiConsole.WriteLine($"[WARN] {label}: OOM at -ngl {ngl}, retrying...");
+                lastFailureDetails =
+                    $"ExitCode={result.ExitCode}, ngl={ngl}\nCommand: {cmd}\n\nLog Output:\n{logContent}";
+
+                if (looksLikeOom || looksLikeLoadFailure)
+                {
+                    AnsiConsole.WriteLine($"[WARN] {label}: failed at -ngl {ngl}, retrying lower setting...");
+                    continue;
+                }
+
+                // Unknown non-zero exit: still retry lower ngl first,
+                // because many llama.cpp GPU/load issues recover that way.
+                AnsiConsole.WriteLine($"[WARN] {label}: non-zero exit at -ngl {ngl}, retrying lower setting...");
                 continue;
             }
 
             if (logContent.Length < 50)
             {
-                AnsiConsole.WriteLine($"[WARN] {label}: Failed at -ngl {ngl} (Unknown Error), trying next...");
+                lastFailureDetails =
+                    $"Log too short at ngl={ngl}\nCommand: {cmd}\n\nLog Output:\n{logContent}";
+                AnsiConsole.WriteLine($"[WARN] {label}: Failed at -ngl {ngl} (log too short), trying next...");
+                continue;
+            }
+
+            if (label.StartsWith("perplexity", StringComparison.OrdinalIgnoreCase) &&
+                !Regex.IsMatch(logContent, @"PPL\s*[:=]\s*[-+]?\d*\.?\d+", RegexOptions.IgnoreCase))
+            {
+                lastFailureDetails =
+                    $"No parsable PPL marker found at ngl={ngl}\nCommand: {cmd}\n\nLog Output:\n{logContent}";
+                AnsiConsole.WriteLine($"[WARN] {label}: No parsable PPL marker found at -ngl {ngl}, trying next...");
                 continue;
             }
 
@@ -551,15 +962,22 @@ with open(out_path, 'w', encoding='utf-8') as f:
             return ngl;
         }
 
-        AnsiConsole.WriteLine($"[ERROR] {label}: All -ngl candidates failed.");
-        return null;
+        throw new InvalidOperationException(
+            $"{label}: all -ngl candidates failed.\n\nLast failure details:\n{lastFailureDetails}");
     }
 
     // ----------------------------------------------------------------
     // 5. System Utilities
     // ----------------------------------------------------------------
 
-    private async Task RunShellCommandAsync(string cmd, string? logPath)
+    private sealed class CommandRunResult
+    {
+        public bool Success { get; init; }
+        public int ExitCode { get; init; }
+        public string LogOutput { get; init; } = string.Empty;
+    }
+
+    private async Task<CommandRunResult> RunShellCommandAsync(string cmd, string? logPath)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -578,19 +996,40 @@ with open(out_path, 'w', encoding='utf-8') as f:
         if (logPath != null)
         {
             fs = new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.Read);
-            sw = new StreamWriter(fs);
+            sw = new StreamWriter(fs) { AutoFlush = true };
         }
 
-        process.OutputDataReceived += (s, e) => { if (e.Data != null) sw?.WriteLine(e.Data); };
-        process.ErrorDataReceived += (s, e) => { if (e.Data != null) sw?.WriteLine(e.Data); };
-
         process.Start();
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
         await process.WaitForExitAsync();
+
+        string stdout = await stdoutTask;
+        string stderr = await stderrTask;
+
+        if (!string.IsNullOrWhiteSpace(stdout))
+            sw?.WriteLine(stdout);
+
+        if (!string.IsNullOrWhiteSpace(stderr))
+            sw?.WriteLine(stderr);
 
         sw?.Dispose();
         fs?.Dispose();
+
+        string combinedLog;
+        if (logPath != null && File.Exists(logPath))
+            combinedLog = File.ReadAllText(logPath);
+        else
+            combinedLog = $"{stdout}\n{stderr}";
+
+        return new CommandRunResult
+        {
+            Success = process.ExitCode == 0,
+            ExitCode = process.ExitCode,
+            LogOutput = combinedLog
+        };
     }
 
     private string StripAnsi(string text)

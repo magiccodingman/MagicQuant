@@ -1,37 +1,47 @@
-using Spectre.Console;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using MagicQuant.Helpers;
 using MQ.DB;
+using MQ.DB.Data;
 using MQ.DB.Models;
+using Microsoft.EntityFrameworkCore;
+using Spectre.Console;
 
 namespace MagicQuant.Services;
+
+public enum SampleProcessState
+{
+    Completed = 1,
+    Skipped = 2,
+    Failed = 3
+}
+
+public sealed class SampleProcessingSummary
+{
+    public int Requested { get; set; }
+    public int Completed { get; set; }
+    public int Skipped { get; set; }
+    public int Failed { get; set; }
+}
 
 public class QuantizationService
 {
     private readonly BenchmarkService _benchmarker;
     private readonly string _ggufDir;
     private readonly string _benchDir;
-
     private readonly PythonManager _python;
-
-    // Threading Control
-    // We limit CPU-heavy quantization jobs to (TotalThreads / 8) to avoid choking the system
-    // while leaving room for the GPU-heavy Perplexity tasks.
     private readonly SemaphoreSlim _cpuQuantLock;
+    private readonly int _maxConcurrentQuantizations;
 
-    // The Queue
-    private readonly ConcurrentQueue<Func<Task>> _jobQueue = new();
-    private bool _isQueueRunning = false;
+    private static readonly SemaphoreSlim BaseModelLock = new(1, 1);
 
     public QuantizationService(BenchmarkService benchmarker)
     {
         _benchmarker = benchmarker;
         _python = _benchmarker._pyManager;
-        // Setup Directories based on Cache (assumed populated by Evolution command)
-        if (Cache.MagicQuantDirectory == null)
-            throw new Exception("MagicQuant Directory not set. Run initialization first.");
+
+        if (string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
+            throw new Exception("Cache.ModelMagicQuantDirectory not set. Evolution must set this before quantization starts.");
 
         _ggufDir = Path.Combine(Cache.ModelMagicQuantDirectory, "GGUF");
         _benchDir = Path.Combine(Cache.ModelMagicQuantDirectory, "Benchmarks");
@@ -39,239 +49,380 @@ public class QuantizationService
         Directory.CreateDirectory(_ggufDir);
         Directory.CreateDirectory(_benchDir);
 
-        // Limit concurrent quantizations.
-        // Example: 32 threads -> 4 concurrent quants (leaving threads for PPL)
-        int maxConcurrent = Math.Max(1, (Cache.SysInfo?.ThreadCount ?? 4) / 8);
-        _cpuQuantLock = new SemaphoreSlim(maxConcurrent, maxConcurrent);
+        int threadCount = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
+        _maxConcurrentQuantizations = Math.Max(1, threadCount / 8);
+        _cpuQuantLock = new SemaphoreSlim(_maxConcurrentQuantizations, _maxConcurrentQuantizations);
     }
 
-    // ----------------------------------------------------------------
-    // 1. High-Level Entry Point: Build & Benchmark
-    // ----------------------------------------------------------------
-
-    public void QueueJob(HybridQuant quant)
+    public async Task<SampleProcessingSummary> ProcessHybridBatchAsync(
+        IReadOnlyCollection<HybridQuant> quants,
+        CancellationToken ct = default)
     {
-        _jobQueue.Enqueue(async () => await ProcessHybridQuantAsync(quant));
-        StartQueueProcessor();
-    }
+        if (quants == null)
+            throw new ArgumentNullException(nameof(quants));
 
-    private void StartQueueProcessor()
-    {
-        if (_isQueueRunning) return;
-        _isQueueRunning = true;
+        int completed = 0;
+        int skipped = 0;
+        int failed = 0;
 
-        // Fire and forget the processor loop
-        Task.Run(async () =>
-        {
-            while (_jobQueue.TryDequeue(out var job))
+        // Warm the base model once so workers don't all race into conversion.
+        await EnsureBaseModelAsync(false);
+
+        await Parallel.ForEachAsync(
+            quants,
+            new ParallelOptions
             {
-                await job();
-            }
+                MaxDegreeOfParallelism = _maxConcurrentQuantizations,
+                CancellationToken = ct
+            },
+            async (quant, token) =>
+            {
+                try
+                {
+                    var state = await ProcessHybridQuantAsync(quant, token);
 
-            _isQueueRunning = false;
-        });
+                    switch (state)
+                    {
+                        case SampleProcessState.Completed:
+                            Interlocked.Increment(ref completed);
+                            break;
+                        case SampleProcessState.Skipped:
+                            Interlocked.Increment(ref skipped);
+                            break;
+                        default:
+                            Interlocked.Increment(ref failed);
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Increment(ref failed);
+                    AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(GenerateHybridName(quant))}");
+                    AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
+                }
+            });
+
+        return new SampleProcessingSummary
+        {
+            Requested = quants.Count,
+            Completed = completed,
+            Skipped = skipped,
+            Failed = failed
+        };
     }
 
-    private async Task ProcessHybridQuantAsync(HybridQuant quant)
+    public async Task<SampleProcessState> ProcessHybridQuantAsync(
+    HybridQuant quant,
+    CancellationToken ct = default)
+{
+    string modelName = GenerateHybridName(quant);
+    string quantPath = Path.Combine(_ggufDir, $"{modelName}.gguf");
+    string modelBenchDir = Path.Combine(_benchDir, modelName);
+    string baseLogitsDir = GetBaseLogitsDirectory();
+
+    // 1. Fast path: if the benchmark artifacts on disk are already valid, reuse them
+    // and sync SQLite without rebuilding the sample GGUF.
+    if (await _benchmarker.TryReuseExistingBenchmarksAsync(
+            quantConfig: quant,
+            modelPath: quantPath,
+            benchDir: modelBenchDir,
+            klLogitsDir: baseLogitsDir,
+            domainsOverride: new[] { "general" }))
     {
+        AnsiConsole.MarkupLine($"[grey]Reused existing benchmark artifacts:[/] {Markup.Escape(modelName)}");
+
+        if (!IsProtectedModel(modelName))
+            await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
+
+        return SampleProcessState.Skipped;
+    }
+
+    // 2. DB truth still matters too
+    if (await BenchmarkExistsAsync(quant, ct))
+    {
+        AnsiConsole.MarkupLine($"[grey]Skipping already completed sample:[/] {Markup.Escape(modelName)}");
+
+        if (!IsProtectedModel(modelName))
+            await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
+
+        return SampleProcessState.Skipped;
+    }
+
+    try
+    {
+        string basePath = await EnsureBaseModelAsync();
+
+        await _cpuQuantLock.WaitAsync(ct);
         try
         {
-            // 1. Ensure Base Model Exists (Dynamic BF16/F16/F32)
-            string basePath = await EnsureBaseModelAsync();
-
-            // 2. Determine Output Name & Path
-            string modelName = GenerateHybridName(quant);
-            string quantPath = Path.Combine(_ggufDir, $"{modelName}.gguf");
-
-            // 3. Quantize (CPU Bound - Parallel)
-            await _cpuQuantLock.WaitAsync();
-            try
+            if (!File.Exists(quantPath))
             {
-                if (!File.Exists(quantPath))
-                {
-                    AnsiConsole.MarkupLine($"[cyan]Building Hybrid Model:[/] {modelName}");
-                    await RunLlamaQuantizeAsync(basePath, quantPath, quant);
-                }
-            }
-            finally
-            {
-                _cpuQuantLock.Release();
-            }
-
-            // 4. Benchmark (Mixed CPU/GPU/Exclusive)
-            string modelBenchDir = Path.Combine(_benchDir, modelName);
-            string metricsPath = Path.Combine(modelBenchDir, "bench_metrics.json");
-
-            if (!File.Exists(metricsPath))
-            {
-                AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {modelName}");
-
-                await _benchmarker.RunAllBenchmarksAsync(
-                    quantConfig: quant,
-                    modelPath: quantPath,
-                    benchDir: modelBenchDir,
-                    saveLogits: false 
-                );
-
-                // Cleanup: Delete GGUF after benchmark (unless protected base)
-                if (File.Exists(quantPath) && !IsProtectedModel(modelName))
-                {
-                    AnsiConsole.MarkupLine($"[grey]Deleting temp model: {modelName}[/]");
-                    File.Delete(quantPath);
-                }
+                AnsiConsole.MarkupLine($"[cyan]Building sample:[/] {Markup.Escape(modelName)}");
+                await RunLlamaQuantizeAsync(basePath, quantPath, quant);
             }
         }
-        catch (Exception ex)
+        finally
         {
-            AnsiConsole.WriteException(ex);
+            _cpuQuantLock.Release();
         }
+
+        // Re-check after build in case another worker finished the DB sync while we were quantizing
+        if (await BenchmarkExistsAsync(quant, ct))
+        {
+            if (!IsProtectedModel(modelName))
+                await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
+
+            return SampleProcessState.Skipped;
+        }
+
+        AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {Markup.Escape(modelName)}");
+
+        await _benchmarker.RunAllBenchmarksAsync(
+            quantConfig: quant,
+            modelPath: quantPath,
+            benchDir: modelBenchDir,
+            klLogitsDir: baseLogitsDir,
+            saveLogits: false,
+            domainsOverride: new[] { "general" });
+
+        return SampleProcessState.Completed;
+    }
+    finally
+    {
+        if (!IsProtectedModel(modelName))
+        {
+            await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
+        }
+    }
+}
+
+    private string GetBaseLogitsDirectory()
+    {
+        string typeStr = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
+        return Path.Combine(_benchDir, typeStr, "logits");
+    }
+
+    private async Task<bool> BenchmarkExistsAsync(HybridQuant quant, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            throw new InvalidOperationException("Cache.CurrentModelId is not set.");
+
+        var lookup = BuildTensorLookup(quant);
+
+        await using var db = new MagicQuantContext();
+
+        var model = await db.AiModelHashes
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+        if (model == null)
+            return false;
+
+        var comboId = await db.TensorCombos
+            .AsNoTracking()
+            .Where(x =>
+                x.BaseQuant == lookup.BaseQuant &&
+                x.Embeddings == lookup.Embeddings &&
+                x.LmHead == lookup.LmHead &&
+                x.AttnQ == lookup.AttnQ &&
+                x.AttnKV == lookup.AttnKV &&
+                x.AttnOutput == lookup.AttnOutput &&
+                x.FfnUpGate == lookup.FfnUpGate &&
+                x.FfnDown == lookup.FfnDown &&
+                x.MoeExperts == lookup.MoeExperts &&
+                x.MoeRouter == lookup.MoeRouter)
+            .Select(x => (uint?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (!comboId.HasValue)
+            return false;
+
+        return await db.AiBenchmarks
+            .AsNoTracking()
+            .AnyAsync(x => x.AiModelHashId == model.Id && x.TensorComboId == comboId.Value, ct);
+    }
+
+    private static (
+        byte BaseQuant,
+        byte Embeddings,
+        byte LmHead,
+        byte AttnQ,
+        byte AttnKV,
+        byte AttnOutput,
+        byte FfnUpGate,
+        byte FfnDown,
+        byte MoeExperts,
+        byte MoeRouter) BuildTensorLookup(HybridQuant quant)
+    {
+        byte embeddings = 0;
+        byte lmHead = 0;
+        byte attnQ = 0;
+        byte attnKV = 0;
+        byte attnOutput = 0;
+        byte ffnUpGate = 0;
+        byte ffnDown = 0;
+        byte moeExperts = 0;
+        byte moeRouter = 0;
+
+        if (quant.Tensors != null)
+        {
+            foreach (var tensor in quant.Tensors)
+            {
+                if (tensor?.TGroup == null)
+                    continue;
+
+                if (tensor.TGroup.UniqueId == TReg.Embeddings.UniqueId) embeddings = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.LmHead.UniqueId) lmHead = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.AttnQ.UniqueId) attnQ = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.AttnKV.UniqueId) attnKV = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.AttnOutput.UniqueId) attnOutput = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.FfnUpGate.UniqueId) ffnUpGate = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.FfnDown.UniqueId) ffnDown = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.MoeExperts.UniqueId) moeExperts = tensor.TensorType.UniqueId;
+                else if (tensor.TGroup.UniqueId == TReg.MoeRouter.UniqueId) moeRouter = tensor.TensorType.UniqueId;
+            }
+        }
+
+        return (
+            quant.BaseQuant.UniqueId,
+            embeddings,
+            lmHead,
+            attnQ,
+            attnKV,
+            attnOutput,
+            ffnUpGate,
+            ffnDown,
+            moeExperts,
+            moeRouter
+        );
     }
 
     private bool IsProtectedModel(string name)
     {
-        // Don't delete the BF16/F16/F32 base files
-        return name.EndsWith("BF16") || name.EndsWith("F16") || name.EndsWith("F32");
+        return name.EndsWith("BF16", StringComparison.OrdinalIgnoreCase) ||
+               name.EndsWith("F16", StringComparison.OrdinalIgnoreCase) ||
+               name.EndsWith("F32", StringComparison.OrdinalIgnoreCase);
     }
 
-    // ----------------------------------------------------------------
-    // 2. Base Model Generation (Dynamic BF16 / F16 / F32)
-    // ----------------------------------------------------------------
     public async Task<string> EnsureBaseModelAsync(bool deleteProcess = false)
     {
-        // Resolve model name
-        string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
-
-        // Determine torch type (default BF16)
-        var torchType = Cache.TorchType ?? Cache.MainTorchType.BF16;
-        string typeStr = torchType.ToString(); // BF16, F16, F32
-
-        // Output paths
-        string fileName = $"{modelName}-{typeStr}.gguf";
-        string outputPath = Path.Combine(_ggufDir, fileName);
-        string successFile = Path.Combine(_ggufDir, $"{fileName}.success.json");
-
-        if (deleteProcess)
+        await BaseModelLock.WaitAsync();
+        try
         {
-            if (string.IsNullOrWhiteSpace(fileName))
-                throw new ArgumentException("fileName is null or empty.", nameof(fileName));
+            string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
+            var torchType = Cache.TorchType ?? Cache.MainTorchType.BF16;
+            string typeStr = torchType.ToString();
 
-            if (!Directory.Exists(_ggufDir))
-                throw new DirectoryNotFoundException($"Directory does not exist: {_ggufDir}");
+            string fileName = $"{modelName}-{typeStr}.gguf";
+            string outputPath = Path.Combine(_ggufDir, fileName);
+            string successFile = Path.Combine(_ggufDir, $"{fileName}.success.json");
 
-            var normalizedFileName = Path.GetFileName(fileName);
-            var successFileName = normalizedFileName + ".success.json";
-            var successFilePath = Path.Combine(_ggufDir, successFileName);
-
-            // Only immune if the success file exists
-            bool isImmune = File.Exists(successFilePath);
-
-            foreach (var filePath in Directory.EnumerateFiles(_ggufDir, "*.gguf", SearchOption.TopDirectoryOnly))
+            if (deleteProcess)
             {
-                var currentFileName = Path.GetFileName(filePath);
+                if (!Directory.Exists(_ggufDir))
+                    Directory.CreateDirectory(_ggufDir);
 
-                if (isImmune &&
-                    string.Equals(currentFileName, normalizedFileName, StringComparison.OrdinalIgnoreCase))
+                var normalizedFileName = Path.GetFileName(fileName);
+                var successFileName = normalizedFileName + ".success.json";
+                var successFilePath = Path.Combine(_ggufDir, successFileName);
+                bool isImmune = File.Exists(successFilePath);
+
+                foreach (var filePath in Directory.EnumerateFiles(_ggufDir, "*.gguf", SearchOption.TopDirectoryOnly))
                 {
-                    // This GGUF earned its right to live
-                    continue;
+                    var currentFileName = Path.GetFileName(filePath);
+
+                    if (isImmune &&
+                        string.Equals(currentFileName, normalizedFileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    await HardDeleteHelper.DeleteFileIfExistsAsync(filePath);
                 }
-
-                // HARD DELETE — Windows & Linux
-                File.Delete(filePath);
             }
+
+            if (!File.Exists(outputPath) || !File.Exists(successFile))
+            {
+                AnsiConsole.MarkupLine($"[bold cyan]Converting to {typeStr}...[/]");
+
+                await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
+
+                string convertScript = Cache.ConvertScript
+                                       ?? throw new Exception("ConvertScript path missing in Cache");
+
+                string outTypeArg = typeStr.ToLowerInvariant();
+
+                string arguments =
+                    $"\"{convertScript}\" \"{Cache.ModelDirectory}\" " +
+                    $"--outtype {outTypeArg} " +
+                    $"--outfile \"{outputPath}\"";
+
+                string python = _python.GetPythonExecutable();
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = python,
+                    Arguments = arguments,
+                    WorkingDirectory = Cache.LlamaRoot,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using var process = Process.Start(psi)
+                                    ?? throw new InvalidOperationException("Failed to start conversion process");
+
+                process.OutputDataReceived += (_, e) =>
+                {
+                    if (!string.IsNullOrWhiteSpace(e.Data))
+                        AnsiConsole.WriteLine(e.Data);
+                };
+
+                process.ErrorDataReceived += (_, e) =>
+                {
+                    if (!string.IsNullOrWhiteSpace(e.Data))
+                        AnsiConsole.WriteLine(e.Data);
+                };
+
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                await process.WaitForExitAsync();
+
+                if (process.ExitCode != 0)
+                    throw new Exception($"{typeStr} conversion failed");
+
+                await File.WriteAllTextAsync(successFile, "{\"status\":\"success\"}");
+            }
+
+            string benchPath = Path.Combine(_benchDir, typeStr);
+            string logitsDir = Path.Combine(benchPath, "logits");
+
+            AnsiConsole.MarkupLine($"[bold yellow]Benchmarking Base {typeStr} (Saving Logits)...[/]");
+
+            var baseModelQuant = new HybridQuant
+            {
+                BaseQuant = BaselineQuants.GetBF16Quant(),
+                Tensors = new List<HybridTensor>()
+            };
+
+            await _benchmarker.RunAllBenchmarksAsync(
+                quantConfig: baseModelQuant,
+                modelPath: outputPath,
+                benchDir: benchPath,
+                klLogitsDir: logitsDir,
+                saveLogits: true,
+                domainsOverride: new[] { "general", "code", "math" }
+            );
+
+            return outputPath;
         }
-
-        // Already converted?
-        if (!File.Exists(outputPath) || !File.Exists(successFile))
+        finally
         {
-            // ---- Conversion ----
-            AnsiConsole.MarkupLine($"[bold cyan]Converting to {typeStr}...[/]");
-
-            if (File.Exists(outputPath))
-                File.Delete(outputPath);
-
-            string convertScript = Cache.ConvertScript
-                                   ?? throw new Exception("ConvertScript path missing in Cache");
-
-            string outTypeArg = typeStr.ToLowerInvariant(); // bf16 / f16 / f32
-
-            string arguments =
-                $"\"{convertScript}\" \"{Cache.ModelDirectory}\" " +
-                $"--outtype {outTypeArg} " +
-                $"--outfile \"{outputPath}\"";
-
-            string python = _python.GetPythonExecutable();
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = python,
-                Arguments = arguments,
-                WorkingDirectory = Cache.LlamaRoot,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi)
-                                ?? throw new InvalidOperationException("Failed to start conversion process");
-
-            // UNTRUSTED OUTPUT → WriteLine ONLY
-            process.OutputDataReceived += (_, e) =>
-            {
-                if (!string.IsNullOrWhiteSpace(e.Data))
-                    AnsiConsole.WriteLine(e.Data);
-            };
-
-            process.ErrorDataReceived += (_, e) =>
-            {
-                if (!string.IsNullOrWhiteSpace(e.Data))
-                    AnsiConsole.WriteLine(e.Data);
-            };
-
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode != 0)
-                throw new Exception($"{typeStr} conversion failed");
-
-            // Write success marker
-            await File.WriteAllTextAsync(successFile, "{\"status\":\"success\"}");
+            BaseModelLock.Release();
         }
-
-        // ---- Benchmark Base Model ----
-        string benchPath = Path.Combine(_benchDir, typeStr);
-        string logitsDir = Path.Combine(benchPath, "logits");
-
-        AnsiConsole.MarkupLine(
-            $"[bold yellow]Benchmarking Base {typeStr} (Saving Logits)...[/]"
-        );
-
-        // Create the HybridQuant representation for the Base Model
-        // This matches the "TensorWeightScheme.BF16_F16" BaseQuant, with NO other tensors (NULL)
-        var baseModelQuant = new HybridQuant
-        {
-            BaseQuant = BaselineQuants.All.First(b => b.UniqueId == TensorWeightScheme.BF16_F16.UniqueId),
-            Tensors = new List<HybridTensor>() // Empty list = all other groups are 0/NULL
-        };
-
-        await _benchmarker.RunAllBenchmarksAsync(
-            quantConfig: baseModelQuant, // <--- PASSED HERE
-            modelPath: outputPath,
-            benchDir: benchPath,
-            klLogitsDir: logitsDir,
-            saveLogits: true
-        );
-        
-        return outputPath;
     }
-
-
-    // ----------------------------------------------------------------
-    // 3. Hybrid Quantization Execution
-    // ----------------------------------------------------------------
 
     public async Task RunLlamaQuantizeAsync(string inputFile, string outputFile, HybridQuant quant)
     {
@@ -281,9 +432,14 @@ public class QuantizationService
         {
             foreach (var hybrid in quant.Tensors)
             {
-                if (hybrid?.TGroup == null) continue;
+                if (hybrid?.TGroup == null)
+                    continue;
 
-                // Resolve scheme dynamically (handles BF16/F16 shared ID)
+                // NULL is an internal sentinel only.
+                // It means "do not emit an override for this tensor group".
+                if (hybrid.TensorType.UniqueId == TensorWeightScheme.NULL.UniqueId)
+                    continue;
+
                 string schemeName = ResolveSchemeName(hybrid.TensorType);
 
                 foreach (var tensorPattern in hybrid.TGroup.Tensors)
@@ -300,9 +456,9 @@ public class QuantizationService
 
         string arguments = string.Join(" ", args);
 
-        string bin = Cache.LlamaBin + (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? "/llama-quantize.exe"
-            : "/llama-quantize");
+        string bin = Path.Combine(
+            Cache.LlamaBin!,
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "llama-quantize.exe" : "llama-quantize");
 
         var psi = new ProcessStartInfo
         {
@@ -315,7 +471,20 @@ public class QuantizationService
         };
 
         using var p = Process.Start(psi);
-        if (p == null) throw new InvalidOperationException($"Failed to start process: {bin}");
+        if (p == null)
+            throw new InvalidOperationException($"Failed to start process: {bin}");
+
+        p.OutputDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+                AnsiConsole.WriteLine(e.Data);
+        };
+
+        p.ErrorDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+                AnsiConsole.WriteLine(e.Data);
+        };
 
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
@@ -329,6 +498,7 @@ public class QuantizationService
     {
         if (b.Names.IsDefaultOrEmpty)
             throw new InvalidOperationException($"BaselineQuants '{b.UniqueId}' has no Names.");
+
         return b.Names[0];
     }
 
@@ -337,25 +507,19 @@ public class QuantizationService
         if (s.Names.IsDefaultOrEmpty)
             throw new InvalidOperationException($"TensorWeightScheme '{s.UniqueId}' has no Names.");
 
-        // Special case: BF16_F16 shares UniqueId and has two names ["BF16","F16"].
         if (s.UniqueId == TensorWeightScheme.BF16_F16.UniqueId && s.Names.Length >= 2)
         {
-            // Dynamic check against Cache
             if (Cache.TorchType == Cache.MainTorchType.F16)
-            {
                 return "F16";
-            }
 
-            // Default to BF16 for BF16 or F32 types (safer modern default)
+            if (Cache.TorchType == Cache.MainTorchType.F32)
+                return "F32";
+
             return "BF16";
         }
 
         return s.Names[0];
     }
-
-    // ----------------------------------------------------------------
-    // 4. Naming Scheme Logic (E-H-Q-K-O...)
-    // ----------------------------------------------------------------
 
     public string GenerateHybridName(HybridQuant quant)
     {
@@ -394,14 +558,14 @@ public class QuantizationService
 
     private int GetOrder(char c)
     {
-        // E, H, Q, K, O, U, D, X, R
         return "EHQKOUDXR".IndexOf(c);
     }
 
     private string SimplifyQuant(string quant)
     {
-        // Optional: Simplify quantization names for the filename
-        // BF16 -> B16, Q4_K_M -> Q4KM
-        return quant.Replace("_", "").Replace("BF16", "B16").Replace("F16", "F16");
+        return quant.Replace("_", "")
+            .Replace("BF16", "B16")
+            .Replace("F16", "F16")
+            .Replace("F32", "F32");
     }
 }

@@ -81,7 +81,6 @@ namespace MQ.DB.Migrations
                     Id = table.Column<uint>(type: "INTEGER", nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
                     AiBenchmarkId = table.Column<uint>(type: "INTEGER", nullable: false),
-                    AiBenchmarkId1 = table.Column<uint>(type: "INTEGER", nullable: false),
                     Category = table.Column<byte>(type: "INTEGER", nullable: false),
                     Kld = table.Column<double>(type: "REAL", nullable: false),
                     Ppl = table.Column<double>(type: "REAL", nullable: false),
@@ -93,12 +92,6 @@ namespace MQ.DB.Migrations
                     table.ForeignKey(
                         name: "FK_CategoryBenchmark_AiBenchmarks_AiBenchmarkId",
                         column: x => x.AiBenchmarkId,
-                        principalTable: "AiBenchmarks",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
-                        name: "FK_CategoryBenchmark_AiBenchmarks_AiBenchmarkId1",
-                        column: x => x.AiBenchmarkId1,
                         principalTable: "AiBenchmarks",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
@@ -124,11 +117,6 @@ namespace MQ.DB.Migrations
                 name: "IX_CategoryBenchmark_AiBenchmarkId",
                 table: "CategoryBenchmark",
                 column: "AiBenchmarkId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CategoryBenchmark_AiBenchmarkId1",
-                table: "CategoryBenchmark",
-                column: "AiBenchmarkId1");
 
             migrationBuilder.CreateIndex(
                 name: "IX_TensorCombos_BaseQuant_Embeddings_LmHead_AttnQ_AttnKV_AttnOutput_FfnUpGate_FfnDown_MoeExperts_MoeRouter",
