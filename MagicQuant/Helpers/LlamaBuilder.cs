@@ -104,7 +104,7 @@ public class LlamaBuilder
             args.Add("-G Ninja"); 
 
         // GPU Optimization Logic
-        switch (_sysInfo.GpuVendor)
+        switch (_sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor)
         {
             case GpuVendor.Nvidia:
                 args.Add("-DGGML_CUDA=ON");

@@ -11,11 +11,17 @@ public enum GpuVendor
 
 public class SystemInfo
 {
+    public List<GpuInfo> GpuInfo { get; set; } = new List<GpuInfo>();
+    public double RamGb { get; set; }
+    public int ThreadCount { get; set; }
+}
+
+public class GpuInfo
+{
     public GpuVendor GpuVendor { get; set; }
     public string GpuName { get; set; } = "Unknown";
     public double VramGb { get; set; }
-    public double RamGb { get; set; }
-    public int ThreadCount { get; set; }
+    public string? UniqueId { get; set; }
 }
 
 public static class MagicConstants

@@ -45,7 +45,7 @@ public static class DependencyManager
 
     private static async Task ValidateGpuToolkitAsync(SystemInfo sysInfo)
     {
-        if (sysInfo.GpuVendor == GpuVendor.Nvidia)
+        if (sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Nvidia)
         {
             // Check for NVCC
             if (!CheckCommandExists("nvcc"))
@@ -68,7 +68,7 @@ public static class DependencyManager
                 }
             }
         }
-        else if (sysInfo.GpuVendor == GpuVendor.Intel)
+        else if (sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Intel)
         {
              if (!CheckCommandExists("icx")) // Intel OneAPI Compiler
              {

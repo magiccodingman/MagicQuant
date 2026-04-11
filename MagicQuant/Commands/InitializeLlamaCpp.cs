@@ -63,7 +63,7 @@ public class InitializeLlamaCpp : ICommand
         // ---------------------------------------------------------
         var sysInfo = HardwareHelper.GetSystemInfo();
         AnsiConsole.Write(new Rule("[yellow]System Detection[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"Detected GPU: [green]{sysInfo.GpuVendor}[/] ([blue]{sysInfo.GpuName}[/] - {sysInfo.VramGb:F1} GB)");
+        AnsiConsole.MarkupLine($"Detected GPU: [green]{sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor}[/] ([blue]{sysInfo.GpuInfo.FirstOrDefault()?.GpuName}[/] - {sysInfo.GpuInfo.Sum(x => x.VramGb):F1} GB)");
         AnsiConsole.MarkupLine($"Detected RAM: [blue]{sysInfo.RamGb:F1} GB[/]");
 
         // ---------------------------------------------------------
@@ -77,7 +77,7 @@ public class InitializeLlamaCpp : ICommand
                 "python3", "python3-venv", "python3-pip", "libcurl4-openssl-dev" 
             };
             
-            if (sysInfo.GpuVendor == GpuVendor.Nvidia) requiredPackages.Add("nvidia-cuda-toolkit");
+            if (sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Nvidia) requiredPackages.Add("nvidia-cuda-toolkit");
 
             // Check if updates are needed
             if (update || !AreLinuxPackagesInstalled(requiredPackages))
@@ -158,7 +158,7 @@ public class InitializeLlamaCpp : ICommand
 
         // B. Install PyTorch (Hardware Specific & Dynamic)
         string torchCmd = "torch torchvision torchaudio";
-        bool isNvidia = sysInfo.GpuVendor == GpuVendor.Nvidia;
+        bool isNvidia = sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Nvidia;
         
         if (isNvidia)
         {
@@ -207,7 +207,7 @@ public class InitializeLlamaCpp : ICommand
             llamaEnv["CMAKE_ARGS"] = "-DGGML_CUDA=on";
             llamaEnv["FORCE_CMAKE"] = "1";
         }
-        else if (sysInfo.GpuVendor == GpuVendor.Amd)
+        else if (sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Amd)
         {
             llamaEnv["CMAKE_ARGS"] = "-DGGML_HIPBLAS=on";
             llamaEnv["FORCE_CMAKE"] = "1";
