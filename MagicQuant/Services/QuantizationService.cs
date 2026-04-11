@@ -107,9 +107,10 @@ public class QuantizationService
                 AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {modelName}");
 
                 await _benchmarker.RunAllBenchmarksAsync(
-                    quantPath,
-                    modelBenchDir,
-                    saveLogits: false // Only base models save logits
+                    quantConfig: quant,
+                    modelPath: quantPath,
+                    benchDir: modelBenchDir,
+                    saveLogits: false 
                 );
 
                 // Cleanup: Delete GGUF after benchmark (unless protected base)
@@ -248,13 +249,22 @@ public class QuantizationService
             $"[bold yellow]Benchmarking Base {typeStr} (Saving Logits)...[/]"
         );
 
+        // Create the HybridQuant representation for the Base Model
+        // This matches the "TensorWeightScheme.BF16_F16" BaseQuant, with NO other tensors (NULL)
+        var baseModelQuant = new HybridQuant
+        {
+            BaseQuant = BaselineQuants.All.First(b => b.UniqueId == TensorWeightScheme.BF16_F16.UniqueId),
+            Tensors = new List<HybridTensor>() // Empty list = all other groups are 0/NULL
+        };
+
         await _benchmarker.RunAllBenchmarksAsync(
+            quantConfig: baseModelQuant, // <--- PASSED HERE
             modelPath: outputPath,
             benchDir: benchPath,
             klLogitsDir: logitsDir,
             saveLogits: true
         );
-
+        
         return outputPath;
     }
 
