@@ -655,8 +655,9 @@ public class BenchmarkService
         {
             ModelSizeBytes = TryGetModelSize(modelPath)
         };
-
-        string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
+        
+        // Disabled for now. Too many variables that're annoying to track
+        /*string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
         if (TryReadExistingLlamaBenchLog(llamaBenchPath, out var existingLlamaBench))
         {
             result.LlamaBench = existingLlamaBench;
@@ -666,7 +667,16 @@ public class BenchmarkService
             AnsiConsole.MarkupLine(
                 $"[yellow]Running Llama-Bench[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
             result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, effectiveNgl, slot);
-        }
+        }*/
+        
+        result.LlamaBench = new LlamaBenchMetrics
+        {
+            LogPath = null,
+            Backend = slot.UsesGpu ? "disabled" : "cpu-disabled",
+            Ngl = effectiveNgl,
+            Test = "disabled",
+            Tps = 0
+        };
 
         var corporaRoot = Path.Combine(Path.GetDirectoryName(benchDir)!, "_ppl_corpora");
         Directory.CreateDirectory(corporaRoot);
@@ -959,14 +969,27 @@ public class BenchmarkService
                 // fall through
             }
         }
-
-        string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
+    
+        // not currently requiring llama bench
+        /*string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
         if (!TryReadExistingLlamaBenchLog(llamaBenchPath, out var llamaBench))
             return false;
 
         var rebuilt = new BenchmarkResult
         {
             LlamaBench = llamaBench
+        };*/
+        
+        var rebuilt = new BenchmarkResult
+        {
+            LlamaBench = new LlamaBenchMetrics
+            {
+                LogPath = null,
+                Backend = "disabled",
+                Ngl = 0,
+                Test = "disabled",
+                Tps = 0
+            }
         };
 
         foreach (var domain in requestedDomains)
@@ -993,8 +1016,9 @@ public class BenchmarkService
         IReadOnlyCollection<string> requestedDomains,
         bool requireKld)
     {
-        if (result.LlamaBench == null || !result.LlamaBench.Tps.HasValue || result.LlamaBench.Tps.Value <= 0)
-            return false;
+        // llama bench removed for now
+        /*if (result.LlamaBench == null || !result.LlamaBench.Tps.HasValue || result.LlamaBench.Tps.Value <= 0)
+            return false;*/
 
         foreach (var domain in requestedDomains)
         {
@@ -1096,7 +1120,9 @@ public class BenchmarkService
                 return false;
         }
 
-        return bench.TokensPerSecond > 0 && bench.SizeBytes > 0;
+        // no longer requiring llama bench atm until furthern otice
+        //return bench.TokensPerSecond > 0 && bench.SizeBytes > 0;
+        return bench.SizeBytes > 0;
     }
 
     private BenchmarkResult BuildResultFromDb(
