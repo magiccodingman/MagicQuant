@@ -1,14 +1,16 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MagicQuant.Helpers;
+using MQ.DB;
 using MQ.DB.Data;
 using MQ.DB.Models;
-using MQ.DB.Models.DbModels; // Required for BenchmarkCategory and TensorCombo
+using MQ.DB.Models.DbModels;
 using Microsoft.EntityFrameworkCore;
-using MQ.DB;
 using Spectre.Console;
+using System.Text.Json;
 
 namespace MagicQuant.Services;
 
@@ -19,6 +21,463 @@ public class BenchmarkService
 
     private static readonly string[] BaseDomains = { "general", "code", "math" };
     private static readonly string[] SampleDomains = { "general" };
+
+    private static readonly string[] OomMarkers =
+    {
+        "out of memory",
+        "cudamalloc failed",
+        "unable to allocate cuda",
+        "try reducing --n-gpu-layers",
+        "cannot fulfill margin",
+        "failed to fit params",
+        "cuda error"
+    };
+
+    private static readonly int[] NglCandidates = { 35, 30, 24, 20, 16, 12, 8, 4 };
+
+    // ----------------------------------------------------------------
+    // Static execution-plan state
+    // ----------------------------------------------------------------
+
+    private static readonly SemaphoreSlim PlanInitLock = new(1, 1);
+    private static readonly object SlotSync = new();
+
+    private static BenchmarkExecutionPlan? _currentPlan;
+    private static Queue<BenchmarkSlot> _availableSlots = new();
+    private static SemaphoreSlim? _slotSemaphore;
+
+    // ----------------------------------------------------------------
+    // Construction
+    // ----------------------------------------------------------------
+
+    public BenchmarkService(PythonManager pyManager)
+    {
+        _bins = new LlamaBinaries(Cache.LlamaRoot);
+        _bins.Validate();
+        _pyManager = pyManager;
+    }
+
+    // ----------------------------------------------------------------
+    // Execution-plan discovery
+    // ----------------------------------------------------------------
+
+    public async Task EnsureExecutionPlanAsync(
+        string q8ModelPath,
+        int discoveryTokenTarget = 8192,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(q8ModelPath))
+            throw new ArgumentException("Q8 model path was null or empty.", nameof(q8ModelPath));
+
+        string normalizedPath = Path.GetFullPath(q8ModelPath);
+
+        if (_currentPlan != null &&
+            string.Equals(_currentPlan.PlanModelPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        await PlanInitLock.WaitAsync(ct);
+        try
+        {
+            if (_currentPlan != null &&
+                string.Equals(_currentPlan.PlanModelPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var plan = await BuildExecutionPlanAsync(normalizedPath, discoveryTokenTarget, ct);
+
+            lock (SlotSync)
+            {
+                _currentPlan = plan;
+                _availableSlots = new Queue<BenchmarkSlot>(plan.Slots);
+                _slotSemaphore = new SemaphoreSlim(plan.Slots.Count, plan.Slots.Count);
+            }
+
+            AnsiConsole.Write(new Rule("[yellow]Benchmark Execution Plan[/]") { Justification = Justify.Left });
+            AnsiConsole.MarkupLine($"[green]Static ngl:[/] [cyan]{plan.StaticNgl}[/]");
+            AnsiConsole.MarkupLine($"[green]Uses GPU:[/] [cyan]{plan.UsesGpu}[/]");
+            AnsiConsole.MarkupLine($"[green]GPU group size:[/] [cyan]{plan.GroupSize}[/]");
+            AnsiConsole.MarkupLine($"[green]Parallel benchmark slots:[/] [cyan]{plan.Slots.Count}[/]");
+
+            foreach (var slot in plan.Slots)
+            {
+                AnsiConsole.MarkupLine($"  [grey]Slot {slot.SlotId}:[/] {Markup.Escape(slot.DisplayName)}");
+            }
+        }
+        finally
+        {
+            PlanInitLock.Release();
+        }
+    }
+    
+    public async Task ClampStaticNglWithBaseModelAsync(
+    string baseModelPath,
+    int discoveryTokenTarget = 8192,
+    CancellationToken ct = default)
+{
+    if (string.IsNullOrWhiteSpace(baseModelPath))
+        throw new ArgumentException("Base model path was null or empty.", nameof(baseModelPath));
+
+    if (_currentPlan == null)
+        throw new InvalidOperationException(
+            "Benchmark execution plan has not been initialized. Call EnsureExecutionPlanAsync() first.");
+
+    if (!_currentPlan.UsesGpu)
+        return;
+
+    await PlanInitLock.WaitAsync(ct);
+    try
+    {
+        if (_currentPlan == null || !_currentPlan.UsesGpu)
+            return;
+
+        var slot = _currentPlan.Slots[0];
+
+        string probeRoot = Path.Combine(Cache.ModelMagicQuantDirectory!, "_benchmark_plan_probe_base");
+        Directory.CreateDirectory(probeRoot);
+
+        string probeCorpusDir = Path.Combine(probeRoot, "_ppl_corpora");
+        Directory.CreateDirectory(probeCorpusDir);
+
+        string corpusPath = Path.Combine(probeCorpusDir, "ppl_corpus_general.txt");
+        await PreparePplCorpusAsync("general", corpusPath, discoveryTokenTarget);
+
+        int startingNgl = _currentPlan.StaticNgl;
+        int? chosen = null;
+
+        AnsiConsole.Write(new Rule("[yellow]Clamping Static ngl With Base Model[/]") { Justification = Justify.Left });
+        AnsiConsole.MarkupLine($"[grey]Base model:[/] {Markup.Escape(baseModelPath)}");
+        AnsiConsole.MarkupLine($"[grey]Starting from Q8-discovered ngl:[/] [cyan]{startingNgl}[/]");
+
+        foreach (int ngl in NglCandidates.Where(n => n <= startingNgl).OrderByDescending(n => n))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            AnsiConsole.MarkupLine($"[grey]Base clamp probe:[/] [cyan]ngl={ngl}[/]");
+
+            bool benchOk = await ProbeLlamaBenchAtFixedNglAsync(baseModelPath, slot, ngl, probeRoot);
+            if (!benchOk)
+            {
+                AnsiConsole.MarkupLine($"[grey]  llama-bench failed at ngl={ngl}[/]");
+                continue;
+            }
+
+            bool pplOk = await ProbePerplexityAtFixedNglAsync(baseModelPath, slot, ngl, corpusPath, probeRoot);
+            if (!pplOk)
+            {
+                AnsiConsole.MarkupLine($"[grey]  perplexity failed at ngl={ngl}[/]");
+                continue;
+            }
+
+            chosen = ngl;
+            break;
+        }
+
+        if (!chosen.HasValue)
+        {
+            throw new InvalidOperationException(
+                $"Could not clamp a stable benchmark ngl for the base model '{baseModelPath}' " +
+                $"within the discovered Q8 topology.");
+        }
+
+        if (chosen.Value != _currentPlan.StaticNgl)
+        {
+            var updated = new BenchmarkExecutionPlan(
+                planModelPath: _currentPlan.PlanModelPath,
+                staticNgl: chosen.Value,
+                usesGpu: _currentPlan.UsesGpu,
+                groupSize: _currentPlan.GroupSize,
+                slots: _currentPlan.Slots);
+
+            lock (SlotSync)
+            {
+                _currentPlan = updated;
+                _availableSlots = new Queue<BenchmarkSlot>(updated.Slots);
+                _slotSemaphore = new SemaphoreSlim(updated.Slots.Count, updated.Slots.Count);
+            }
+        }
+
+        AnsiConsole.MarkupLine($"[green]Base-model clamped static ngl:[/] [cyan]{chosen.Value}[/]");
+    }
+    finally
+    {
+        PlanInitLock.Release();
+    }
+}
+
+    private async Task<BenchmarkExecutionPlan> BuildExecutionPlanAsync(
+        string q8ModelPath,
+        int discoveryTokenTarget,
+        CancellationToken ct)
+    {
+        int gpuCount = Cache.SysInfo?.GpuInfo?
+            .Count(x => x.GpuVendor != GpuVendor.Cpu && x.GpuVendor != GpuVendor.Unknown) ?? 0;
+
+        if (gpuCount <= 0)
+        {
+            return BenchmarkExecutionPlan.CreateCpuPlan(q8ModelPath);
+        }
+
+        var allGpuIndices = Enumerable.Range(0, gpuCount).ToArray();
+        var allGpuSlot = new BenchmarkSlot(0, allGpuIndices);
+
+        string probeRoot = Path.Combine(Cache.ModelMagicQuantDirectory!, "_benchmark_plan_probe");
+        Directory.CreateDirectory(probeRoot);
+
+        int? targetNgl = await ProbeHighestStableNglAsync(
+            q8ModelPath,
+            allGpuSlot,
+            probeRoot,
+            discoveryTokenTarget,
+            ct);
+
+        if (!targetNgl.HasValue || targetNgl.Value <= 0)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]Q8 discovery could not establish a stable GPU ngl. Falling back to a single CPU slot.[/]");
+            return BenchmarkExecutionPlan.CreateCpuPlan(q8ModelPath);
+        }
+
+        foreach (var groupSize in GetCandidateGroupSizes(gpuCount))
+        {
+            var groups = BuildContiguousGroups(allGpuIndices, groupSize);
+            var slots = new List<BenchmarkSlot>();
+
+            bool allGroupsPass = true;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                var slot = new BenchmarkSlot(i, groups[i]);
+
+                bool ok = await ValidateSlotForFixedPlanAsync(
+                    q8ModelPath,
+                    slot,
+                    targetNgl.Value,
+                    probeRoot,
+                    discoveryTokenTarget,
+                    ct);
+
+                if (!ok)
+                {
+                    allGroupsPass = false;
+                    break;
+                }
+
+                slots.Add(slot);
+            }
+
+            if (allGroupsPass && slots.Count > 0)
+            {
+                return new BenchmarkExecutionPlan(
+                    planModelPath: q8ModelPath,
+                    staticNgl: targetNgl.Value,
+                    usesGpu: true,
+                    groupSize: groupSize,
+                    slots: slots);
+            }
+        }
+
+        // This should not normally happen because "all GPUs as one slot" already passed,
+        // but keeping a hard fallback is still worthwhile.
+        return new BenchmarkExecutionPlan(
+            planModelPath: q8ModelPath,
+            staticNgl: targetNgl.Value,
+            usesGpu: true,
+            groupSize: gpuCount,
+            slots: new List<BenchmarkSlot> { allGpuSlot });
+    }
+
+    private async Task<int?> ProbeHighestStableNglAsync(
+        string modelPath,
+        BenchmarkSlot slot,
+        string probeRoot,
+        int tokenTarget,
+        CancellationToken ct)
+    {
+        string probeCorpusDir = Path.Combine(probeRoot, "_ppl_corpora");
+        Directory.CreateDirectory(probeCorpusDir);
+
+        string corpusPath = Path.Combine(probeCorpusDir, "ppl_corpus_general.txt");
+        await PreparePplCorpusAsync("general", corpusPath, tokenTarget);
+
+        foreach (int ngl in NglCandidates)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            AnsiConsole.MarkupLine(
+                $"[grey]Plan probe:[/] testing [cyan]{Markup.Escape(slot.DisplayName)}[/] at [cyan]ngl={ngl}[/]");
+
+            bool benchOk = await ProbeLlamaBenchAtFixedNglAsync(modelPath, slot, ngl, probeRoot);
+            if (!benchOk)
+            {
+                AnsiConsole.MarkupLine($"[grey]  llama-bench failed at ngl={ngl}[/]");
+                continue;
+            }
+
+            bool pplOk = await ProbePerplexityAtFixedNglAsync(modelPath, slot, ngl, corpusPath, probeRoot);
+            if (!pplOk)
+            {
+                AnsiConsole.MarkupLine($"[grey]  perplexity failed at ngl={ngl}[/]");
+                continue;
+            }
+
+            AnsiConsole.MarkupLine($"[green]  stable ngl discovered:[/] [cyan]{ngl}[/]");
+            return ngl;
+        }
+
+        return null;
+    }
+
+    private async Task<bool> ValidateSlotForFixedPlanAsync(
+        string modelPath,
+        BenchmarkSlot slot,
+        int fixedNgl,
+        string probeRoot,
+        int tokenTarget,
+        CancellationToken ct)
+    {
+        string probeCorpusDir = Path.Combine(probeRoot, "_ppl_corpora");
+        Directory.CreateDirectory(probeCorpusDir);
+
+        string corpusPath = Path.Combine(probeCorpusDir, "ppl_corpus_general.txt");
+        await PreparePplCorpusAsync("general", corpusPath, tokenTarget);
+
+        bool benchOk = await ProbeLlamaBenchAtFixedNglAsync(modelPath, slot, fixedNgl, probeRoot);
+        if (!benchOk)
+            return false;
+
+        bool pplOk = await ProbePerplexityAtFixedNglAsync(modelPath, slot, fixedNgl, corpusPath, probeRoot);
+        return pplOk;
+    }
+
+    private async Task<bool> ProbeLlamaBenchAtFixedNglAsync(
+        string modelPath,
+        BenchmarkSlot slot,
+        int fixedNgl,
+        string probeRoot)
+    {
+        string logFile = Path.Combine(
+            probeRoot,
+            $"probe_llamabench_slot{slot.SlotId}_g{slot.DeviceCount}_ngl{fixedNgl}.md");
+
+        string cmd = slot.UsesGpu
+            ? $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -ngl {fixedNgl} -o md"
+            : $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -backend cpu -o md";
+
+        var result = await RunShellCommandAsync(cmd, logFile, slot.BuildProcessEnv());
+
+        if (!result.Success)
+            return false;
+
+        try
+        {
+            var parsed = ParseLlamaBench(logFile);
+            return parsed.Tps.HasValue && parsed.Tps.Value > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> ProbePerplexityAtFixedNglAsync(
+        string modelPath,
+        BenchmarkSlot slot,
+        int fixedNgl,
+        string corpusPath,
+        string probeRoot)
+    {
+        string logFile = Path.Combine(
+            probeRoot,
+            $"probe_ppl_general_slot{slot.SlotId}_g{slot.DeviceCount}_ngl{fixedNgl}.log");
+
+        string cmd = slot.UsesGpu
+            ? $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {fixedNgl} -t 4 -c 2048 --file \"{corpusPath}\""
+            : $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl 0 -t 4 -c 2048 --file \"{corpusPath}\"";
+
+        var result = await RunShellCommandAsync(cmd, logFile, slot.BuildProcessEnv());
+
+        if (!result.Success)
+            return false;
+
+        try
+        {
+            var parsed = ParsePerplexity(logFile, allowMissingKld: true);
+            return parsed.Ppl > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static List<int> GetCandidateGroupSizes(int gpuCount)
+    {
+        var divisors = new List<int>();
+
+        for (int i = 1; i <= gpuCount; i++)
+        {
+            if (gpuCount % i == 0)
+                divisors.Add(i);
+        }
+
+        return divisors;
+    }
+
+    private static List<int[]> BuildContiguousGroups(int[] gpuIndices, int groupSize)
+    {
+        if (gpuIndices.Length % groupSize != 0)
+        {
+            throw new InvalidOperationException(
+                $"GPU count {gpuIndices.Length} was not divisible by group size {groupSize}.");
+        }
+
+        var groups = new List<int[]>();
+        for (int i = 0; i < gpuIndices.Length; i += groupSize)
+        {
+            groups.Add(gpuIndices.Skip(i).Take(groupSize).ToArray());
+        }
+
+        return groups;
+    }
+
+    private static async Task<BenchmarkSlotLease> AcquireBenchmarkSlotAsync(CancellationToken ct = default)
+    {
+        if (_currentPlan == null)
+            throw new InvalidOperationException(
+                "Benchmark execution plan has not been initialized. Call EnsureExecutionPlanAsync() first.");
+
+        if (_slotSemaphore == null)
+            throw new InvalidOperationException("Benchmark slot semaphore is not initialized.");
+
+        await _slotSemaphore.WaitAsync(ct);
+
+        lock (SlotSync)
+        {
+            if (_availableSlots.Count == 0)
+            {
+                _slotSemaphore.Release();
+                throw new InvalidOperationException("No benchmark slots were available after semaphore acquisition.");
+            }
+
+            var slot = _availableSlots.Dequeue();
+            return new BenchmarkSlotLease(slot);
+        }
+    }
+
+    private static void ReturnBenchmarkSlot(BenchmarkSlot slot)
+    {
+        lock (SlotSync)
+        {
+            _availableSlots.Enqueue(slot);
+            _slotSemaphore!.Release();
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Public entry points
+    // ----------------------------------------------------------------
 
     private static bool IsNativeBaseModel(HybridQuant quantConfig)
     {
@@ -51,9 +510,14 @@ public class BenchmarkService
         return File.Exists(modelPath) ? (ulong)new FileInfo(modelPath).Length : 0UL;
     }
 
-    private static bool IsPositiveKld(double? kld)
+    private const double KldEpsilon = 1e-8;
+
+    private static bool HasMeaningfulKld(double? kld)
     {
-        return kld.HasValue && kld.Value > 0d;
+        return kld.HasValue &&
+               !double.IsNaN(kld.Value) &&
+               !double.IsInfinity(kld.Value) &&
+               Math.Abs(kld.Value) > KldEpsilon;
     }
 
     public async Task<bool> TryReuseExistingBenchmarksAsync(
@@ -75,7 +539,12 @@ public class BenchmarkService
             return false;
         }
 
-        reused.ModelSizeBytes ??= TryGetModelSize(modelPath);
+        if (!reused.ModelSizeBytes.HasValue || reused.ModelSizeBytes.Value == 0)
+        {
+            var actualSize = TryGetModelSize(modelPath);
+            if (actualSize > 0)
+                reused.ModelSizeBytes = actualSize;
+        }
 
         using var db = new MagicQuantContext();
 
@@ -97,32 +566,6 @@ public class BenchmarkService
 
         return true;
     }
-
-    // Constants
-    private static readonly string[] OomMarkers =
-    {
-        "out of memory", "cudaMalloc failed", "unable to allocate cuda", "try reducing --n-gpu-layers"
-    };
-
-    private static readonly int[] NglCandidates = { 35, 30, 24, 20, 16, 12, 8, 4, 0 };
-
-    // ----------------------------------------------------------------
-    // Concurrency Controls
-    // ----------------------------------------------------------------
-
-    public static readonly SemaphoreSlim ExclusiveBenchLock = new(1, 1);
-    public static readonly SemaphoreSlim VramLock = new(1, 1);
-
-    public BenchmarkService(PythonManager pyManager)
-    {
-        _bins = new LlamaBinaries(Cache.LlamaRoot);
-        _bins.Validate();
-        _pyManager = pyManager;
-    }
-
-    // ----------------------------------------------------------------
-    // Public Entry Point
-    // ----------------------------------------------------------------
 
     public async Task<BenchmarkResult> RunAllBenchmarksAsync(
         HybridQuant quantConfig,
@@ -159,19 +602,32 @@ public class BenchmarkService
             .AsNoTracking()
             .FirstOrDefaultAsync(b => b.AiModelHashId == aiModelHash.Id && b.TensorComboId == tensorCombo.Id);
 
-        // 1. If DB already has everything required, trust DB first and don't rerun.
+        // 1. DB truth first
         if (existingBench != null && HasRequiredCategories(existingBench, requestedDomains, requireKld))
         {
+            if (existingBench.SizeBytes == 0)
+            {
+                var repairedSize = TryGetModelSize(modelPath);
+                if (repairedSize > 0)
+                {
+                    existingBench.SizeBytes = repairedSize;
+                    db.AiBenchmarks.Update(existingBench);
+                    await db.SaveChangesAsync();
+                }
+            }
+
             if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var diskResult))
             {
-                diskResult.ModelSizeBytes ??= existingBench.SizeBytes;
+                if (!diskResult.ModelSizeBytes.HasValue || diskResult.ModelSizeBytes.Value == 0)
+                    diskResult.ModelSizeBytes = existingBench.SizeBytes > 0 ? existingBench.SizeBytes : TryGetModelSize(modelPath);
+
                 return diskResult;
             }
 
             return BuildResultFromDb(existingBench, requestedDomains);
         }
 
-        // 2. If disk already has reusable artifacts, sync DB and return.
+        // 2. Disk truth second
         if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var reused))
         {
             reused.ModelSizeBytes ??= TryGetModelSize(modelPath);
@@ -180,7 +636,21 @@ public class BenchmarkService
             return reused;
         }
 
-        // 3. Otherwise run only the pieces that are actually missing/invalid.
+        // 3. Real execution: fixed slot + fixed ngl
+        if (_currentPlan == null)
+        {
+            throw new InvalidOperationException(
+                "No benchmark execution plan has been discovered yet. " +
+                "You must call EnsureExecutionPlanAsync() with the pure Q8 model first.");
+        }
+
+        await using var slotLease = await AcquireBenchmarkSlotAsync();
+        var slot = slotLease.Slot;
+
+        int effectiveNgl = slot.UsesGpu
+            ? _currentPlan.StaticNgl
+            : 0;
+
         var result = new BenchmarkResult
         {
             ModelSizeBytes = TryGetModelSize(modelPath)
@@ -193,16 +663,9 @@ public class BenchmarkService
         }
         else
         {
-            await ExclusiveBenchLock.WaitAsync();
-            try
-            {
-                AnsiConsole.MarkupLine("[yellow]Running Llama-Bench (Exclusive Mode)...[/]");
-                result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, startNgl);
-            }
-            finally
-            {
-                ExclusiveBenchLock.Release();
-            }
+            AnsiConsole.MarkupLine(
+                $"[yellow]Running Llama-Bench[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
+            result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, effectiveNgl, slot);
         }
 
         var corporaRoot = Path.Combine(Path.GetDirectoryName(benchDir)!, "_ppl_corpora");
@@ -227,32 +690,27 @@ public class BenchmarkService
             string corpusPath = Path.Combine(corporaRoot, $"ppl_corpus_{domain}.txt");
             await PreparePplCorpusAsync(domain, corpusPath, tokenTarget);
 
-            await VramLock.WaitAsync();
-            try
-            {
-                AnsiConsole.MarkupLine($"[yellow]Running Perplexity ({domain})...[/]");
-                var metrics = await RunPplBenchmarkAsync(
-                    modelPath: modelPath,
-                    benchDir: benchDir,
-                    domain: domain,
-                    corpusPath: corpusPath,
-                    startNgl: startNgl,
-                    klLogitsDir: klLogitsDir,
-                    saveLogits: saveLogits);
+            AnsiConsole.MarkupLine(
+                $"[yellow]Running Perplexity ({Markup.Escape(domain)})[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
 
-                if (requireKld && !IsPositiveKld(metrics.Kld))
-                {
-                    throw new InvalidOperationException(
-                        $"Non-base benchmark produced invalid KLD for domain '{domain}'. " +
-                        $"KLD must exist and be > 0. Parsed value: {(metrics.Kld.HasValue ? metrics.Kld.Value.ToString() : "null")}");
-                }
+            var metrics = await RunPplBenchmarkAsync(
+                modelPath: modelPath,
+                benchDir: benchDir,
+                domain: domain,
+                corpusPath: corpusPath,
+                fixedNgl: effectiveNgl,
+                slot: slot,
+                klLogitsDir: klLogitsDir,
+                saveLogits: saveLogits);
 
-                result.Perplexity[domain] = metrics;
-            }
-            finally
+            if (requireKld && !HasMeaningfulKld(metrics.Kld))
             {
-                VramLock.Release();
+                throw new InvalidOperationException(
+                    $"Non-base benchmark produced invalid KLD for domain '{domain}'. " +
+                    $"KLD must exist and be > 0. Parsed value: {(metrics.Kld.HasValue ? metrics.Kld.Value.ToString(CultureInfo.InvariantCulture) : "null")}");
             }
+
+            result.Perplexity[domain] = metrics;
         }
 
         await WriteMetricsJsonAsync(benchDir, result);
@@ -262,13 +720,11 @@ public class BenchmarkService
     }
 
     // ----------------------------------------------------------------
-    // Database Helpers (Fixed for Immutability)
+    // Database helpers
     // ----------------------------------------------------------------
 
     private async Task<TensorCombo> GetOrCreateTensorComboAsync(MagicQuantContext db, HybridQuant quant)
     {
-        // 1. Extract values into local variables. 
-        //    Default to 0 (NULL scheme) if not present in the mutable list.
         byte baseQuant = quant.BaseQuant.UniqueId;
 
         byte embeddings = 0;
@@ -285,7 +741,6 @@ public class BenchmarkService
         {
             foreach (var t in quant.Tensors)
             {
-                // Compare using UniqueId to be safe
                 if (t.TGroup.UniqueId == TReg.Embeddings.UniqueId) embeddings = t.TensorType.UniqueId;
                 else if (t.TGroup.UniqueId == TReg.LmHead.UniqueId) lmHead = t.TensorType.UniqueId;
                 else if (t.TGroup.UniqueId == TReg.AttnQ.UniqueId) attnQ = t.TensorType.UniqueId;
@@ -298,7 +753,6 @@ public class BenchmarkService
             }
         }
 
-        // 2. Create the Immutable Config using the Constructor
         var c = new TensorConfig(
             baseQuant,
             embeddings,
@@ -309,11 +763,8 @@ public class BenchmarkService
             ffnUpGate,
             ffnDown,
             moeExperts,
-            moeRouter
-        );
+            moeRouter);
 
-        // 3. Check DB using the extracted values
-        //    (We query by the raw bytes because the DB entity fields are readonly and might not map directly in Expression trees depending on EF version)
         var existing = await db.TensorCombos.FirstOrDefaultAsync(x =>
             x.BaseQuant == c.BaseQuant &&
             x.Embeddings == c.Embeddings &&
@@ -324,12 +775,11 @@ public class BenchmarkService
             x.FfnUpGate == c.FfnUpGate &&
             x.FfnDown == c.FfnDown &&
             x.MoeExperts == c.MoeExperts &&
-            x.MoeRouter == c.MoeRouter
-        );
+            x.MoeRouter == c.MoeRouter);
 
-        if (existing != null) return existing;
+        if (existing != null)
+            return existing;
 
-        // 4. Create New TensorCombo using the Constructor (which accepts TensorConfig)
         var newCombo = new TensorCombo(c);
         db.TensorCombos.Add(newCombo);
         await db.SaveChangesAsync();
@@ -383,7 +833,16 @@ public class BenchmarkService
 
             bench.TokensPerSecond = res.LlamaBench?.Tps ?? 0;
             bench.Ngl = (byte)(res.LlamaBench?.Ngl ?? 0);
-            bench.SizeBytes = sizeBytes;
+
+            if (sizeBytes > 0)
+            {
+                bench.SizeBytes = sizeBytes;
+            }
+            else if (bench.SizeBytes == 0)
+            {
+                // only leave it zero if we truly have no better information
+                bench.SizeBytes = 0;
+            }
 
             await db.SaveChangesAsync();
 
@@ -415,10 +874,10 @@ public class BenchmarkService
                 }
                 else
                 {
-                    if (!IsPositiveKld(m.Kld))
+                    if (!HasMeaningfulKld(m.Kld))
                     {
                         throw new InvalidOperationException(
-                            $"Refusing to save non-base benchmark with invalid KLD. Domain='{domain}', KLD='{m.Kld?.ToString() ?? "null"}'");
+                            $"Refusing to save non-base benchmark with invalid KLD. Domain='{domain}', KLD='{m.Kld?.ToString(CultureInfo.InvariantCulture) ?? "null"}'");
                     }
 
                     kld = m.Kld!.Value;
@@ -461,6 +920,10 @@ public class BenchmarkService
         }
     }
 
+    // ----------------------------------------------------------------
+    // Artifact reuse helpers
+    // ----------------------------------------------------------------
+
     private async Task WriteMetricsJsonAsync(string benchDir, BenchmarkResult result)
     {
         Directory.CreateDirectory(benchDir);
@@ -493,7 +956,7 @@ public class BenchmarkService
             }
             catch
             {
-                // fall through and try rebuilding from individual logs
+                // fall through
             }
         }
 
@@ -541,7 +1004,7 @@ public class BenchmarkService
             if (ppl.Ppl <= 0 || ppl.PplError < 0)
                 return false;
 
-            if (requireKld && !IsPositiveKld(ppl.Kld))
+            if (requireKld && !HasMeaningfulKld(ppl.Kld))
                 return false;
         }
 
@@ -566,7 +1029,7 @@ public class BenchmarkService
         }
         catch
         {
-            // ignore and return false
+            // ignore
         }
 
         return false;
@@ -592,7 +1055,7 @@ public class BenchmarkService
             if (parsed.Ppl <= 0)
                 return false;
 
-            if (requirePositiveKld && !IsPositiveKld(parsed.Kld))
+            if (requirePositiveKld && !HasMeaningfulKld(parsed.Kld))
                 return false;
 
             metrics = parsed;
@@ -633,7 +1096,7 @@ public class BenchmarkService
                 return false;
         }
 
-        return bench.TokensPerSecond > 0;
+        return bench.TokensPerSecond > 0 && bench.SizeBytes > 0;
     }
 
     private BenchmarkResult BuildResultFromDb(
@@ -674,35 +1137,185 @@ public class BenchmarkService
     }
 
     // ----------------------------------------------------------------
-    // 1. Llama-Bench Logic (Unchanged)
+    // Real benchmark execution (fixed slot + fixed ngl)
     // ----------------------------------------------------------------
 
-    private async Task<LlamaBenchMetrics> RunLlamaBenchAsync(string modelPath, string benchDir, int? startNgl)
+    private async Task<LlamaBenchMetrics> RunLlamaBenchAsync(
+        string modelPath,
+        string benchDir,
+        int fixedNgl,
+        BenchmarkSlot slot)
     {
         string logFile = Path.Combine(benchDir, "llamabench.md");
-        var candidates = startNgl.HasValue
-            ? NglCandidates.Where(n => n <= startNgl.Value).ToList()
-            : NglCandidates.ToList();
 
-        string BuildCmd(int ngl) =>
-            $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -ngl {ngl} -o md";
+        string cmd = slot.UsesGpu
+            ? $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -ngl {fixedNgl} -o md"
+            : $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -backend cpu -o md";
 
-        int? finalNgl = await RunWithRetryAsync(BuildCmd, logFile, candidates, "llama-bench");
+        await RunFixedCommandWithRetryAsync(
+            label: "llama-bench",
+            cmd: cmd,
+            logFile: logFile,
+            slot: slot,
+            attempts: 2,
+            requirePplMarker: false);
 
-        if (finalNgl == null)
+        var parsed = ParseLlamaBench(logFile);
+        if (!parsed.Tps.HasValue || parsed.Tps.Value <= 0)
         {
-            AnsiConsole.MarkupLine("[red]GPU Failed. Fallback to CPU backend...[/]");
-            string cpuCmd = $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -backend cpu -o md";
-            await RunShellCommandAsync(cpuCmd, logFile);
+            throw new InvalidOperationException(
+                $"llama-bench completed but no valid TPS could be parsed from {logFile}");
         }
 
-        return ParseLlamaBench(logFile);
+        return parsed;
     }
+
+    private async Task<PplMetrics> RunPplBenchmarkAsync(
+        string modelPath,
+        string benchDir,
+        string domain,
+        string corpusPath,
+        int fixedNgl,
+        BenchmarkSlot slot,
+        string? klLogitsDir,
+        bool saveLogits)
+    {
+        string logFile = Path.Combine(benchDir, $"perplexity_{domain}.log");
+
+        string kldArgs = "";
+        bool expectKld = false;
+
+        if (!string.IsNullOrEmpty(klLogitsDir))
+        {
+            string logitsFile = Path.Combine(klLogitsDir, $"kld_logits_{domain}.bin");
+
+            if (saveLogits)
+            {
+                kldArgs = $"--kl-divergence-base \"{logitsFile}\"";
+                expectKld = false;
+            }
+            else if (File.Exists(logitsFile))
+            {
+                kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence";
+                expectKld = true;
+            }
+        }
+
+        string cmd = slot.UsesGpu
+            ? $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {fixedNgl} -t 4 -c 2048 --file \"{corpusPath}\" {kldArgs}"
+            : $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl 0 -t 4 -c 2048 --file \"{corpusPath}\" {kldArgs}";
+
+        await RunFixedCommandWithRetryAsync(
+            label: $"perplexity-{domain}",
+            cmd: cmd,
+            logFile: logFile,
+            slot: slot,
+            attempts: 2,
+            requirePplMarker: true);
+
+        bool allowMissingKld = !expectKld;
+        var parsed = ParsePerplexity(logFile, allowMissingKld);
+
+        if (expectKld && !HasMeaningfulKld(parsed.Kld))
+        {
+            throw new InvalidOperationException(
+                $"Expected a real KLD for domain '{domain}', but parsed '{parsed.Kld?.ToString(CultureInfo.InvariantCulture) ?? "null"}' from {logFile}");
+        }
+
+        return parsed;
+    }
+
+    private async Task RunFixedCommandWithRetryAsync(
+        string label,
+        string cmd,
+        string logFile,
+        BenchmarkSlot slot,
+        int attempts,
+        bool requirePplMarker)
+    {
+        CommandRunResult? last = null;
+
+        for (int attempt = 1; attempt <= attempts; attempt++)
+        {
+            last = await RunShellCommandAsync(cmd, logFile, slot.BuildProcessEnv());
+
+            string logContent = !string.IsNullOrWhiteSpace(last.LogOutput)
+                ? last.LogOutput
+                : (File.Exists(logFile) ? File.ReadAllText(logFile) : string.Empty);
+
+            bool success = last.Success && logContent.Length >= 50;
+
+            if (success && requirePplMarker)
+            {
+                success = LooksLikeSuccessfulPerplexityRun(logFile, logContent);
+            }
+
+            if (success)
+                return;
+
+            bool retryable = LooksLikeRetryableGpuFailure(logContent);
+
+            if (attempt < attempts && retryable)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Transient benchmark failure detected on slot {slot.SlotId} ({Markup.Escape(slot.DisplayName)}). Retrying same fixed plan...[/]");
+                await Task.Delay(1500);
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"{label} failed on fixed benchmark slot {slot.SlotId} ({Markup.Escape(slot.DisplayName)}).\n" +
+                $"Command: {cmd}\n\nLog Output:\n{logContent}");
+        }
+
+        throw new InvalidOperationException(
+            $"{label} failed after {attempts} attempts on slot {slot.SlotId} ({Markup.Escape(slot.DisplayName)}).\n" +
+            $"{last?.LogOutput}");
+    }
+    
+    private bool LooksLikeSuccessfulPerplexityRun(string logFile, string logContent)
+    {
+        if (string.IsNullOrWhiteSpace(logContent) || logContent.Length < 50)
+            return false;
+
+        try
+        {
+            var parsed = ParsePerplexity(logFile, allowMissingKld: true);
+            return parsed.Ppl > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    
+    private static bool LooksLikeRetryableGpuFailure(string logContent)
+    {
+        if (string.IsNullOrWhiteSpace(logContent))
+            return false;
+
+        if (OomMarkers.Any(m => logContent.Contains(m, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        if (logContent.Contains("failed to load model", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (logContent.Contains("error:", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    // ----------------------------------------------------------------
+    // Parsers
+    // ----------------------------------------------------------------
 
     private LlamaBenchMetrics ParseLlamaBench(string logPath)
     {
         var metrics = new LlamaBenchMetrics { LogPath = GetRelativePath(logPath) };
-        if (!File.Exists(logPath)) return metrics;
+        if (!File.Exists(logPath))
+            return metrics;
 
         var lines = File.ReadAllLines(logPath);
         int headerIdx = -1;
@@ -715,83 +1328,46 @@ public class BenchmarkService
             }
         }
 
-        if (headerIdx == -1 || lines.Length <= headerIdx + 2) return metrics;
+        if (headerIdx == -1 || lines.Length <= headerIdx + 2)
+            return metrics;
 
-        var headers = lines[headerIdx].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(h => h.Trim()).ToList();
-        var dataRow = lines[headerIdx + 2].Split('|', StringSplitOptions.RemoveEmptyEntries).Select(d => d.Trim())
+        var headers = lines[headerIdx]
+            .Split('|', StringSplitOptions.RemoveEmptyEntries)
+            .Select(h => h.Trim())
             .ToList();
 
-        if (headers.Count != dataRow.Count) return metrics;
-        var row = headers.Zip(dataRow, (h, d) => new { Header = h, Data = d }).ToDictionary(x => x.Header, x => x.Data);
+        var dataRow = lines[headerIdx + 2]
+            .Split('|', StringSplitOptions.RemoveEmptyEntries)
+            .Select(d => d.Trim())
+            .ToList();
 
-        string tpsStr = row.ContainsKey("t/s") ? row["t/s"] : (row.ContainsKey("tps") ? row["tps"] : "0");
+        if (headers.Count != dataRow.Count)
+            return metrics;
+
+        var row = headers
+            .Zip(dataRow, (h, d) => new { Header = h, Data = d })
+            .ToDictionary(x => x.Header, x => x.Data, StringComparer.OrdinalIgnoreCase);
+
+        string tpsStr = row.ContainsKey("t/s")
+            ? row["t/s"]
+            : (row.ContainsKey("tps") ? row["tps"] : "0");
+
         var match = Regex.Match(tpsStr, @"([0-9.]+)");
-
-        if (match.Success && double.TryParse(match.Groups[1].Value, out double tps))
+        if (match.Success &&
+            double.TryParse(match.Groups[1].Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double tps))
         {
             metrics.Tps = tps;
             metrics.Backend = row.ContainsKey("backend") ? row["backend"] : "unknown";
             metrics.Test = row.ContainsKey("test") ? row["test"] : "unknown";
-            if (row.ContainsKey("ngl") && int.TryParse(row["ngl"], out int ngl)) metrics.Ngl = ngl;
+
+            if (row.ContainsKey("ngl") &&
+                int.TryParse(row["ngl"], NumberStyles.Any, CultureInfo.InvariantCulture, out int ngl))
+            {
+                metrics.Ngl = ngl;
+            }
         }
 
         return metrics;
-    }
-
-    // ----------------------------------------------------------------
-    // 2. Perplexity Logic (Unchanged)
-    // ----------------------------------------------------------------
-
-    private async Task<PplMetrics> RunPplBenchmarkAsync(
-        string modelPath,
-        string benchDir,
-        string domain,
-        string corpusPath,
-        int? startNgl,
-        string? klLogitsDir,
-        bool saveLogits)
-    {
-        string logFile = Path.Combine(benchDir, $"perplexity_{domain}.log");
-        var candidates = startNgl.HasValue
-            ? NglCandidates.Where(n => n <= startNgl.Value).ToList()
-            : NglCandidates.ToList();
-
-        string kldArgs = "";
-        bool expectKld = false;
-
-        if (!string.IsNullOrEmpty(klLogitsDir))
-        {
-            string logitsFile = Path.Combine(klLogitsDir, $"kld_logits_{domain}.bin");
-
-            if (saveLogits)
-            {
-                // Base/native model path: save logits only, do not expect KLD yet.
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\"";
-                expectKld = false;
-            }
-            else if (File.Exists(logitsFile))
-            {
-                // Sample path: compare against the already saved base logits.
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence";
-                expectKld = true;
-            }
-        }
-
-        string BuildCmd(int ngl) =>
-            $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {ngl} -t 4 -c 2048 --file \"{corpusPath}\" {kldArgs}";
-
-        await RunWithRetryAsync(BuildCmd, logFile, candidates, $"perplexity-{domain}");
-
-        bool allowMissingKld = !expectKld;
-        var parsed = ParsePerplexity(logFile, allowMissingKld);
-
-        if (expectKld && !IsPositiveKld(parsed.Kld))
-        {
-            throw new InvalidOperationException(
-                $"Expected a real KLD for domain '{domain}', but parsed '{parsed.Kld?.ToString() ?? "null"}' from {logFile}");
-        }
-
-        return parsed;
     }
 
     private PplMetrics ParsePerplexity(string logPath, bool allowMissingKld)
@@ -815,8 +1391,8 @@ public class BenchmarkService
                 $"Failed to parse PPL from log: {logPath}\n\nLast log content:\n{cleanText}");
         }
 
-        metrics.Ppl = double.Parse(pplMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-        metrics.PplError = double.Parse(pplMatch.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+        metrics.Ppl = double.Parse(pplMatch.Groups[1].Value, CultureInfo.InvariantCulture);
+        metrics.PplError = double.Parse(pplMatch.Groups[2].Value, CultureInfo.InvariantCulture);
 
         var kldMatch = Regex.Match(
             cleanText,
@@ -825,7 +1401,7 @@ public class BenchmarkService
 
         if (kldMatch.Success)
         {
-            metrics.Kld = double.Parse(kldMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            metrics.Kld = double.Parse(kldMatch.Groups[1].Value, CultureInfo.InvariantCulture);
         }
         else if (!allowMissingKld)
         {
@@ -837,12 +1413,13 @@ public class BenchmarkService
     }
 
     // ----------------------------------------------------------------
-    // 3. Corpus Preparation (Unchanged)
+    // Corpus preparation
     // ----------------------------------------------------------------
 
     private async Task PreparePplCorpusAsync(string domain, string outPath, int tokenTarget)
     {
-        if (File.Exists(outPath) && new FileInfo(outPath).Length > 0) return;
+        if (File.Exists(outPath) && new FileInfo(outPath).Length > 0)
+            return;
 
         AnsiConsole.MarkupLine($"[grey]Generating corpus for domain: {domain}[/]");
 
@@ -866,18 +1443,22 @@ for ds, conf, split, field in get_sources(domain):
     try:
         d = load_dataset(ds, conf) if conf else load_dataset(ds)
         for text in d[split][field]:
-            if not text or not isinstance(text, str): continue
+            if not text or not isinstance(text, str):
+                continue
             chunk = text.strip() + '\n'
             parts.append(chunk)
             total += len(chunk)
-            if total >= max_chars: break
+            if total >= max_chars:
+                break
     except Exception as e:
         print(f'Error loading {{ds}}: {{e}}')
-    if total >= max_chars: break
+    if total >= max_chars:
+        break
 
 with open(out_path, 'w', encoding='utf-8') as f:
     f.write(''.join(parts))
 ";
+
         string scriptPath = Path.Combine(Path.GetDirectoryName(outPath)!, $"gen_{domain}.py");
         await File.WriteAllTextAsync(scriptPath, pyScript);
 
@@ -887,87 +1468,18 @@ with open(out_path, 'w', encoding='utf-8') as f:
             : $"\"{scriptPath}\"";
 
         string runner = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd.exe" : pythonExe;
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) args = scriptPath;
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            args = scriptPath;
 
         await _pyManager.RunPipInstallAsync("datasets");
         await RunShellCommandAsync(runner + " " + args, null);
 
-        if (File.Exists(scriptPath)) File.Delete(scriptPath);
+        if (File.Exists(scriptPath))
+            File.Delete(scriptPath);
     }
 
     // ----------------------------------------------------------------
-    // 4. Retry Logic
-    // ----------------------------------------------------------------
-    private async Task<int?> RunWithRetryAsync(
-        Func<int, string> cmdBuilder,
-        string logPath,
-        List<int> candidates,
-        string label)
-    {
-        string? lastFailureDetails = null;
-
-        foreach (int ngl in candidates)
-        {
-            string cmd = cmdBuilder(ngl);
-            AnsiConsole.WriteLine($"[*] {label}: trying -ngl {ngl}");
-
-            var result = await RunShellCommandAsync(cmd, logPath);
-
-            string logContent = !string.IsNullOrWhiteSpace(result.LogOutput)
-                ? result.LogOutput
-                : (File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty);
-
-            bool looksLikeOom = OomMarkers.Any(m =>
-                logContent.Contains(m, StringComparison.OrdinalIgnoreCase));
-
-            bool looksLikeLoadFailure =
-                logContent.Contains("failed to load model", StringComparison.OrdinalIgnoreCase) ||
-                logContent.Contains("error:", StringComparison.OrdinalIgnoreCase);
-
-            if (!result.Success)
-            {
-                lastFailureDetails =
-                    $"ExitCode={result.ExitCode}, ngl={ngl}\nCommand: {cmd}\n\nLog Output:\n{logContent}";
-
-                if (looksLikeOom || looksLikeLoadFailure)
-                {
-                    AnsiConsole.WriteLine($"[WARN] {label}: failed at -ngl {ngl}, retrying lower setting...");
-                    continue;
-                }
-
-                // Unknown non-zero exit: still retry lower ngl first,
-                // because many llama.cpp GPU/load issues recover that way.
-                AnsiConsole.WriteLine($"[WARN] {label}: non-zero exit at -ngl {ngl}, retrying lower setting...");
-                continue;
-            }
-
-            if (logContent.Length < 50)
-            {
-                lastFailureDetails =
-                    $"Log too short at ngl={ngl}\nCommand: {cmd}\n\nLog Output:\n{logContent}";
-                AnsiConsole.WriteLine($"[WARN] {label}: Failed at -ngl {ngl} (log too short), trying next...");
-                continue;
-            }
-
-            if (label.StartsWith("perplexity", StringComparison.OrdinalIgnoreCase) &&
-                !Regex.IsMatch(logContent, @"PPL\s*[:=]\s*[-+]?\d*\.?\d+", RegexOptions.IgnoreCase))
-            {
-                lastFailureDetails =
-                    $"No parsable PPL marker found at ngl={ngl}\nCommand: {cmd}\n\nLog Output:\n{logContent}";
-                AnsiConsole.WriteLine($"[WARN] {label}: No parsable PPL marker found at -ngl {ngl}, trying next...");
-                continue;
-            }
-
-            AnsiConsole.WriteLine($"[OK] {label}: succeeded with -ngl {ngl}");
-            return ngl;
-        }
-
-        throw new InvalidOperationException(
-            $"{label}: all -ngl candidates failed.\n\nLast failure details:\n{lastFailureDetails}");
-    }
-
-    // ----------------------------------------------------------------
-    // 5. System Utilities
+    // Process / shell utilities
     // ----------------------------------------------------------------
 
     private sealed class CommandRunResult
@@ -977,7 +1489,10 @@ with open(out_path, 'w', encoding='utf-8') as f:
         public string LogOutput { get; init; } = string.Empty;
     }
 
-    private async Task<CommandRunResult> RunShellCommandAsync(string cmd, string? logPath)
+    private async Task<CommandRunResult> RunShellCommandAsync(
+        string cmd,
+        string? logPath,
+        IReadOnlyDictionary<string, string>? extraEnv = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -988,6 +1503,14 @@ with open(out_path, 'w', encoding='utf-8') as f:
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        if (extraEnv != null)
+        {
+            foreach (var kvp in extraEnv)
+            {
+                startInfo.Environment[kvp.Key] = kvp.Value;
+            }
+        }
 
         using var process = new Process { StartInfo = startInfo };
         FileStream? fs = null;
@@ -1040,5 +1563,92 @@ with open(out_path, 'w', encoding='utf-8') as f:
     private string GetRelativePath(string fullPath)
     {
         return Path.GetFileName(fullPath);
+    }
+
+    // ----------------------------------------------------------------
+    // Internal plan / slot types
+    // ----------------------------------------------------------------
+
+    private sealed class BenchmarkExecutionPlan
+    {
+        public string PlanModelPath { get; }
+        public int StaticNgl { get; }
+        public bool UsesGpu { get; }
+        public int GroupSize { get; }
+        public IReadOnlyList<BenchmarkSlot> Slots { get; }
+
+        public BenchmarkExecutionPlan(
+            string planModelPath,
+            int staticNgl,
+            bool usesGpu,
+            int groupSize,
+            IReadOnlyList<BenchmarkSlot> slots)
+        {
+            PlanModelPath = planModelPath;
+            StaticNgl = staticNgl;
+            UsesGpu = usesGpu;
+            GroupSize = groupSize;
+            Slots = slots;
+        }
+
+        public static BenchmarkExecutionPlan CreateCpuPlan(string q8ModelPath)
+        {
+            return new BenchmarkExecutionPlan(
+                planModelPath: q8ModelPath,
+                staticNgl: 0,
+                usesGpu: false,
+                groupSize: 0,
+                slots: new List<BenchmarkSlot> { new(0, Array.Empty<int>()) });
+        }
+    }
+
+    private sealed class BenchmarkSlot
+    {
+        public int SlotId { get; }
+        public int[] DeviceIndices { get; }
+        public bool UsesGpu => DeviceIndices.Length > 0;
+        public int DeviceCount => DeviceIndices.Length;
+
+        public BenchmarkSlot(int slotId, int[] deviceIndices)
+        {
+            SlotId = slotId;
+            DeviceIndices = deviceIndices;
+        }
+
+        public string DisplayName =>
+            UsesGpu
+                ? $"GPU[{string.Join(",", DeviceIndices)}]"
+                : "CPU";
+
+        public IReadOnlyDictionary<string, string>? BuildProcessEnv()
+        {
+            if (!UsesGpu)
+                return null;
+
+            string visible = string.Join(",", DeviceIndices);
+
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["CUDA_VISIBLE_DEVICES"] = visible,
+                ["HIP_VISIBLE_DEVICES"] = visible,
+                ["ROCR_VISIBLE_DEVICES"] = visible
+            };
+        }
+    }
+
+    private sealed class BenchmarkSlotLease : IAsyncDisposable
+    {
+        public BenchmarkSlot Slot { get; }
+
+        public BenchmarkSlotLease(BenchmarkSlot slot)
+        {
+            Slot = slot;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            ReturnBenchmarkSlot(Slot);
+            return ValueTask.CompletedTask;
+        }
     }
 }

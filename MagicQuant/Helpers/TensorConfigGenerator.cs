@@ -8,78 +8,106 @@ namespace MagicQuant.Helpers;
 
 public static class TensorConfigGenerator
 {
-    public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? MissingTensorGroup = null)
+    public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? missingTensorGroups = null)
     {
-        if (MissingTensorGroup != null && !MissingTensorGroup.Any())
-            MissingTensorGroup = null;
+        if (missingTensorGroups != null && !missingTensorGroups.Any())
+            missingTensorGroups = null;
 
         var allowedBaselines = BaselineQuants.All.Where(x => x.BaseConversionBase != null).ToList();
         var hybridQuants = new List<HybridQuant>();
 
-        // Fast lookup for missing groups
-        var missingIds = MissingTensorGroup?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
+        var missingIds = missingTensorGroups?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
+        var existingGroups = TReg.All.Where(g => !missingIds.Contains(g.UniqueId)).ToList();
 
-        // ---------------------------------------------------------
         // 1. PURE BASELINE CONTROLS
-        // ---------------------------------------------------------
-        // These must be TRUE baseline exports with NO tensor overrides at all.
-        // Otherwise you are not testing the baseline quant, you're testing a weird hybrid.
         int baseTestsRequired = 0;
         foreach (var baseline in allowedBaselines)
         {
             baseTestsRequired++;
 
+            if (baseline.BaseConversionBase == null)
+                throw new InvalidOperationException(
+                    $"Baseline {string.Join("/", baseline.Names)} is missing BaseConversionBase.");
+
             hybridQuants.Add(new HybridQuant
             {
                 BaseQuant = baseline,
-                Tensors = new List<HybridTensor>()
+                Tensors = baseline.BaseConversionBase.Tensors
+                    .Where(t => t.TGroup != null && !missingIds.Contains(t.TGroup.UniqueId))
+                    .Select(t => new HybridTensor
+                    {
+                        TGroup = t.TGroup,
+                        TensorType = t.TensorType
+                    })
+                    .ToList()
             });
         }
 
         AnsiConsole.MarkupLine($"[bold green]Required pure baseline hybrid tests:[/] {baseTestsRequired:N0}");
 
         // ---------------------------------------------------------
-        // 2. ISOLATION SAMPLES (BF16/F16/F32 source base, one tensor altered)
-        // ---------------------------------------------------------
+// 2. ISOLATION SAMPLES
+// ---------------------------------------------------------
+// These should use a REAL blanket base quant and then override
+// one target group away from that base so llama-quantize actually
+// performs hybrid quantization.
+
         var tensorWeights = TensorWeightScheme.All
             .Where(x => x != TensorWeightScheme.NULL && x != TensorWeightScheme.BF16_F16)
             .ToList();
 
         int isolatedSamplesRequired = 0;
 
-        var isolationBase = BaselineQuants.GetBF16Quant();
+// Pick the real baseline families we want to probe.
+// You can expand this later if desired.
+        var isolationBaselines = BaselineQuants.All
+            .Where(x => x.BaseConversionBase != null)
+            .ToList();
 
-        foreach (var weight in tensorWeights)
+        foreach (var baseline in isolationBaselines)
         {
-            var validTargets = TReg.All.Where(x => !weight.BannedGroups.Contains(x)).ToList();
+            // Map the baseline name to its matching tensor scheme.
+            // Example: IQ4_XS baseline => IQ4_XS tensor scheme everywhere by default.
+            var baselineScheme = TensorWeightScheme.All.FirstOrDefault(s =>
+                s.Names.Any(n => baseline.Names.Contains(n, StringComparer.OrdinalIgnoreCase)));
 
-            if (missingIds.Count > 0)
+            if (baselineScheme == null)
+                continue;
+
+            foreach (var weight in tensorWeights)
             {
-                validTargets.RemoveAll(x => missingIds.Contains(x.UniqueId));
-            }
+                var validTargets = TReg.All
+                    .Where(x => !missingIds.Contains(x.UniqueId))
+                    .Where(x => !weight.BannedGroups.Contains(x))
+                    .ToList();
 
-            foreach (var group in validTargets)
-            {
-                isolatedSamplesRequired++;
-
-                var tensors = TReg.All.Select(g => new HybridTensor
+                foreach (var group in validTargets)
                 {
-                    TGroup = g,
-                    TensorType = missingIds.Contains(g.UniqueId)
-                        ? TensorWeightScheme.NULL
-                        : TensorWeightScheme.BF16_F16
-                }).ToList();
+                    isolatedSamplesRequired++;
 
-                var foundQuant = tensors.First(x => x.TGroup == group);
-                foundQuant.TensorType = weight;
+                    var tensors = TReg.All
+                        .Where(g => !missingIds.Contains(g.UniqueId))
+                        .Select(g => new HybridTensor
+                        {
+                            TGroup = g,
+                            TensorType = baselineScheme
+                        })
+                        .ToList();
 
-                hybridQuants.Add(new HybridQuant
-                {
-                    BaseQuant = isolationBase,
-                    Tensors = tensors
-                });
+                    var foundQuant = tensors.First(x => x.TGroup.UniqueId == group.UniqueId);
+                    foundQuant.TensorType = weight;
+
+                    hybridQuants.Add(new HybridQuant
+                    {
+                        BaseQuant = baseline,
+                        Tensors = tensors
+                    });
+                }
             }
         }
+
+        AnsiConsole.MarkupLine($"[bold green]Isolated Samples Required:[/] {isolatedSamplesRequired:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Total Samples Required:[/] {hybridQuants.Count:N0}");
 
         AnsiConsole.MarkupLine($"[bold green]Isolated Samples Required:[/] {isolatedSamplesRequired:N0}");
         AnsiConsole.MarkupLine($"[bold green]Total Samples Required:[/] {hybridQuants.Count:N0}");

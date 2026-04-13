@@ -89,8 +89,35 @@ public class Evolution : ICommand
         var bService = new BenchmarkService(pyManager);
         var qService = new QuantizationService(bService);
 
-        var bf16ModelGgufPath = await qService.EnsureBaseModelAsync(true);
-        
+        var bf16ModelGgufPath = await qService.EnsureBaseModelFileAsync(true);
+        var q8ModelGgufPath = await qService.EnsurePureQ8ModelAsync();
+
+        await bService.EnsureExecutionPlanAsync(q8ModelGgufPath);
+        await bService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
+
+        var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
+        var baseBenchDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks", baseTypeName);
+        var baseLogitsDir = Path.Combine(baseBenchDir, "logits");
+
+        var baseModelQuant = new HybridQuant
+        {
+            BaseQuant = BaselineQuants.GetBF16Quant(),
+            Tensors = new List<HybridTensor>()
+        };
+
+        await bService.RunAllBenchmarksAsync(
+            quantConfig: baseModelQuant,
+            modelPath: bf16ModelGgufPath,
+            benchDir: baseBenchDir,
+            klLogitsDir: baseLogitsDir,
+            saveLogits: true,
+            domainsOverride: new[] { "general", "code", "math" });
+
+// Optional: capture a quick micro-benchmark for the pure Q8 baseline too.
+// var q8BenchDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks", "Q8_0");
+// var q8Quant = new HybridQuant { BaseQuant = BaselineQuants.Q8_0, Tensors = new List<HybridTensor>() };
+// await bService.RunAllBenchmarksAsync(q8Quant, q8ModelGgufPath, q8BenchDir, saveLogits: false, domainsOverride: new[] { "general" });
+
         var compatibilityService = new ModelCompatibilityService(pyManager);
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
         

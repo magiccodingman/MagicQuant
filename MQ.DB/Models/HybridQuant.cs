@@ -3,71 +3,54 @@ namespace MQ.DB.Models;
 public class HybridQuant
 {
     public BaselineQuants BaseQuant { get; set; } = default!;
-    public List<HybridTensor> Tensors { get; set; } = new List<HybridTensor>();
+    public List<HybridTensor> Tensors { get; set; } = new();
+
     public HybridQuant() { }
-    
-    // Converting constructor: TensorConfig -> HybridQuant
+
     public HybridQuant(TensorConfig c)
     {
-        // If you don’t like LINQ here, swap to dictionary/array maps.
-        BaseQuant  = BaselineQuants.All.First(b => b.UniqueId == c.BaseQuant);
-        
-        Tensors.Add(new HybridTensor()
+        BaseQuant = BaselineQuants.All.First(b => b.UniqueId == c.BaseQuant);
+
+        AddIfNotNull(TReg.Embeddings, c.Embeddings);
+        AddIfNotNull(TReg.LmHead, c.LmHead);
+        AddIfNotNull(TReg.AttnQ, c.AttnQ);
+        AddIfNotNull(TReg.AttnKV, c.AttnKV);
+        AddIfNotNull(TReg.AttnOutput, c.AttnOutput);
+        AddIfNotNull(TReg.FfnUpGate, c.FfnUpGate);
+        AddIfNotNull(TReg.FfnDown, c.FfnDown);
+        AddIfNotNull(TReg.MoeExperts, c.MoeExperts);
+        AddIfNotNull(TReg.MoeRouter, c.MoeRouter);
+    }
+
+    private void AddIfNotNull(TensorGroup group, byte schemeId)
+    {
+        if (schemeId == TensorWeightScheme.NULL.UniqueId)
+            return;
+
+        var scheme = TensorWeightScheme.All.First(g => g.UniqueId == schemeId);
+
+        Tensors.Add(new HybridTensor
         {
-            TGroup = TReg.Embeddings,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.Embeddings)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.LmHead,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.LmHead)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.AttnQ,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.AttnQ)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.AttnKV,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.AttnKV)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.AttnOutput,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.AttnOutput)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.FfnUpGate,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.FfnUpGate)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.FfnDown,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.FfnDown)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.MoeExperts,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.MoeExperts)
-        });
-        
-        Tensors.Add(new HybridTensor()
-        {
-            TGroup = TReg.MoeRouter,
-            TensorType = TensorWeightScheme.All.First(g => g.UniqueId == c.MoeRouter)
+            TGroup = group,
+            TensorType = scheme
         });
     }
 
-    // Conversion operator: TensorConfig -> HybridQuant
+    public HybridQuant Clone()
+    {
+        return new HybridQuant
+        {
+            BaseQuant = BaseQuant,
+            Tensors = Tensors
+                .Select(t => new HybridTensor
+                {
+                    TGroup = t.TGroup,
+                    TensorType = t.TensorType
+                })
+                .ToList()
+        };
+    }
+
     public static explicit operator HybridQuant(TensorConfig c) => new HybridQuant(c);
 }
 
