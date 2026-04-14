@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -18,12 +19,23 @@ public enum SampleProcessState
     Failed = 3
 }
 
+public sealed class SampleProcessingRecord
+{
+    public RequiredSamplePlan Plan { get; set; } = default!;
+    public SampleProcessState State { get; set; }
+    public string ModelName { get; set; } = string.Empty;
+    public uint? TensorComboId { get; set; }
+    public uint? BenchmarkId { get; set; }
+    public string? Error { get; set; }
+}
+
 public sealed class SampleProcessingSummary
 {
     public int Requested { get; set; }
     public int Completed { get; set; }
     public int Skipped { get; set; }
     public int Failed { get; set; }
+    public List<SampleProcessingRecord> Records { get; set; } = new();
 }
 
 public class QuantizationService
@@ -74,25 +86,56 @@ public class QuantizationService
         if (quants == null)
             throw new ArgumentNullException(nameof(quants));
 
+        var shimmedPlans = quants
+            .Select((quant, index) => new RequiredSamplePlan
+            {
+                Kind = RequiredSampleKind.GroupIsolation,
+                Key = $"legacy:{index}",
+                Description = "Legacy batch item",
+                Quant = quant
+            })
+            .ToList();
+
+        return await ProcessHybridBatchAsync(shimmedPlans, ct);
+    }
+
+    public async Task<SampleProcessingSummary> ProcessHybridBatchAsync(
+        IReadOnlyCollection<RequiredSamplePlan> plans,
+        CancellationToken ct = default)
+    {
+        if (plans == null)
+            throw new ArgumentNullException(nameof(plans));
+
         int completed = 0;
         int skipped = 0;
         int failed = 0;
+        var records = new ConcurrentBag<SampleProcessingRecord>();
 
-        // Warm the base model file once so workers don't all race into conversion.
         await EnsureBaseModelFileAsync(false);
 
         await Parallel.ForEachAsync(
-            quants,
+            plans,
             new ParallelOptions
             {
                 MaxDegreeOfParallelism = _maxConcurrentQuantizations,
                 CancellationToken = ct
             },
-            async (quant, token) =>
+            async (plan, token) =>
             {
+                var record = new SampleProcessingRecord
+                {
+                    Plan = plan,
+                    ModelName = GenerateHybridName(plan.Quant)
+                };
+
                 try
                 {
-                    var state = await ProcessHybridQuantAsync(quant, token);
+                    var state = await ProcessHybridQuantAsync(plan.Quant, token);
+                    record.State = state;
+
+                    var identity = await ResolveBenchmarkIdentityAsync(plan.Quant, token);
+                    record.TensorComboId = identity.TensorComboId;
+                    record.BenchmarkId = identity.BenchmarkId;
 
                     switch (state)
                     {
@@ -109,19 +152,73 @@ public class QuantizationService
                 }
                 catch (Exception ex)
                 {
+                    record.State = SampleProcessState.Failed;
+                    record.Error = ex.Message;
                     Interlocked.Increment(ref failed);
-                    AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(GenerateHybridName(quant))}");
+
+                    AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(record.ModelName)}");
                     AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
+                }
+                finally
+                {
+                    records.Add(record);
                 }
             });
 
         return new SampleProcessingSummary
         {
-            Requested = quants.Count,
+            Requested = plans.Count,
             Completed = completed,
             Skipped = skipped,
-            Failed = failed
+            Failed = failed,
+            Records = records.OrderBy(x => x.Plan.Key).ToList()
         };
+    }
+
+    private async Task<(uint? TensorComboId, uint? BenchmarkId)> ResolveBenchmarkIdentityAsync(
+        HybridQuant quant,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            throw new InvalidOperationException("Cache.CurrentModelId is not set.");
+
+        var lookup = BuildTensorLookup(quant);
+
+        await using var db = new MagicQuantContext();
+
+        var model = await db.AiModelHashes
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+        if (model == null)
+            return (null, null);
+
+        var comboId = await db.TensorCombos
+            .AsNoTracking()
+            .Where(x =>
+                x.BaseQuant == lookup.BaseQuant &&
+                x.Embeddings == lookup.Embeddings &&
+                x.LmHead == lookup.LmHead &&
+                x.AttnQ == lookup.AttnQ &&
+                x.AttnKV == lookup.AttnKV &&
+                x.AttnOutput == lookup.AttnOutput &&
+                x.FfnUpGate == lookup.FfnUpGate &&
+                x.FfnDown == lookup.FfnDown &&
+                x.MoeExperts == lookup.MoeExperts &&
+                x.MoeRouter == lookup.MoeRouter)
+            .Select(x => x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (comboId == 0)
+            return (null, null);
+
+        var benchmarkId = await db.AiBenchmarks
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == comboId)
+            .Select(x => x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        return (comboId, benchmarkId == 0 ? null : benchmarkId);
     }
 
     public async Task<SampleProcessState> ProcessHybridQuantAsync(
@@ -578,15 +675,20 @@ public class QuantizationService
             concreteOverrides.Count > 0)
         {
             throw new InvalidOperationException(
-                "Selective tensor overrides cannot use a native-source base quant (BF16/F16/F32). " +
-                "A real base quant such as Q8_0, Q6_K, Q5_K, Q4_K_M, or IQ4_XS must be provided.");
+                "Native BF16/F16/F32 + tensor overrides is disabled. " +
+                "In this build of llama-quantize it produced no-op outputs for isolation tests. " +
+                "Use a real carrier baseline (Q8_0 recommended), force all known groups to BF16/F16, " +
+                "and quantize only the target group.");
         }
 
         return ResolveBaseName(quant.BaseQuant);
     }
-    
+
     private static TensorWeightScheme? TryResolveBaseTensorScheme(BaselineQuants baseQuant)
     {
+        if (baseQuant.UniqueId == BaselineQuants.NativeSourceUniqueId)
+            return TensorWeightScheme.BF16_F16;
+
         if (baseQuant.Names.IsDefaultOrEmpty)
             return null;
 

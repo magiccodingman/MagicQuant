@@ -1,118 +1,148 @@
-using MQ.DB;
 using MQ.DB.Models;
+using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
-using Spectre.Console;
+using MQ.DB;
 
 namespace MagicQuant.Helpers;
 
 public static class TensorConfigGenerator
 {
-    public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? missingTensorGroups = null)
+    public static RequiredSampleGenerationResult GenerateRequiredSamplePlan(
+        List<TensorGroup>? missingTensorGroups = null)
     {
         if (missingTensorGroups != null && !missingTensorGroups.Any())
             missingTensorGroups = null;
 
-        var allowedBaselines = BaselineQuants.All.Where(x => x.BaseConversionBase != null).ToList();
-        var hybridQuants = new List<HybridQuant>();
+        var skippedIds = missingTensorGroups?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
+        var activeGroups = TReg.All
+            .Where(x => !skippedIds.Contains(x.UniqueId))
+            .OrderBy(x => x.UniqueId)
+            .ToList();
 
-        var missingIds = missingTensorGroups?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
-        var existingGroups = TReg.All.Where(g => !missingIds.Contains(g.UniqueId)).ToList();
-
-        // 1. PURE BASELINE CONTROLS
-        int baseTestsRequired = 0;
-        foreach (var baseline in allowedBaselines)
-        {
-            baseTestsRequired++;
-
-            if (baseline.BaseConversionBase == null)
-                throw new InvalidOperationException(
-                    $"Baseline {string.Join("/", baseline.Names)} is missing BaseConversionBase.");
-
-            hybridQuants.Add(new HybridQuant
-            {
-                BaseQuant = baseline,
-                Tensors = baseline.BaseConversionBase.Tensors
-                    .Where(t => t.TGroup != null && !missingIds.Contains(t.TGroup.UniqueId))
-                    .Select(t => new HybridTensor
-                    {
-                        TGroup = t.TGroup,
-                        TensorType = t.TensorType
-                    })
-                    .ToList()
-            });
-        }
-
-        AnsiConsole.MarkupLine($"[bold green]Required pure baseline hybrid tests:[/] {baseTestsRequired:N0}");
+        var result = new RequiredSampleGenerationResult();
 
         // ---------------------------------------------------------
-// 2. ISOLATION SAMPLES
-// ---------------------------------------------------------
-// These should use a REAL blanket base quant and then override
-// one target group away from that base so llama-quantize actually
-// performs hybrid quantization.
-
-        var tensorWeights = TensorWeightScheme.All
-            .Where(x => x != TensorWeightScheme.NULL && x != TensorWeightScheme.BF16_F16)
-            .ToList();
-
-        int isolatedSamplesRequired = 0;
-
-// Pick the real baseline families we want to probe.
-// You can expand this later if desired.
-        var isolationBaselines = BaselineQuants.All
-            .Where(x => x.BaseConversionBase != null)
-            .ToList();
-
-        foreach (var baseline in isolationBaselines)
+        // 1. Pure baselines
+        // ---------------------------------------------------------
+        foreach (var baseline in BaselineQuants.All.OrderBy(x => x.UniqueId))
         {
-            // Map the baseline name to its matching tensor scheme.
-            // Example: IQ4_XS baseline => IQ4_XS tensor scheme everywhere by default.
-            var baselineScheme = TensorWeightScheme.All.FirstOrDefault(s =>
-                s.Names.Any(n => baseline.Names.Contains(n, StringComparer.OrdinalIgnoreCase)));
-
-            if (baselineScheme == null)
-                continue;
-
-            foreach (var weight in tensorWeights)
+            result.Plans.Add(new RequiredSamplePlan
             {
-                var validTargets = TReg.All
-                    .Where(x => !missingIds.Contains(x.UniqueId))
-                    .Where(x => !weight.BannedGroups.Contains(x))
-                    .ToList();
+                Kind = RequiredSampleKind.PureBaseline,
+                Key = $"pure:{baseline.UniqueId}",
+                Description = $"Pure baseline build for {string.Join("/", baseline.Names)}",
+                Quant = HybridQuant.CreatePureBaseline(baseline),
+                TestedBaselineId = baseline.UniqueId
+            });
 
-                foreach (var group in validTargets)
+            result.PureBaselineCount++;
+        }
+
+        // ---------------------------------------------------------
+        // 2. Base-only isolation for actual combo baselines
+        //    This tells you whether uncovered tensors alone justify the baseline.
+        // ---------------------------------------------------------
+        foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
+        {
+            var quant = HybridQuant.CreateBlanket(
+                baseQuant: baseline,
+                groups: activeGroups,
+                blanketScheme: TensorWeightScheme.BF16_F16);
+
+            result.Plans.Add(new RequiredSamplePlan
+            {
+                Kind = RequiredSampleKind.BaseOnlyIsolation,
+                Key = $"baseonly:{baseline.UniqueId}",
+                Description =
+                    $"Base-only isolation for {string.Join("/", baseline.Names)} with all known groups forced native.",
+                Quant = quant,
+                TestedBaselineId = baseline.UniqueId
+            });
+
+            result.BaseOnlyIsolationCount++;
+        }
+
+        // ---------------------------------------------------------
+        // 3. Carrier base-only isolation for tensor-group probing
+        //    Q8_0 is used as the carrier because llama-quantize actually applies
+        //    mixed tensor overrides correctly on a real quantized output.
+        // ---------------------------------------------------------
+        var groupIsolationCarrier = BaselineQuants.Q8_0;
+
+        var carrierBaseOnly = HybridQuant.CreateBlanket(
+            baseQuant: groupIsolationCarrier,
+            groups: activeGroups,
+            blanketScheme: TensorWeightScheme.BF16_F16);
+
+        result.Plans.Add(new RequiredSamplePlan
+        {
+            Kind = RequiredSampleKind.BaseOnlyIsolation,
+            Key = $"carrier-baseonly:{groupIsolationCarrier.UniqueId}",
+            Description =
+                $"Carrier base-only isolation for {string.Join("/", groupIsolationCarrier.Names)} with all known groups forced native.",
+            Quant = carrierBaseOnly,
+            TestedBaselineId = groupIsolationCarrier.UniqueId
+        });
+
+        result.BaseOnlyIsolationCount++;
+
+        // ---------------------------------------------------------
+        // 4. Tensor-group isolation using the Q8_0 carrier
+        // ---------------------------------------------------------
+        var probeSchemes = TensorWeightScheme.All
+            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+
+        foreach (var group in activeGroups)
+        {
+            foreach (var scheme in probeSchemes)
+            {
+                if (scheme.IsBannedFor(group))
+                    continue;
+
+                var quant = HybridQuant.CreateBlanket(
+                    baseQuant: groupIsolationCarrier,
+                    groups: activeGroups,
+                    blanketScheme: TensorWeightScheme.BF16_F16);
+
+                var target = quant.Tensors.First(x => x.TGroup.UniqueId == group.UniqueId);
+                target.TensorType = scheme;
+
+                result.Plans.Add(new RequiredSamplePlan
                 {
-                    isolatedSamplesRequired++;
+                    Kind = RequiredSampleKind.GroupIsolation,
+                    Key = $"group:{groupIsolationCarrier.UniqueId}:{group.UniqueId}:{scheme.UniqueId}",
+                    Description =
+                        $"Carrier-based isolation for group '{group.Name}' using scheme '{scheme.Names[0]}' on base '{groupIsolationCarrier.Names[0]}'.",
+                    Quant = quant,
+                    TargetGroupId = group.UniqueId,
+                    TestedSchemeId = scheme.UniqueId,
+                    TestedBaselineId = groupIsolationCarrier.UniqueId
+                });
 
-                    var tensors = TReg.All
-                        .Where(g => !missingIds.Contains(g.UniqueId))
-                        .Select(g => new HybridTensor
-                        {
-                            TGroup = g,
-                            TensorType = baselineScheme
-                        })
-                        .ToList();
-
-                    var foundQuant = tensors.First(x => x.TGroup.UniqueId == group.UniqueId);
-                    foundQuant.TensorType = weight;
-
-                    hybridQuants.Add(new HybridQuant
-                    {
-                        BaseQuant = baseline,
-                        Tensors = tensors
-                    });
-                }
+                result.GroupIsolationCount++;
             }
         }
 
-        AnsiConsole.MarkupLine($"[bold green]Isolated Samples Required:[/] {isolatedSamplesRequired:N0}");
-        AnsiConsole.MarkupLine($"[bold green]Total Samples Required:[/] {hybridQuants.Count:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Pure baselines required:[/] {result.PureBaselineCount:N0}");
+        AnsiConsole.MarkupLine(
+            $"[bold green]Base-only isolation samples required:[/] {result.BaseOnlyIsolationCount:N0}");
+        AnsiConsole.MarkupLine(
+            $"[bold green]Tensor-group isolation samples required:[/] {result.GroupIsolationCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Total required samples:[/] {result.TotalCount:N0}");
 
-        AnsiConsole.MarkupLine($"[bold green]Isolated Samples Required:[/] {isolatedSamplesRequired:N0}");
-        AnsiConsole.MarkupLine($"[bold green]Total Samples Required:[/] {hybridQuants.Count:N0}");
+        return result;
+    }
 
-        return hybridQuants;
+    public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? missingTensorGroups = null)
+    {
+        return GenerateRequiredSamplePlan(missingTensorGroups)
+            .Plans
+            .Select(x => x.Quant)
+            .ToList();
     }
 
     public static IEnumerable<List<TensorConfig>> GenerateTensorConfigBatches(
@@ -123,9 +153,6 @@ public static class TensorConfigGenerator
         if (batchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(batchSize));
 
-        // ---------------------------
-        // Diagnostics / invariants
-        // ---------------------------
         if (TReg.All.IsDefault)
             throw new InvalidOperationException("TensorRegistry.All is default (uninitialized).");
 
@@ -149,21 +176,12 @@ public static class TensorConfigGenerator
         }
 
         int dims = allowed.Length;
-
-        // ---------------------------
-        // Threading setup
-        // ---------------------------
         int dop = ComputeWorkerThreads(GetThreadCountSafe());
-
-        // Cache baseQuant.UniqueId once (perf)
         byte baseId = baseQuant.UniqueId;
 
         var queue = new BlockingCollection<List<TensorConfig>>(
             boundedCapacity: Math.Max(2, dop * 2));
 
-        // ---------------------------
-        // Producer
-        // ---------------------------
         var producer = Task.Run(() =>
         {
             try
@@ -180,9 +198,6 @@ public static class TensorConfigGenerator
                         var batch = new List<TensorConfig>(Math.Min(batchSize, 250_000));
                         var idx = new int[dims];
 
-                        // Hot-path aliases (perf)
-                        // NOTE: This assumes group count is stable at 9 (Embeddings..MoeRouter),
-                        // which matches your TensorConfig mapping.
                         var d0 = allowed[0];
                         var d1 = allowed[1];
                         var d2 = allowed[2];
@@ -202,7 +217,6 @@ public static class TensorConfigGenerator
 
                             while (true)
                             {
-                                // Inline-build (perf): avoids helper call overhead and repeated bounds checks
                                 batch.Add(new TensorConfig(
                                     baseQuant: baseId,
                                     embeddings: d0[idx[0]],
@@ -222,7 +236,6 @@ public static class TensorConfigGenerator
                                     batch = new List<TensorConfig>(Math.Min(batchSize, 250_000));
                                 }
 
-                                // Mixed-radix increment (dims-1 → 1)
                                 int d = dims - 1;
                                 while (d >= 1)
                                 {
@@ -249,9 +262,6 @@ public static class TensorConfigGenerator
             }
         }, ct);
 
-        // ---------------------------
-        // Consumer (yield batches)
-        // ---------------------------
         foreach (var batch in queue.GetConsumingEnumerable(ct))
             yield return batch;
 
@@ -260,22 +270,19 @@ public static class TensorConfigGenerator
 
     private static int GetThreadCountSafe()
     {
-        // Cache.SysInfo might not be initialized this early; fall back safely
-        int tc = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
-        return Math.Max(1, tc);
+        return Cache.SysInfo?.ThreadCount > 0
+            ? Cache.SysInfo.ThreadCount
+            : Environment.ProcessorCount;
     }
 
     private static int ComputeWorkerThreads(int threadCount)
     {
-        if (threadCount <= 1)
+        if (threadCount <= 4)
             return 1;
 
-        int workers =
-            threadCount < 16
-                ? threadCount - 1
-                : (int)Math.Floor(threadCount * 0.90);
+        if (threadCount <= 12)
+            return 2;
 
-        // Always leave at least 1 thread free
-        return Math.Clamp(workers, 1, Math.Max(1, threadCount - 1));
+        return Math.Max(2, threadCount / 6);
     }
 }

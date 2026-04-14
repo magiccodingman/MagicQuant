@@ -4,6 +4,8 @@ namespace MQ.DB.Models;
 
 public sealed class TensorWeightScheme
 {
+    private readonly HashSet<byte> _defaultBannedGroupIds;
+
     public byte UniqueId { get; }
     public bool RequiresImatrix { get; }
     public ImmutableArray<string> Names { get; }
@@ -20,32 +22,53 @@ public sealed class TensorWeightScheme
         UniqueId = uniqueId;
         RequiresImatrix = requiresImatrix;
         Names = names;
-        BannedGroups = new List<TensorGroup>(bannedGroups);
         BlockNeo = blockNeo;
+
+        var distinctGroups = bannedGroups
+            .GroupBy(x => x.UniqueId)
+            .Select(x => x.First())
+            .ToList();
+
+        BannedGroups = distinctGroups;
+        _defaultBannedGroupIds = distinctGroups.Select(x => x.UniqueId).ToHashSet();
     }
 
-    // NULL: always-present groups, never nullable
-    public static TensorWeightScheme NULL =
+    public void ResetRuntimeBans()
+    {
+        BannedGroups.Clear();
+
+        foreach (var group in TReg.All.Where(x => _defaultBannedGroupIds.Contains(x.UniqueId)))
+            BannedGroups.Add(group);
+    }
+
+    public bool IsBannedFor(TensorGroup group)
+    {
+        return BannedGroups.Any(x => x.UniqueId == group.UniqueId);
+    }
+
+    public static void ResetAllRuntimeBans()
+    {
+        foreach (var scheme in All)
+            scheme.ResetRuntimeBans();
+    }
+
+    public static readonly TensorWeightScheme NULL =
         new(
             0,
             false,
             ["NULL"],
-            
-            Array.Empty<TensorGroup>(), 
-            null
-        );
+            Array.Empty<TensorGroup>(),
+            null);
 
-    // BF16 and F16 intentionally share UniqueId
-    public static TensorWeightScheme BF16_F16 =
+    public static readonly TensorWeightScheme BF16_F16 =
         new(
             1,
             false,
-            ["BF16", "F16"],
+            ["BF16", "F16", "F32"],
             Array.Empty<TensorGroup>(),
-            null
-        );
+            null);
 
-    public static TensorWeightScheme MXFP4 =
+    public static readonly TensorWeightScheme MXFP4 =
         new(
             2,
             false,
@@ -56,33 +79,30 @@ public sealed class TensorWeightScheme
                 TReg.MoeRouter,
                 TReg.MoeExperts
             },
-            32
-        );
+            32);
 
-    public static TensorWeightScheme Q8_0 =
+    public static readonly TensorWeightScheme Q8_0 =
         new(3, false, ["Q8_0"], Array.Empty<TensorGroup>(), null);
 
-    public static TensorWeightScheme Q6_K =
+    public static readonly TensorWeightScheme Q6_K =
         new(4, false, ["Q6_K"], Array.Empty<TensorGroup>(), 256);
 
-    public static TensorWeightScheme Q5_K =
+    public static readonly TensorWeightScheme Q5_K =
         new(
             5,
             false,
             ["Q5_K"],
-            new[] { TReg.MoeRouter }, 
-            256
-        );
+            new[] { TReg.MoeRouter },
+            256);
 
-    public static TensorWeightScheme IQ4_XS =
+    public static readonly TensorWeightScheme IQ4_XS =
         new(
             6,
             false,
             ["IQ4_XS"],
             new[] { TReg.MoeRouter },
-            32
-        );
-
+            32);
+    
     /*
     public static TensorWeightScheme IQ4_NL =
         new(
@@ -191,12 +211,5 @@ public sealed class TensorWeightScheme
         Q6_K,
         Q5_K,
         IQ4_XS,
-        //IQ4_NL,
-        /*IQ3_S,
-        IQ3_XS,
-        IQ3_XXS,
-        IQ2_S,
-        IQ2_XS,
-        IQ2_XXS*/
     ];
 }

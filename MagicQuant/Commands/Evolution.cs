@@ -1,8 +1,8 @@
-using MagicQuant.Models;
 using MagicQuant.Helpers;
+using MagicQuant.Models;
+using MagicQuant.Services;
 using MQ.DB;
 using MQ.DB.Models;
-using MagicQuant.Services;
 using Spectre.Console;
 
 namespace MagicQuant.Commands;
@@ -11,14 +11,12 @@ public class Evolution : ICommand
 {
     public async Task Run(List<CliArg> args)
     {
-        // 1. Handle Help Flag
         if (args.Any(a => a.Name?.ToLower() == "help"))
         {
             ShowEvolutionHelp();
             return;
         }
 
-        // 2. Parse --model-dir
         string? modelDirRaw = args.FirstOrDefault(a => a.Name?.ToLower() == "model-dir")?.Value;
 
         if (string.IsNullOrWhiteSpace(modelDirRaw))
@@ -29,7 +27,6 @@ public class Evolution : ICommand
             throw new Exception(msg);
         }
 
-        // 3. Normalize and Validate Path
         string fullModelPath = Path.GetFullPath(modelDirRaw);
 
         if (!Directory.Exists(fullModelPath))
@@ -40,9 +37,6 @@ public class Evolution : ICommand
             throw new Exception(msg);
         }
 
-        // 4. Validate Content (.safetensors existence)
-        // We look for any .safetensors file in the top directory. 
-        // If your models are often in subfolders, change SearchOption.TopDirectoryOnly to AllDirectories.
         var safeTensorFiles = Directory.GetFiles(fullModelPath, "*.safetensors", SearchOption.TopDirectoryOnly);
 
         if (safeTensorFiles.Length == 0)
@@ -52,60 +46,43 @@ public class Evolution : ICommand
             throw new Exception();
         }
 
-        // 5. Populate Cache
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
-
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
-        // Create the MagicQuant directory immediately so it's ready for future steps
         if (!Directory.Exists(Cache.ModelMagicQuantDirectory))
-        {
             Directory.CreateDirectory(Cache.ModelMagicQuantDirectory);
-        }
 
-        // 6. Success Output
         AnsiConsole.MarkupLine("[green]✔ Model Directory Validated[/]");
         AnsiConsole.Write(new Rule("[yellow]Evolution Configuration[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"Model Path:   [blue]{Cache.ModelDirectory}[/]");
         AnsiConsole.MarkupLine($"Output Path:  [blue]{Cache.ModelMagicQuantDirectory}[/]");
         AnsiConsole.MarkupLine($"Files Found:  [green]{safeTensorFiles.Length}[/] safe tensors");
-        
-        // Ensure Llama paths are set (sanity check from InitializeLlamaCpp)
+
         if (string.IsNullOrEmpty(Cache.LlamaBin))
-        {
-            // Note: In a real run, Program.cs runs Init first, so this might be populated. 
-            // If not, we might want to warn or rely on defaults.
             AnsiConsole.MarkupLine("[yellow]Warning: Llama binaries path not set in Cache. (Did Initialization run?)[/]");
-        }
 
         Console.WriteLine("Acquiring unique model ID...");
-        
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
-        
         AnsiConsole.MarkupLine($"[green] Model ID Created/Found: {Cache.CurrentModelId}[/]");
-        
+
         var pyManager = new PythonManager(Cache.MagicQuantDirectory);
-        var bService = new BenchmarkService(pyManager);
-        var qService = new QuantizationService(bService);
+        var benchmarkService = new BenchmarkService(pyManager);
+        var quantizationService = new QuantizationService(benchmarkService);
 
-        var bf16ModelGgufPath = await qService.EnsureBaseModelFileAsync(true);
-        var q8ModelGgufPath = await qService.EnsurePureQ8ModelAsync();
+        var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
+        var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
 
-        await bService.EnsureExecutionPlanAsync(q8ModelGgufPath);
-        await bService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
+        await benchmarkService.EnsureExecutionPlanAsync(q8ModelGgufPath);
+        await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
 
         var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         var baseBenchDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks", baseTypeName);
         var baseLogitsDir = Path.Combine(baseBenchDir, "logits");
 
-        var baseModelQuant = new HybridQuant
-        {
-            BaseQuant = BaselineQuants.GetBF16Quant(),
-            Tensors = new List<HybridTensor>()
-        };
+        var baseModelQuant = HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant());
 
-        await bService.RunAllBenchmarksAsync(
+        await benchmarkService.RunAllBenchmarksAsync(
             quantConfig: baseModelQuant,
             modelPath: bf16ModelGgufPath,
             benchDir: baseBenchDir,
@@ -113,56 +90,80 @@ public class Evolution : ICommand
             saveLogits: true,
             domainsOverride: new[] { "general", "code", "math" });
 
-// Optional: capture a quick micro-benchmark for the pure Q8 baseline too.
-// var q8BenchDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks", "Q8_0");
-// var q8Quant = new HybridQuant { BaseQuant = BaselineQuants.Q8_0, Tensors = new List<HybridTensor>() };
-// await bService.RunAllBenchmarksAsync(q8Quant, q8ModelGgufPath, q8BenchDir, saveLogits: false, domainsOverride: new[] { "general" });
-
         var compatibilityService = new ModelCompatibilityService(pyManager);
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
-        
-        CliHelpers.ValidateCombinationLogicWorks(true);
-            
-        var dbService = new QuantDatabaseService();
 
-        // This ensures the DB is ready, populated, and valid before you proceed
+        CliHelpers.ValidateCombinationLogicWorks(true);
+
+        var dbService = new QuantDatabaseService();
         await dbService.InitializeAsync();
 
         AnsiConsole.Write(new Rule("[yellow]Required Sample Generation[/]") { Justification = Justify.Left });
 
-        var requiredSamples = TensorConfigGenerator.GenerateRequiredDataSampleCombos(Cache.UnusedTensorGroups);
-
-        AnsiConsole.MarkupLine($"[grey]Queued required samples:[/] [cyan]{requiredSamples.Count:N0}[/]");
+        var samplePlan = TensorConfigGenerator.GenerateRequiredSamplePlan(Cache.UnusedTensorGroups);
+        AnsiConsole.MarkupLine($"[grey]Queued required samples:[/] [cyan]{samplePlan.TotalCount:N0}[/]");
         AnsiConsole.MarkupLine("[grey]SQLite will be treated as the source of truth for completed samples.[/]");
 
-        var summary = await qService.ProcessHybridBatchAsync(requiredSamples);
+        var sampleSummary = await quantizationService.ProcessHybridBatchAsync(samplePlan.Plans);
 
         AnsiConsole.MarkupLine("[bold green]Sample generation phase complete.[/]");
-        AnsiConsole.MarkupLine($"  [green]Completed:[/] {summary.Completed:N0}");
-        AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {summary.Skipped:N0}");
-        AnsiConsole.MarkupLine($"  [red]Failed:[/] {summary.Failed:N0}");
+        AnsiConsole.MarkupLine($"  [green]Completed:[/] {sampleSummary.Completed:N0}");
+        AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {sampleSummary.Skipped:N0}");
+        AnsiConsole.MarkupLine($"  [red]Failed:[/] {sampleSummary.Failed:N0}");
+        
+        
+        
+
+        var comboCountBefore = ComboCounter.CountAll();
+
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Isolation Optimization");
+        
+        AnsiConsole.Write(new Rule("[yellow]Isolation Optimization[/]") { Justification = Justify.Left });
+        var isolationOptimizer = new IsolationOptimizationService();
+        var isolationResult = await isolationOptimizer.AnalyzeAndApplyAsync(samplePlan);
+        
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Isolation Optimization");
+        
+        foreach (var gd in isolationResult.GroupDetails.OrderBy(x => x.GroupName))
+        {
+            AnsiConsole.Write(new Rule($"[yellow]Isolation Group: {Markup.Escape(gd.GroupName)}[/]") { Justification = Justify.Left });
+
+            AnsiConsole.MarkupLine($"[green]Best reduction:[/] {gd.BestReductionRatio:P2}");
+            AnsiConsole.MarkupLine($"[green]Winning scheme:[/] {Markup.Escape(gd.WinningScheme ?? "n/a")}");
+            AnsiConsole.MarkupLine($"[green]Locked to native:[/] {(gd.LockedToNative ? "[red]yes[/]" : "[green]no[/]")}");
+
+            foreach (var line in gd.Candidates)
+                AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(line)}[/]");
+        }
+        
+
+        var comboCountAfter = ComboCounter.CountAll();
+
+        await dbService.InitializeAsync(forceRebuild: true);
+
+        AnsiConsole.MarkupLine($"[green]Native-locked groups:[/] {isolationResult.NativeLockedGroups:N0}");
+        AnsiConsole.MarkupLine($"[green]Dominated group-scheme bans applied:[/] {isolationResult.DominatedGroupSchemesBanned:N0}");
+        AnsiConsole.MarkupLine($"[green]Disabled combination baselines:[/] {isolationResult.DisabledBaselines:N0}");
+        AnsiConsole.MarkupLine($"[green]Combination count before pruning:[/] {comboCountBefore:N0}");
+        AnsiConsole.MarkupLine($"[green]Combination count after pruning:[/] {comboCountAfter:N0}");
+
+        foreach (var note in isolationResult.Notes)
+            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
         
     }
 
     private void ShowEvolutionHelp()
     {
-        // Use MarkupLine for colors/styles
         AnsiConsole.MarkupLine("[bold yellow]Command: evolution[/]");
         AnsiConsole.WriteLine("Runs the full evolutionary quantization search algorithm on a target model.");
         AnsiConsole.WriteLine();
-
         AnsiConsole.MarkupLine("[bold]Usage:[/]");
-        // Use WriteLine here so "[options]" doesn't crash it
         AnsiConsole.WriteLine("  mq evolution --model-dir \"<path>\" [options]");
         AnsiConsole.WriteLine();
-
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
-        // Use MarkupLine here because we WANT the [green] color
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Required)");
         AnsiConsole.WriteLine();
-
         AnsiConsole.MarkupLine("[bold]Example:[/]");
-        // Use WriteLine here to avoid issues with paths (backslashes)
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");
     }
 }

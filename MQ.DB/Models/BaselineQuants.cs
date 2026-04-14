@@ -8,10 +8,6 @@ public record BaselineQuants(
     ImmutableArray<string> Names,
     HybridQuant? BaseConversionBase = null)
 {
-    /// <summary>
-    /// Reserved internal ID for the original/native source model (BF16/F16/F32).
-    /// This MUST NOT collide with any real llama.cpp export base quant.
-    /// </summary>
     public const byte NativeSourceUniqueId = 250;
 
     public static readonly BaselineQuants Q8_0 = new(0, false, ["Q8_0"]);
@@ -19,10 +15,13 @@ public record BaselineQuants(
     public static readonly BaselineQuants Q5_K = new(2, false, ["Q5_K"]);
     public static readonly BaselineQuants Q4_K_M = new(3, false, ["Q4_K_M"]);
 
-    public static readonly BaselineQuants MXFP4_MOE = new(4, false, ["MXFP4_MOE"],
+    public static readonly BaselineQuants MXFP4_MOE = new(
+        4,
+        false,
+        ["MXFP4_MOE"],
         new HybridQuant
         {
-            BaseQuant = MXFP4_MOE,
+            BaseQuant = null!,
             Tensors = TReg.All
                 .Select(g => new HybridTensor
                 {
@@ -32,10 +31,15 @@ public record BaselineQuants(
                 .ToList()
         });
 
-    public static readonly BaselineQuants IQ4_XS = new(6, false, ["IQ4_XS"],
+    public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"]);
+
+    public static readonly BaselineQuants IQ4_XS = new(
+        6,
+        false,
+        ["IQ4_XS"],
         new HybridQuant
         {
-            BaseQuant = IQ4_XS,
+            BaseQuant = null!,
             Tensors = TReg.All
                 .Select(g => new HybridTensor
                 {
@@ -44,17 +48,6 @@ public record BaselineQuants(
                 })
                 .ToList()
         });
-
-    public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"]);
-
-    public static BaselineQuants GetBF16Quant()
-    {
-        return new(
-            NativeSourceUniqueId,
-            false,
-            [Cache.TorchType?.ToString() ?? "BF16"]
-        );
-    }
 
     // IQ3 and lower require imatrix
     //public static readonly BaselineQuants IQ3_M = new(7, true,  ["IQ3_M"], true);
@@ -72,4 +65,30 @@ public record BaselineQuants(
         //IQ3_M,
         //IQ2_M
     ];
+
+    static BaselineQuants()
+    {
+        MXFP4_MOE.BaseConversionBase!.BaseQuant = MXFP4_MOE;
+        IQ4_XS.BaseConversionBase!.BaseQuant = IQ4_XS;
+    }
+
+    public static BaselineQuants GetBF16Quant()
+    {
+        return new(
+            NativeSourceUniqueId,
+            false,
+            [(Cache.TorchType ?? Cache.MainTorchType.BF16).ToString()]);
+    }
+
+    public static BaselineQuants FromId(byte id)
+    {
+        if (id == NativeSourceUniqueId)
+            return GetBF16Quant();
+
+        var found = All.FirstOrDefault(x => x.UniqueId == id);
+        if (found == null)
+            throw new InvalidOperationException($"Unknown baseline quant id '{id}'.");
+
+        return found;
+    }
 }

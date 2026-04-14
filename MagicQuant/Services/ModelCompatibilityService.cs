@@ -22,6 +22,10 @@ public class ModelCompatibilityService
         if (!File.Exists(ggufPath))
             throw new FileNotFoundException($"Base model not found at {ggufPath}");
 
+        RuntimeSearchSpace.ResetForNewModel();
+        Cache.UnusedTensorGroups.Clear();
+        TensorWeightScheme.NULL.BannedGroups.Clear();
+
         string directory = Path.GetDirectoryName(ggufPath)!;
         string scriptPath = Path.Combine(directory, "check_compat.py");
         string resultPath = Path.Combine(directory, "compat_results.json");
@@ -29,9 +33,8 @@ public class ModelCompatibilityService
 
         try
         {
-            // 1. Prepare Data
             var groupDefinitions = TReg.All.ToDictionary(g => g.Name, g => g.Tensors);
-            
+
             var blockRequirements = TensorWeightScheme.All
                 .Where(s => s.BlockNeo.HasValue)
                 .ToDictionary(s => s.Names[0], s => s.BlockNeo!.Value);
@@ -44,22 +47,18 @@ public class ModelCompatibilityService
                 schemes = blockRequirements
             };
 
-            // 2. Generate Python Script (With Shape Debugging)
             string pyCode = GeneratePythonScript(JsonSerializer.Serialize(payload));
             await File.WriteAllTextAsync(scriptPath, pyCode);
 
-            // 3. Run Inspection
             AnsiConsole.MarkupLine("[grey]Inspecting GGUF structure...[/]");
             await _pyManager.RunPythonScriptAsync(scriptPath);
 
-            // 4. Validate Result
             if (!File.Exists(resultPath))
                 throw new Exception("Compatibility script finished but produced no result file.");
 
             string jsonResult = await File.ReadAllTextAsync(resultPath);
-            
-            // Handle script errors
-            if (jsonResult.Contains("\"Error\""))
+
+            if (jsonResult.Contains("\"Error\"", StringComparison.Ordinal))
             {
                 var errorRes = JsonSerializer.Deserialize<CompatResult>(jsonResult);
                 if (!string.IsNullOrEmpty(errorRes?.Error))
@@ -67,103 +66,114 @@ public class ModelCompatibilityService
             }
 
             var result = JsonSerializer.Deserialize<CompatResult>(jsonResult);
-            if (result == null) return;
-
-            // ---------------------------------------------------------
-            // 5. Global State Update Logic
-            // ---------------------------------------------------------
-            
-            TensorWeightScheme.NULL.BannedGroups.Clear();
-            Cache.UnusedTensorGroups.Clear();
+            if (result == null)
+                return;
 
             int unusedCount = 0;
             int usedCount = 0;
+            int shapeBanCount = 0;
+            int nativeLockedCount = 0;
+
+            var shapeTable = new Table().Border(TableBorder.Rounded).Title("[red]Shape Incompatibilities[/]");
+            shapeTable.AddColumn("Group");
+            shapeTable.AddColumn("Scheme");
+            shapeTable.AddColumn("Reason");
 
             foreach (var group in TReg.All)
             {
-                bool exists = result.FoundGroups.Contains(group.Name);
+                bool exists = result.FoundGroups.Contains(group.Name, StringComparer.OrdinalIgnoreCase);
 
                 if (exists)
                 {
-                    if (!TensorWeightScheme.NULL.BannedGroups.Contains(group))
-                    {
+                    if (!TensorWeightScheme.NULL.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
                         TensorWeightScheme.NULL.BannedGroups.Add(group);
-                    }
-                    usedCount++;
-                }
-                else
-                {
-                    unusedCount++;
-                    Cache.UnusedTensorGroups.Add(group);
 
-                    foreach (var scheme in TensorWeightScheme.All)
-                    {
-                        if (scheme == TensorWeightScheme.NULL) continue;
-                        if (!scheme.BannedGroups.Contains(group)) scheme.BannedGroups.Add(group);
-                    }
+                    usedCount++;
+                    continue;
+                }
+
+                unusedCount++;
+                Cache.UnusedTensorGroups.Add(group);
+
+                foreach (var scheme in TensorWeightScheme.All)
+                {
+                    if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
+                        continue;
+
+                    if (!scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
+                        scheme.BannedGroups.Add(group);
                 }
             }
-
-            // ---------------------------------------------------------
-            // 6. Handle Shape Restrictions
-            // ---------------------------------------------------------
-            int shapeBanCount = 0;
-            var table = new Table().Border(TableBorder.Rounded).Title("[red]Shape Incompatibilities[/]");
-            table.AddColumn("Group");
-            table.AddColumn("Scheme");
-            table.AddColumn("Reason");
 
             foreach (var failure in result.Incompatible)
             {
                 var group = TReg.GetByName(failure.Group);
-                var scheme = TensorWeightScheme.All.FirstOrDefault(s => s.Names.Contains(failure.Scheme));
+                var scheme = TensorWeightScheme.All.FirstOrDefault(s =>
+                    s.Names.Any(n => n.Equals(failure.Scheme, StringComparison.OrdinalIgnoreCase)));
 
-                if (group != null && scheme != null)
+                if (group == null || scheme == null)
+                    continue;
+
+                if (scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
+                    continue;
+
+                scheme.BannedGroups.Add(group);
+                shapeBanCount++;
+                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{scheme.Names[0]}[/]", "[grey]Block Alignment[/]");
+            }
+
+            foreach (var group in TReg.All.Except(Cache.UnusedTensorGroups))
+            {
+                bool anyNonNativeOptionLeft = TensorWeightScheme.All
+                    .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+                    .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+                    .Any(x => !x.IsBannedFor(group));
+
+                if (!anyNonNativeOptionLeft)
                 {
-                    if (!scheme.BannedGroups.Contains(group))
-                    {
-                        scheme.BannedGroups.Add(group);
-                        shapeBanCount++;
-                        table.AddRow($"[blue]{group.Name}[/]", $"[yellow]{scheme.Names[0]}[/]", "[grey]Block Alignment[/]");
-                    }
+                    RuntimeSearchSpace.LockGroupToNative(group);
+                    nativeLockedCount++;
                 }
             }
 
-            // ---------------------------------------------------------
-            // 7. Report
-            // ---------------------------------------------------------
-            AnsiConsole.MarkupLine($"[green]✔[/] Analysis Complete.");
+            AnsiConsole.MarkupLine("[green]✔[/] Analysis Complete.");
             AnsiConsole.MarkupLine($"   Active Groups: [bold cyan]{usedCount}[/]");
-            
+
             if (unusedCount > 0)
             {
                 string unusedNames = string.Join(", ", Cache.UnusedTensorGroups.Select(g => g.Name));
                 AnsiConsole.MarkupLine($"   Unused Groups: [grey]{unusedNames}[/] (Forced to NULL)");
             }
 
+            if (nativeLockedCount > 0)
+            {
+                string locked = string.Join(", ", RuntimeSearchSpace.GetNativeLockedGroups().Select(x => x.Name));
+                AnsiConsole.MarkupLine($"   Native-Locked Groups: [yellow]{locked}[/]");
+            }
+
             if (shapeBanCount > 0)
             {
-                AnsiConsole.Write(table);
-                AnsiConsole.MarkupLine($"[yellow]Applied {shapeBanCount} restrictions due to tensor shapes.[/]");
+                AnsiConsole.Write(shapeTable);
+                AnsiConsole.MarkupLine($"[yellow]Applied {shapeBanCount} shape-based restrictions.[/]");
             }
             else
             {
                 AnsiConsole.MarkupLine("[green]No shape-based restrictions found.[/]");
             }
-            
+
             AnsiConsole.WriteLine();
         }
         finally
         {
             if (File.Exists(scriptPath)) File.Delete(scriptPath);
             if (File.Exists(resultPath)) File.Delete(resultPath);
-            // Debug path is kept for inspection
+            _ = debugPath;
         }
     }
 
     private string GeneratePythonScript(string jsonPayload)
-    {
-        return $@"
+{
+    return $@"
 import sys
 import json
 import re
@@ -175,7 +185,7 @@ debug_path = output_path.replace('compat_results.json', 'compat_debug.txt')
 
 def write_error(msg):
     with open(output_path, 'w') as f:
-        json.dump({{'FoundGroups': [], 'Incompatible': [], 'Error': msg}}, f)
+        json.dump({{""FoundGroups"": [], ""Incompatible"": [], ""Error"": msg}}, f)
     sys.exit(0)
 
 try:
@@ -195,13 +205,12 @@ found_groups = []
 failures = []
 debug_lines = []
 
-debug_lines.append(f'Inspecting {{len(tensor_names)}} tensors against {{len(config[""schemes""])}} block requirements.')
+debug_lines.append('Inspecting ' + str(len(tensor_names)) + ' tensors against ' + str(len(config[""schemes""])) + ' block requirements.')
 
-# 1. Match Groups
 for g_name, patterns in config['groups'].items():
     matched = []
     first_reason = None
-    
+
     for pat in patterns:
         try:
             regex = re.compile(pat)
@@ -209,61 +218,53 @@ for g_name, patterns in config['groups'].items():
                 if regex.fullmatch(t):
                     matched.append(t)
                     if not first_reason:
-                        first_reason = f""Match: '{{pat}}' -> '{{t}}'""
+                        first_reason = ""Match: '"" + pat + ""' -> '"" + t + ""'""
         except:
             continue
-    
+
     if matched:
         found_groups.append(g_name)
-        debug_lines.append(f""[FOUND] {{g_name}} ({{len(matched)}} tensors). {{first_reason}}"")
-        
-        # 2. Check Compatibility (Only if found)
+        debug_lines.append(""[FOUND] "" + g_name + "" ("" + str(len(matched)) + "" tensors). "" + str(first_reason))
         weights = [t for t in matched if t.endswith('.weight')]
-        
+
         if weights:
-            # Check against every scheme that has a block req
             for scheme, block_size in config['schemes'].items():
                 is_valid = True
-                
+
                 for w_name in weights:
                     t_obj = tensors_map[w_name]
-                    ne0 = t_obj.shape[0] # GGUF ne0
+                    ne0 = t_obj.shape[0]
                     n_dims = len(t_obj.shape)
 
-                    # Rule A: Non-2D
                     if n_dims != 2:
                         is_valid = False
-                        debug_lines.append(f""  [FAIL] {{g_name}} vs {{scheme}}: {{w_name}} is {{n_dims}}D (Required 2D)"")
+                        debug_lines.append(""  [FAIL] "" + g_name + "" vs "" + scheme + "": "" + w_name + "" is "" + str(n_dims) + ""D (Required 2D)"")
                         break
-                    
-                    # Rule B: Modulo
+
                     if ne0 % block_size != 0:
                         is_valid = False
-                        # Explicit debug for math check
-                        debug_lines.append(f""  [FAIL] {{g_name}} vs {{scheme}} (Block {{block_size}}): {{w_name}} ne0={{ne0}}. {{ne0}} % {{block_size}} = {{ne0 % block_size}}"")
+                        debug_lines.append(""  [FAIL] "" + g_name + "" vs "" + scheme + "" (Block "" + str(block_size) + ""): "" + w_name + "" ne0="" + str(ne0) + "". Remainder="" + str(ne0 % block_size))
                         break
-                
-                if not is_valid:
-                    failures.append({{ 'Group': g_name, 'Scheme': scheme }})
-    else:
-        debug_lines.append(f""[MISSING] {{g_name}}"")
 
-# Write Debug
+                if not is_valid:
+                    failures.append({{""Group"": g_name, ""Scheme"": scheme}})
+    else:
+        debug_lines.append(""[MISSING] "" + g_name)
+
 try:
     with open(debug_path, 'w') as f:
-        f.write('\n'.join(debug_lines))
+        f.write('\\n'.join(debug_lines))
 except:
     pass
 
-# Write Result
 with open(output_path, 'w') as f:
     json.dump({{
-        'FoundGroups': found_groups,
-        'Incompatible': failures,
-        'Error': None
+        ""FoundGroups"": found_groups,
+        ""Incompatible"": failures,
+        ""Error"": None
     }}, f, indent=2)
 ";
-    }
+}
 
     private class CompatResult
     {
@@ -274,7 +275,7 @@ with open(output_path, 'w') as f:
 
     private class CompatFailure
     {
-        public string Group { get; set; } = "";
-        public string Scheme { get; set; } = "";
+        public string Group { get; set; } = string.Empty;
+        public string Scheme { get; set; } = string.Empty;
     }
 }

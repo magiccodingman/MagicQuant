@@ -27,7 +27,7 @@ public class QuantDatabaseService
 
     private string ConnectionString => $"Data Source={Path.Combine(GetDuckDbDirectory(), DbFileName)}";
 
-    public async Task InitializeAsync(CancellationToken ct = default)
+    public async Task InitializeAsync(bool forceRebuild = false, CancellationToken ct = default)
     {
         var duckDbDirectory = GetDuckDbDirectory();
         Directory.CreateDirectory(duckDbDirectory);
@@ -41,15 +41,20 @@ public class QuantDatabaseService
         AnsiConsole.MarkupLine(
             $"[bold]DuckDB Check:[/] Current Rows: [cyan]{currentDbCount:N0}[/] | Expected: [yellow]{expectedTotal:N0}[/]");
 
-        if (currentDbCount != expectedTotal)
+        if (forceRebuild || currentDbCount != expectedTotal)
         {
-            AnsiConsole.MarkupLine("[bold red]DuckDB empty, mismatch, or new.[/] Initializing/Rebuilding...");
+            AnsiConsole.MarkupLine("[bold red]DuckDB empty, mismatch, forced, or stale.[/] Initializing/Rebuilding...");
             await RebuildDatabaseAsync(connection, expectedTotal, ct);
         }
         else
         {
             AnsiConsole.MarkupLine("[bold green]DuckDB is synchronized and ready.[/]");
         }
+    }
+
+    public async Task RebuildAsync(CancellationToken ct = default)
+    {
+        await InitializeAsync(forceRebuild: true, ct: ct);
     }
 
     private async Task<long> GetRowCountAsync(DuckDBConnection connection, CancellationToken ct)
@@ -91,17 +96,14 @@ public class QuantDatabaseService
         await createCmd.ExecuteNonQueryAsync(ct);
 
         long insertedTotal = 0;
-
-        var bases = BaselineQuants.All
-            .Where(b => b.BaseConversionBase != null)
-            .ToList();
+        var bases = RuntimeSearchSpace.GetActiveCombinationBaselines();
 
         AnsiConsole.MarkupLine($"[grey]Starting bulk insert of {expectedTotal:N0} rows...[/]");
 
-        foreach (var b in bases)
+        foreach (var baseline in bases)
         {
             foreach (var batch in TensorConfigGenerator.GenerateTensorConfigBatches(
-                         b,
+                         baseline,
                          batchSize: 1_000_000,
                          ct: ct))
             {

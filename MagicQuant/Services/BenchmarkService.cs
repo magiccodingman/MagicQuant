@@ -111,101 +111,112 @@ public class BenchmarkService
             PlanInitLock.Release();
         }
     }
-    
+
     public async Task ClampStaticNglWithBaseModelAsync(
-    string baseModelPath,
-    int discoveryTokenTarget = 8192,
-    CancellationToken ct = default)
-{
-    if (string.IsNullOrWhiteSpace(baseModelPath))
-        throw new ArgumentException("Base model path was null or empty.", nameof(baseModelPath));
-
-    if (_currentPlan == null)
-        throw new InvalidOperationException(
-            "Benchmark execution plan has not been initialized. Call EnsureExecutionPlanAsync() first.");
-
-    if (!_currentPlan.UsesGpu)
-        return;
-
-    await PlanInitLock.WaitAsync(ct);
-    try
+        string baseModelPath,
+        int discoveryTokenTarget = 8192,
+        CancellationToken ct = default)
     {
-        if (_currentPlan == null || !_currentPlan.UsesGpu)
+        if (string.IsNullOrWhiteSpace(baseModelPath))
+            throw new ArgumentException("Base model path was null or empty.", nameof(baseModelPath));
+
+        if (_currentPlan == null)
+            throw new InvalidOperationException(
+                "Benchmark execution plan has not been initialized. Call EnsureExecutionPlanAsync() first.");
+
+        if (!_currentPlan.UsesGpu)
             return;
 
-        var slot = _currentPlan.Slots[0];
-
-        string probeRoot = Path.Combine(Cache.ModelMagicQuantDirectory!, "_benchmark_plan_probe_base");
-        Directory.CreateDirectory(probeRoot);
-
-        string probeCorpusDir = Path.Combine(probeRoot, "_ppl_corpora");
-        Directory.CreateDirectory(probeCorpusDir);
-
-        string corpusPath = Path.Combine(probeCorpusDir, "ppl_corpus_general.txt");
-        await PreparePplCorpusAsync("general", corpusPath, discoveryTokenTarget);
-
-        int startingNgl = _currentPlan.StaticNgl;
-        int? chosen = null;
-
-        AnsiConsole.Write(new Rule("[yellow]Clamping Static ngl With Base Model[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"[grey]Base model:[/] {Markup.Escape(baseModelPath)}");
-        AnsiConsole.MarkupLine($"[grey]Starting from Q8-discovered ngl:[/] [cyan]{startingNgl}[/]");
-
-        foreach (int ngl in NglCandidates.Where(n => n <= startingNgl).OrderByDescending(n => n))
+        await PlanInitLock.WaitAsync(ct);
+        try
         {
-            ct.ThrowIfCancellationRequested();
+            if (_currentPlan == null || !_currentPlan.UsesGpu)
+                return;
 
-            AnsiConsole.MarkupLine($"[grey]Base clamp probe:[/] [cyan]ngl={ngl}[/]");
+            var slot = _currentPlan.Slots[0];
 
-            bool benchOk = await ProbeLlamaBenchAtFixedNglAsync(baseModelPath, slot, ngl, probeRoot);
-            if (!benchOk)
+            string probeRoot = Path.Combine(Cache.ModelMagicQuantDirectory!, "_benchmark_plan_probe_base");
+            Directory.CreateDirectory(probeRoot);
+
+            string probeCorpusDir = Path.Combine(probeRoot, "_ppl_corpora");
+            Directory.CreateDirectory(probeCorpusDir);
+
+            string corpusPath = Path.Combine(probeCorpusDir, "ppl_corpus_general.txt");
+            await PreparePplCorpusAsync("general", corpusPath, discoveryTokenTarget);
+
+            int startingNgl = _currentPlan.StaticNgl;
+            int? chosen = null;
+
+            AnsiConsole.Write(new Rule("[yellow]Clamping Static ngl With Base Model[/]")
+                { Justification = Justify.Left });
+            AnsiConsole.MarkupLine($"[grey]Base model:[/] {Markup.Escape(baseModelPath)}");
+            AnsiConsole.MarkupLine($"[grey]Starting from Q8-discovered ngl:[/] [cyan]{startingNgl}[/]");
+
+            foreach (int ngl in NglCandidates.Where(n => n <= startingNgl).OrderByDescending(n => n))
             {
-                AnsiConsole.MarkupLine($"[grey]  llama-bench failed at ngl={ngl}[/]");
-                continue;
+                ct.ThrowIfCancellationRequested();
+
+                AnsiConsole.MarkupLine($"[grey]Base clamp probe:[/] [cyan]ngl={ngl}[/]");
+
+                bool benchOk = await ProbeLlamaBenchAtFixedNglAsync(baseModelPath, slot, ngl, probeRoot);
+                if (!benchOk)
+                {
+                    AnsiConsole.MarkupLine($"[grey]  llama-bench failed at ngl={ngl}[/]");
+                    continue;
+                }
+
+                bool pplOk = await ProbePerplexityAtFixedNglAsync(baseModelPath, slot, ngl, corpusPath, probeRoot);
+                if (!pplOk)
+                {
+                    AnsiConsole.MarkupLine($"[grey]  perplexity failed at ngl={ngl}[/]");
+                    continue;
+                }
+
+                chosen = ngl;
+                break;
             }
 
-            bool pplOk = await ProbePerplexityAtFixedNglAsync(baseModelPath, slot, ngl, corpusPath, probeRoot);
-            if (!pplOk)
+            if (!chosen.HasValue)
             {
-                AnsiConsole.MarkupLine($"[grey]  perplexity failed at ngl={ngl}[/]");
-                continue;
+                AnsiConsole.MarkupLine(
+                    "[yellow]Base model could not sustain the discovered GPU ngl. Falling back to a CPU benchmark plan.[/]");
+
+                var cpuPlan = BenchmarkExecutionPlan.CreateCpuPlan(_currentPlan.PlanModelPath);
+
+                lock (SlotSync)
+                {
+                    _currentPlan = cpuPlan;
+                    _availableSlots = new Queue<BenchmarkSlot>(cpuPlan.Slots);
+                    _slotSemaphore = new SemaphoreSlim(cpuPlan.Slots.Count, cpuPlan.Slots.Count);
+                }
+
+                return;
             }
 
-            chosen = ngl;
-            break;
-        }
-
-        if (!chosen.HasValue)
-        {
-            throw new InvalidOperationException(
-                $"Could not clamp a stable benchmark ngl for the base model '{baseModelPath}' " +
-                $"within the discovered Q8 topology.");
-        }
-
-        if (chosen.Value != _currentPlan.StaticNgl)
-        {
-            var updated = new BenchmarkExecutionPlan(
-                planModelPath: _currentPlan.PlanModelPath,
-                staticNgl: chosen.Value,
-                usesGpu: _currentPlan.UsesGpu,
-                groupSize: _currentPlan.GroupSize,
-                slots: _currentPlan.Slots);
-
-            lock (SlotSync)
+            if (chosen.Value != _currentPlan.StaticNgl)
             {
-                _currentPlan = updated;
-                _availableSlots = new Queue<BenchmarkSlot>(updated.Slots);
-                _slotSemaphore = new SemaphoreSlim(updated.Slots.Count, updated.Slots.Count);
-            }
-        }
+                var updated = new BenchmarkExecutionPlan(
+                    planModelPath: _currentPlan.PlanModelPath,
+                    staticNgl: chosen.Value,
+                    usesGpu: _currentPlan.UsesGpu,
+                    groupSize: _currentPlan.GroupSize,
+                    slots: _currentPlan.Slots);
 
-        AnsiConsole.MarkupLine($"[green]Base-model clamped static ngl:[/] [cyan]{chosen.Value}[/]");
+                lock (SlotSync)
+                {
+                    _currentPlan = updated;
+                    _availableSlots = new Queue<BenchmarkSlot>(updated.Slots);
+                    _slotSemaphore = new SemaphoreSlim(updated.Slots.Count, updated.Slots.Count);
+                }
+            }
+
+            AnsiConsole.MarkupLine($"[green]Base-model clamped static ngl:[/] [cyan]{chosen.Value}[/]");
+        }
+        finally
+        {
+            PlanInitLock.Release();
+        }
     }
-    finally
-    {
-        PlanInitLock.Release();
-    }
-}
 
     private async Task<BenchmarkExecutionPlan> BuildExecutionPlanAsync(
         string q8ModelPath,
@@ -619,7 +630,9 @@ public class BenchmarkService
             if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var diskResult))
             {
                 if (!diskResult.ModelSizeBytes.HasValue || diskResult.ModelSizeBytes.Value == 0)
-                    diskResult.ModelSizeBytes = existingBench.SizeBytes > 0 ? existingBench.SizeBytes : TryGetModelSize(modelPath);
+                    diskResult.ModelSizeBytes = existingBench.SizeBytes > 0
+                        ? existingBench.SizeBytes
+                        : TryGetModelSize(modelPath);
 
                 return diskResult;
             }
@@ -655,7 +668,7 @@ public class BenchmarkService
         {
             ModelSizeBytes = TryGetModelSize(modelPath)
         };
-        
+
         // Disabled for now. Too many variables that're annoying to track
         /*string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
         if (TryReadExistingLlamaBenchLog(llamaBenchPath, out var existingLlamaBench))
@@ -668,7 +681,7 @@ public class BenchmarkService
                 $"[yellow]Running Llama-Bench[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
             result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, effectiveNgl, slot);
         }*/
-        
+
         result.LlamaBench = new LlamaBenchMetrics
         {
             LogPath = null,
@@ -969,7 +982,7 @@ public class BenchmarkService
                 // fall through
             }
         }
-    
+
         // not currently requiring llama bench
         /*string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
         if (!TryReadExistingLlamaBenchLog(llamaBenchPath, out var llamaBench))
@@ -979,7 +992,7 @@ public class BenchmarkService
         {
             LlamaBench = llamaBench
         };*/
-        
+
         var rebuilt = new BenchmarkResult
         {
             LlamaBench = new LlamaBenchMetrics
@@ -1298,7 +1311,7 @@ public class BenchmarkService
             $"{label} failed after {attempts} attempts on slot {slot.SlotId} ({Markup.Escape(slot.DisplayName)}).\n" +
             $"{last?.LogOutput}");
     }
-    
+
     private bool LooksLikeSuccessfulPerplexityRun(string logFile, string logContent)
     {
         if (string.IsNullOrWhiteSpace(logContent) || logContent.Length < 50)
@@ -1315,7 +1328,7 @@ public class BenchmarkService
         }
     }
 
-    
+
     private static bool LooksLikeRetryableGpuFailure(string logContent)
     {
         if (string.IsNullOrWhiteSpace(logContent))

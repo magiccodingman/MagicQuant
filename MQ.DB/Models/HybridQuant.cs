@@ -9,7 +9,7 @@ public class HybridQuant
 
     public HybridQuant(TensorConfig c)
     {
-        BaseQuant = BaselineQuants.All.First(b => b.UniqueId == c.BaseQuant);
+        BaseQuant = BaselineQuants.FromId(c.BaseQuant);
 
         AddIfNotNull(TReg.Embeddings, c.Embeddings);
         AddIfNotNull(TReg.LmHead, c.LmHead);
@@ -51,11 +51,38 @@ public class HybridQuant
         };
     }
 
+    public static HybridQuant CreatePureBaseline(BaselineQuants baseQuant)
+    {
+        return new HybridQuant
+        {
+            BaseQuant = baseQuant,
+            Tensors = new List<HybridTensor>()
+        };
+    }
+
+    public static HybridQuant CreateBlanket(
+        BaselineQuants baseQuant,
+        IEnumerable<TensorGroup> groups,
+        TensorWeightScheme blanketScheme)
+    {
+        return new HybridQuant
+        {
+            BaseQuant = baseQuant,
+            Tensors = groups
+                .Select(g => new HybridTensor
+                {
+                    TGroup = g,
+                    TensorType = blanketScheme
+                })
+                .ToList()
+        };
+    }
+
     public static explicit operator HybridQuant(TensorConfig c) => new HybridQuant(c);
 }
 
 public class HybridTensor
 {
     public TensorGroup TGroup { get; set; } = null!;
-    public TensorWeightScheme TensorType { get; set; }
+    public TensorWeightScheme TensorType { get; set; } = default!;
 }
