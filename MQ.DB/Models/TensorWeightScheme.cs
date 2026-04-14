@@ -11,19 +11,22 @@ public sealed class TensorWeightScheme
     public ImmutableArray<string> Names { get; }
     public List<TensorGroup> BannedGroups { get; }
     public ushort? BlockNeo { get; }
+    public bool IsSmallest { get; }
 
     private TensorWeightScheme(
         byte uniqueId,
         bool requiresImatrix,
         ImmutableArray<string> names,
         IEnumerable<TensorGroup> bannedGroups,
-        ushort? blockNeo)
+        ushort? blockNeo,
+        bool isSmallest = false)
     {
         UniqueId = uniqueId;
         RequiresImatrix = requiresImatrix;
         Names = names;
         BlockNeo = blockNeo;
-
+        IsSmallest = isSmallest;
+        
         var distinctGroups = bannedGroups
             .GroupBy(x => x.UniqueId)
             .Select(x => x.First())
@@ -68,7 +71,7 @@ public sealed class TensorWeightScheme
             Array.Empty<TensorGroup>(),
             null);
 
-    public static readonly TensorWeightScheme MXFP4 =
+    /*public static readonly TensorWeightScheme MXFP4 =
         new(
             2,
             false,
@@ -79,7 +82,7 @@ public sealed class TensorWeightScheme
                 TReg.MoeRouter,
                 TReg.MoeExperts
             },
-            32);
+            32);*/
 
     public static readonly TensorWeightScheme Q8_0 =
         new(3, false, ["Q8_0"], Array.Empty<TensorGroup>(), null);
@@ -101,7 +104,8 @@ public sealed class TensorWeightScheme
             false,
             ["IQ4_XS"],
             new[] { TReg.MoeRouter },
-            32);
+            32,
+            true);
     
     /*
     public static TensorWeightScheme IQ4_NL =
@@ -206,7 +210,7 @@ public sealed class TensorWeightScheme
     [
         NULL,
         BF16_F16,
-        MXFP4,
+       // MXFP4,
         Q8_0,
         Q6_K,
         Q5_K,

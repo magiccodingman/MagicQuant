@@ -15,7 +15,7 @@ public record BaselineQuants(
     public static readonly BaselineQuants Q5_K = new(2, false, ["Q5_K"]);
     public static readonly BaselineQuants Q4_K_M = new(3, false, ["Q4_K_M"]);
 
-    public static readonly BaselineQuants MXFP4_MOE = new(
+    /*public static readonly BaselineQuants MXFP4_MOE = new(
         4,
         false,
         ["MXFP4_MOE"],
@@ -29,7 +29,7 @@ public record BaselineQuants(
                     TensorType = TensorWeightScheme.MXFP4
                 })
                 .ToList()
-        });
+        });*/
 
     public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"]);
 
@@ -59,7 +59,7 @@ public record BaselineQuants(
         Q6_K,
         Q5_K,
         Q4_K_M,
-        MXFP4_MOE,
+        //MXFP4_MOE,
         IQ4_NL,
         IQ4_XS,
         //IQ3_M,
@@ -68,7 +68,7 @@ public record BaselineQuants(
 
     static BaselineQuants()
     {
-        MXFP4_MOE.BaseConversionBase!.BaseQuant = MXFP4_MOE;
+        //MXFP4_MOE.BaseConversionBase!.BaseQuant = MXFP4_MOE;
         IQ4_XS.BaseConversionBase!.BaseQuant = IQ4_XS;
     }
 
