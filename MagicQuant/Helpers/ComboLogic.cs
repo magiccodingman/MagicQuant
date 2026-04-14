@@ -32,23 +32,8 @@ public static class ComboLogic
                 continue;
             }
 
-            if (RuntimeSearchSpace.IsGroupLockedToNative(group))
-            {
-                builder.Add([TensorWeightScheme.BF16_F16.UniqueId]);
-                continue;
-            }
-
             var ids = schemesForBase
-                .Where(s =>
-                {
-                    if (s.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
-                        return false;
-
-                    if (s.UniqueId == TensorWeightScheme.NULL.UniqueId)
-                        return true;
-
-                    return !s.IsBannedFor(group);
-                })
+                .Where(s => !s.IsBannedFor(group))
                 .Select(s => s.UniqueId)
                 .Distinct()
                 .ToArray();

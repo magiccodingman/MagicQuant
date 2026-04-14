@@ -26,7 +26,7 @@ public sealed class TensorWeightScheme
         Names = names;
         BlockNeo = blockNeo;
         IsSmallest = isSmallest;
-        
+
         var distinctGroups = bannedGroups
             .GroupBy(x => x.UniqueId)
             .Select(x => x.First())
@@ -53,6 +53,43 @@ public sealed class TensorWeightScheme
     {
         foreach (var scheme in All)
             scheme.ResetRuntimeBans();
+    }
+
+    public static TensorWeightScheme GetSmallestNonImatrix()
+    {
+        ValidateSmallestConfiguration();
+
+        return All.Single(x =>
+            !x.RequiresImatrix &&
+            x.UniqueId != NULL.UniqueId &&
+            x.UniqueId != BF16_F16.UniqueId &&
+            x.IsSmallest);
+    }
+
+    public static void ValidateSmallestConfiguration()
+    {
+        var marked = All
+            .Where(x => !x.RequiresImatrix)
+            .Where(x => x.UniqueId != NULL.UniqueId)
+            .Where(x => x.UniqueId != BF16_F16.UniqueId)
+            .Where(x => x.IsSmallest)
+            .ToList();
+
+        if (marked.Count != 1)
+        {
+            throw new InvalidOperationException(
+                $"Exactly one non-imatrix TensorWeightScheme must have IsSmallest=true. Found {marked.Count}. " +
+                $"Marked: [{string.Join(", ", marked.Select(x => x.Names[0]))}]");
+        }
+    }
+
+    public static IReadOnlyList<TensorWeightScheme> GetExplicitSchemes(bool includeImatrix = true)
+    {
+        return All
+            .Where(x => x.UniqueId != NULL.UniqueId)
+            .Where(x => x.UniqueId != BF16_F16.UniqueId)
+            .Where(x => includeImatrix || !x.RequiresImatrix)
+            .ToList();
     }
 
     public static readonly TensorWeightScheme NULL =
@@ -106,7 +143,7 @@ public sealed class TensorWeightScheme
             new[] { TReg.MoeRouter },
             32,
             true);
-    
+
     /*
     public static TensorWeightScheme IQ4_NL =
         new(
@@ -114,7 +151,7 @@ public sealed class TensorWeightScheme
             false,
             ["IQ4_NL"],
             new[] { TReg.MoeRouter },
-       32
+            32
         );
 
     public static TensorWeightScheme IQ3_S =
@@ -128,7 +165,7 @@ public sealed class TensorWeightScheme
                 TReg.LmHead,
                 TReg.MoeRouter
             },
-       32
+            32
         );
 
     public static TensorWeightScheme IQ3_XS =
@@ -142,7 +179,7 @@ public sealed class TensorWeightScheme
                 TReg.LmHead,
                 TReg.MoeRouter
             },
-       32
+            32
         );
 
     public static TensorWeightScheme IQ3_XXS =
@@ -156,7 +193,7 @@ public sealed class TensorWeightScheme
                 TReg.LmHead,
                 TReg.MoeRouter
             },
-       32
+            32
         );
 
     public static TensorWeightScheme IQ2_S =
@@ -171,7 +208,7 @@ public sealed class TensorWeightScheme
                 TReg.MoeRouter,
                 TReg.MoeExperts
             },
-       32
+            32
         );
 
     public static TensorWeightScheme IQ2_XS =
@@ -186,7 +223,7 @@ public sealed class TensorWeightScheme
                 TReg.MoeRouter,
                 TReg.MoeExperts
             },
-       32
+            32
         );
 
     public static TensorWeightScheme IQ2_XXS =
@@ -202,7 +239,7 @@ public sealed class TensorWeightScheme
                 TReg.MoeExperts,
                 TReg.AttnKV
             },
-       32
+            32
         );
     */
 
@@ -210,10 +247,17 @@ public sealed class TensorWeightScheme
     [
         NULL,
         BF16_F16,
-       // MXFP4,
+        // MXFP4,
         Q8_0,
         Q6_K,
         Q5_K,
         IQ4_XS,
+        // IQ4_NL,
+        // IQ3_S,
+        // IQ3_XS,
+        // IQ3_XXS,
+        // IQ2_S,
+        // IQ2_XS,
+        // IQ2_XXS
     ];
 }

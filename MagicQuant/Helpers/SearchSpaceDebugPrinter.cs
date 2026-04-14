@@ -1,7 +1,7 @@
+using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
 using System.Numerics;
-using MQ.DB;
 
 namespace MagicQuant.Helpers;
 
@@ -29,12 +29,9 @@ public static class SearchSpaceDebugPrinter
                 AnsiConsole.MarkupLine($"  [grey]- {string.Join("/", baseline.Names)}[/] (Id={baseline.UniqueId})");
         }
 
-        var locked = RuntimeSearchSpace.GetNativeLockedGroups()
-            .OrderBy(x => x.UniqueId)
-            .ToList();
-
-        AnsiConsole.MarkupLine($"[green]Native-locked groups:[/] {locked.Count}");
-        foreach (var group in locked)
+        var fullyPrunedGroups = RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned();
+        AnsiConsole.MarkupLine($"[green]Groups with explicit tensor quant banned:[/] {fullyPrunedGroups.Count}");
+        foreach (var group in fullyPrunedGroups)
             AnsiConsole.MarkupLine($"  [yellow]- {group.Name}[/] (Id={group.UniqueId})");
 
         var unusedIds = Cache.UnusedTensorGroups
@@ -46,7 +43,6 @@ public static class SearchSpaceDebugPrinter
             AnsiConsole.Write(new Rule($"[blue]Base: {Markup.Escape(string.Join("/", baseline.Names))}[/]") { Justification = Justify.Left });
 
             var allowed = ComboLogic.GetAllowedSchemeIdsPerGroup(baseline);
-
             BigInteger baseCount = BigInteger.One;
 
             for (int i = 0; i < TReg.All.Length; i++)
@@ -66,15 +62,24 @@ public static class SearchSpaceDebugPrinter
                     })
                     .ToList();
 
+                var runtimeBans = RuntimeSearchSpace.GetRuntimeExplicitBansForGroup(group)
+                    .Select(x => x.Names[0])
+                    .ToList();
+
                 string state =
                     unusedIds.Contains(group.UniqueId) ? "unused->NULL" :
-                    RuntimeSearchSpace.IsGroupLockedToNative(group) ? "native-locked" :
+                    RuntimeSearchSpace.IsGroupExplicitQuantBanned(group) ? "explicit-quant-banned" :
+                    runtimeBans.Count > 0 ? "runtime-pruned" :
                     "variable";
 
                 AnsiConsole.MarkupLine(
-                    $"  [cyan]{Markup.Escape(group.Name)}[/] => [green]{ids.Length}[/] choice(s) " +
-                    $"[grey][[{Markup.Escape(state)}]][/] :: {Markup.Escape(string.Join(", ", names))}");
-                
+                    $"  [cyan]{Markup.Escape(group.Name)}[/] => [green]{ids.Length}[/] choice(s) [grey][[{Markup.Escape(state)}]][/] :: {Markup.Escape(string.Join(", ", names))}");
+
+                if (runtimeBans.Count > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"      [grey]runtime bans:[/] {Markup.Escape(string.Join(", ", runtimeBans))}");
+                }
             }
 
             AnsiConsole.MarkupLine($"  [bold green]Base total:[/] {baseCount:N0}");

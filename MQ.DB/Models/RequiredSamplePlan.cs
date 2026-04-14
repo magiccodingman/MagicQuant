@@ -28,4 +28,25 @@ public sealed class RequiredSampleGenerationResult
     public int GroupIsolationCount { get; set; }
 
     public int TotalCount => Plans.Count;
+
+    public void AppendFrom(RequiredSampleGenerationResult other)
+    {
+        if (other == null)
+            return;
+
+        Plans.AddRange(other.Plans);
+        PureBaselineCount += other.PureBaselineCount;
+        BaseOnlyIsolationCount += other.BaseOnlyIsolationCount;
+        GroupIsolationCount += other.GroupIsolationCount;
+    }
+
+    public static RequiredSampleGenerationResult Merge(params RequiredSampleGenerationResult[] items)
+    {
+        var merged = new RequiredSampleGenerationResult();
+
+        foreach (var item in items)
+            merged.AppendFrom(item);
+
+        return merged;
+    }
 }

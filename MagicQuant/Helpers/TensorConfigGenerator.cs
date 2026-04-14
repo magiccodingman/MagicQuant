@@ -1,8 +1,9 @@
+using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
-using MQ.DB;
+using System.Numerics;
 
 namespace MagicQuant.Helpers;
 
@@ -11,6 +12,8 @@ public static class TensorConfigGenerator
     public static RequiredSampleGenerationResult GenerateRequiredSamplePlan(
         List<TensorGroup>? missingTensorGroups = null)
     {
+        TensorWeightScheme.ValidateSmallestConfiguration();
+
         if (missingTensorGroups != null && !missingTensorGroups.Any())
             missingTensorGroups = null;
 
@@ -41,7 +44,6 @@ public static class TensorConfigGenerator
 
         // ---------------------------------------------------------
         // 2. Base-only isolation for actual combo baselines
-        //    This tells you whether uncovered tensors alone justify the baseline.
         // ---------------------------------------------------------
         foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
         {
@@ -65,8 +67,6 @@ public static class TensorConfigGenerator
 
         // ---------------------------------------------------------
         // 3. Carrier base-only isolation for tensor-group probing
-        //    Q8_0 is used as the carrier because llama-quantize actually applies
-        //    mixed tensor overrides correctly on a real quantized output.
         // ---------------------------------------------------------
         var groupIsolationCarrier = BaselineQuants.Q8_0;
 
@@ -88,24 +88,81 @@ public static class TensorConfigGenerator
         result.BaseOnlyIsolationCount++;
 
         // ---------------------------------------------------------
-        // 4. Tensor-group isolation using the Q8_0 carrier
+        // 4. Smallest-first tensor-group isolation probes
         // ---------------------------------------------------------
-        var probeSchemes = TensorWeightScheme.All
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+        foreach (var group in activeGroups)
+        {
+            var firstProbe = GetInitialIsolationProbeScheme(group);
+            if (firstProbe == null)
+                continue;
+
+            var quant = HybridQuant.CreateBlanket(
+                baseQuant: groupIsolationCarrier,
+                groups: activeGroups,
+                blanketScheme: TensorWeightScheme.BF16_F16);
+
+            var target = quant.Tensors.First(x => x.TGroup.UniqueId == group.UniqueId);
+            target.TensorType = firstProbe;
+
+            result.Plans.Add(new RequiredSamplePlan
+            {
+                Kind = RequiredSampleKind.GroupIsolation,
+                Key = $"probefirst:{groupIsolationCarrier.UniqueId}:{group.UniqueId}:{firstProbe.UniqueId}",
+                Description =
+                    $"Initial isolation probe for group '{group.Name}' using scheme '{firstProbe.Names[0]}' on carrier '{groupIsolationCarrier.Names[0]}'.",
+                Quant = quant,
+                TargetGroupId = group.UniqueId,
+                TestedSchemeId = firstProbe.UniqueId,
+                TestedBaselineId = groupIsolationCarrier.UniqueId
+            });
+
+            result.GroupIsolationCount++;
+        }
+
+        AnsiConsole.MarkupLine($"[bold green]Initial pure baseline samples required:[/] {result.PureBaselineCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Initial base-only isolation samples required:[/] {result.BaseOnlyIsolationCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Initial smallest-probe isolation samples required:[/] {result.GroupIsolationCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Initial total samples required:[/] {result.TotalCount:N0}");
+
+        return result;
+    }
+
+    public static RequiredSampleGenerationResult GenerateContinuationIsolationPlan(
+        IEnumerable<byte> groupIdsToContinue,
+        List<TensorGroup>? missingTensorGroups = null)
+    {
+        if (groupIdsToContinue == null)
+            throw new ArgumentNullException(nameof(groupIdsToContinue));
+
+        TensorWeightScheme.ValidateSmallestConfiguration();
+
+        if (missingTensorGroups != null && !missingTensorGroups.Any())
+            missingTensorGroups = null;
+
+        var skippedIds = missingTensorGroups?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
+        var continueIds = groupIdsToContinue.ToHashSet();
+        var activeGroups = TReg.All
+            .Where(x => !skippedIds.Contains(x.UniqueId))
+            .Where(x => continueIds.Contains(x.UniqueId))
             .OrderBy(x => x.UniqueId)
             .ToList();
 
+        var result = new RequiredSampleGenerationResult();
+        var groupIsolationCarrier = BaselineQuants.Q8_0;
+
         foreach (var group in activeGroups)
         {
-            foreach (var scheme in probeSchemes)
+            var allCandidates = GetOrderedIsolationCandidateSchemes(group);
+            var firstProbe = GetInitialIsolationProbeScheme(group);
+
+            foreach (var scheme in allCandidates)
             {
-                if (scheme.IsBannedFor(group))
+                if (firstProbe != null && scheme.UniqueId == firstProbe.UniqueId)
                     continue;
 
                 var quant = HybridQuant.CreateBlanket(
                     baseQuant: groupIsolationCarrier,
-                    groups: activeGroups,
+                    groups: TReg.All.Where(x => !skippedIds.Contains(x.UniqueId)).OrderBy(x => x.UniqueId),
                     blanketScheme: TensorWeightScheme.BF16_F16);
 
                 var target = quant.Tensors.First(x => x.TGroup.UniqueId == group.UniqueId);
@@ -116,7 +173,7 @@ public static class TensorConfigGenerator
                     Kind = RequiredSampleKind.GroupIsolation,
                     Key = $"group:{groupIsolationCarrier.UniqueId}:{group.UniqueId}:{scheme.UniqueId}",
                     Description =
-                        $"Carrier-based isolation for group '{group.Name}' using scheme '{scheme.Names[0]}' on base '{groupIsolationCarrier.Names[0]}'.",
+                        $"Follow-up isolation sample for group '{group.Name}' using scheme '{scheme.Names[0]}' on carrier '{groupIsolationCarrier.Names[0]}'.",
                     Quant = quant,
                     TargetGroupId = group.UniqueId,
                     TestedSchemeId = scheme.UniqueId,
@@ -127,21 +184,28 @@ public static class TensorConfigGenerator
             }
         }
 
-        AnsiConsole.MarkupLine($"[bold green]Pure baselines required:[/] {result.PureBaselineCount:N0}");
-        AnsiConsole.MarkupLine(
-            $"[bold green]Base-only isolation samples required:[/] {result.BaseOnlyIsolationCount:N0}");
-        AnsiConsole.MarkupLine(
-            $"[bold green]Tensor-group isolation samples required:[/] {result.GroupIsolationCount:N0}");
-        AnsiConsole.MarkupLine($"[bold green]Total required samples:[/] {result.TotalCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Continuation isolation samples required:[/] {result.GroupIsolationCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Continuation total samples required:[/] {result.TotalCount:N0}");
 
         return result;
     }
 
-    public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? missingTensorGroups = null)
+    private static TensorWeightScheme? GetInitialIsolationProbeScheme(TensorGroup group)
     {
-        return GenerateRequiredSamplePlan(missingTensorGroups)
-            .Plans
-            .Select(x => x.Quant)
+        var ordered = GetOrderedIsolationCandidateSchemes(group);
+
+        return ordered.FirstOrDefault(x => !x.RequiresImatrix) ?? ordered.FirstOrDefault();
+    }
+
+    private static List<TensorWeightScheme> GetOrderedIsolationCandidateSchemes(TensorGroup group)
+    {
+        return TensorWeightScheme.All
+            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Where(x => !x.IsBannedFor(group))
+            .OrderByDescending(x => !x.RequiresImatrix && x.IsSmallest)
+            .ThenBy(x => x.RequiresImatrix ? 1 : 0)
+            .ThenByDescending(x => x.UniqueId)
             .ToList();
     }
 
@@ -179,110 +243,88 @@ public static class TensorConfigGenerator
         int dop = ComputeWorkerThreads(GetThreadCountSafe());
         byte baseId = baseQuant.UniqueId;
 
-        var queue = new BlockingCollection<List<TensorConfig>>(
-            boundedCapacity: Math.Max(2, dop * 2));
+        BigInteger total = BigInteger.One;
+        for (int i = 0; i < dims; i++)
+            total *= allowed[i].Length;
 
-        var producer = Task.Run(() =>
+        if (total == BigInteger.Zero)
+            yield break;
+
+        var buffer = new ConcurrentQueue<TensorConfig>();
+        var produced = 0L;
+
+        Parallel.ForEach(
+            Partitioner.Create(0L, (long)total),
+            new ParallelOptions { MaxDegreeOfParallelism = dop, CancellationToken = ct },
+            range =>
+            {
+                var local = new List<TensorConfig>(Math.Min(batchSize, 8192));
+
+                for (long flat = range.Item1; flat < range.Item2; flat++)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    long n = flat;
+                    Span<byte> chosen = stackalloc byte[dims];
+
+                    for (int d = dims - 1; d >= 0; d--)
+                    {
+                        var arr = allowed[d];
+                        int len = arr.Length;
+                        int idx = (int)(n % len);
+                        chosen[d] = arr[idx];
+                        n /= len;
+                    }
+
+                    local.Add(new TensorConfig(
+                        baseId,
+                        chosen[0],
+                        chosen[1],
+                        chosen[2],
+                        chosen[3],
+                        chosen[4],
+                        chosen[5],
+                        chosen[6],
+                        chosen[7],
+                        chosen[8]));
+
+                    if (local.Count >= batchSize)
+                    {
+                        foreach (var item in local)
+                            buffer.Enqueue(item);
+
+                        local.Clear();
+                    }
+                }
+
+                foreach (var item in local)
+                    buffer.Enqueue(item);
+            });
+
+        while (!buffer.IsEmpty)
         {
-            try
-            {
-                Parallel.ForEach(
-                    Partitioner.Create(0, allowed[0].Length),
-                    new ParallelOptions
-                    {
-                        MaxDegreeOfParallelism = dop,
-                        CancellationToken = ct
-                    },
-                    range =>
-                    {
-                        var batch = new List<TensorConfig>(Math.Min(batchSize, 250_000));
-                        var idx = new int[dims];
+            var batch = new List<TensorConfig>(batchSize);
 
-                        var d0 = allowed[0];
-                        var d1 = allowed[1];
-                        var d2 = allowed[2];
-                        var d3 = allowed[3];
-                        var d4 = allowed[4];
-                        var d5 = allowed[5];
-                        var d6 = allowed[6];
-                        var d7 = allowed[7];
-                        var d8 = allowed[8];
+            while (batch.Count < batchSize && buffer.TryDequeue(out var cfg))
+                batch.Add(cfg);
 
-                        for (int i0 = range.Item1; i0 < range.Item2; i0++)
-                        {
-                            ct.ThrowIfCancellationRequested();
-
-                            idx[0] = i0;
-                            Array.Clear(idx, 1, dims - 1);
-
-                            while (true)
-                            {
-                                batch.Add(new TensorConfig(
-                                    baseQuant: baseId,
-                                    embeddings: d0[idx[0]],
-                                    lmHead: d1[idx[1]],
-                                    attnQ: d2[idx[2]],
-                                    attnKV: d3[idx[3]],
-                                    attnOutput: d4[idx[4]],
-                                    ffnUpGate: d5[idx[5]],
-                                    ffnDown: d6[idx[6]],
-                                    moeExperts: d7[idx[7]],
-                                    moeRouter: d8[idx[8]]
-                                ));
-
-                                if (batch.Count >= batchSize)
-                                {
-                                    queue.Add(batch, ct);
-                                    batch = new List<TensorConfig>(Math.Min(batchSize, 250_000));
-                                }
-
-                                int d = dims - 1;
-                                while (d >= 1)
-                                {
-                                    idx[d]++;
-                                    if (idx[d] < allowed[d].Length)
-                                        break;
-
-                                    idx[d] = 0;
-                                    d--;
-                                }
-
-                                if (d < 1)
-                                    break;
-                            }
-                        }
-
-                        if (batch.Count > 0)
-                            queue.Add(batch, ct);
-                    });
-            }
-            finally
-            {
-                queue.CompleteAdding();
-            }
-        }, ct);
-
-        foreach (var batch in queue.GetConsumingEnumerable(ct))
-            yield return batch;
-
-        producer.GetAwaiter().GetResult();
+            produced += batch.Count;
+            if (batch.Count > 0)
+                yield return batch;
+        }
     }
 
     private static int GetThreadCountSafe()
     {
-        return Cache.SysInfo?.ThreadCount > 0
-            ? Cache.SysInfo.ThreadCount
-            : Environment.ProcessorCount;
+        int tc = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
+        return Math.Max(1, tc);
     }
 
-    private static int ComputeWorkerThreads(int threadCount)
+    private static int ComputeWorkerThreads(int logicalThreads)
     {
-        if (threadCount <= 4)
-            return 1;
-
-        if (threadCount <= 12)
-            return 2;
-
-        return Math.Max(2, threadCount / 6);
+        if (logicalThreads <= 2) return 1;
+        if (logicalThreads <= 4) return 2;
+        if (logicalThreads <= 8) return 4;
+        return Math.Max(4, logicalThreads / 2);
     }
 }

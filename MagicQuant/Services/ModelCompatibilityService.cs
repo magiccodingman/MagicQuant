@@ -22,6 +22,8 @@ public class ModelCompatibilityService
         if (!File.Exists(ggufPath))
             throw new FileNotFoundException($"Base model not found at {ggufPath}");
 
+        TensorWeightScheme.ValidateSmallestConfiguration();
+
         RuntimeSearchSpace.ResetForNewModel();
         Cache.UnusedTensorGroups.Clear();
         TensorWeightScheme.NULL.BannedGroups.Clear();
@@ -72,7 +74,7 @@ public class ModelCompatibilityService
             int unusedCount = 0;
             int usedCount = 0;
             int shapeBanCount = 0;
-            int nativeLockedCount = 0;
+            int explicitQuantBannedCount = 0;
 
             var shapeTable = new Table().Border(TableBorder.Rounded).Title("[red]Shape Incompatibilities[/]");
             shapeTable.AddColumn("Group");
@@ -119,21 +121,14 @@ public class ModelCompatibilityService
 
                 scheme.BannedGroups.Add(group);
                 shapeBanCount++;
-                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{scheme.Names[0]}[/]", "[grey]Block Alignment[/]");
+                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{scheme.Names[0]}[/]",
+                    "[grey]Block Alignment[/]");
             }
 
             foreach (var group in TReg.All.Except(Cache.UnusedTensorGroups))
             {
-                bool anyNonNativeOptionLeft = TensorWeightScheme.All
-                    .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-                    .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-                    .Any(x => !x.IsBannedFor(group));
-
-                if (!anyNonNativeOptionLeft)
-                {
-                    RuntimeSearchSpace.LockGroupToNative(group);
-                    nativeLockedCount++;
-                }
+                if (RuntimeSearchSpace.IsGroupExplicitQuantBanned(group))
+                    explicitQuantBannedCount++;
             }
 
             AnsiConsole.MarkupLine("[green]✔[/] Analysis Complete.");
@@ -145,10 +140,16 @@ public class ModelCompatibilityService
                 AnsiConsole.MarkupLine($"   Unused Groups: [grey]{unusedNames}[/] (Forced to NULL)");
             }
 
-            if (nativeLockedCount > 0)
+            if (explicitQuantBannedCount > 0)
             {
-                string locked = string.Join(", ", RuntimeSearchSpace.GetNativeLockedGroups().Select(x => x.Name));
-                AnsiConsole.MarkupLine($"   Native-Locked Groups: [yellow]{locked}[/]");
+                string groups = string.Join(", ",
+                    RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned().Select(x => x.Name));
+
+                AnsiConsole.MarkupLine($"   Explicit-Quant-Banned Groups: [yellow]{groups}[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine("[green]No groups were reduced to BF16/NULL-only by compatibility checks.[/]");
             }
 
             if (shapeBanCount > 0)
@@ -172,8 +173,8 @@ public class ModelCompatibilityService
     }
 
     private string GeneratePythonScript(string jsonPayload)
-{
-    return $@"
+    {
+        return $@"
 import sys
 import json
 import re
@@ -264,7 +265,7 @@ with open(output_path, 'w') as f:
         ""Error"": None
     }}, f, indent=2)
 ";
-}
+    }
 
     private class CompatResult
     {

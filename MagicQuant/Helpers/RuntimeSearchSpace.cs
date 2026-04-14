@@ -4,25 +4,32 @@ namespace MagicQuant.Helpers;
 
 public static class RuntimeSearchSpace
 {
-    private static readonly HashSet<byte> NativeLockedGroupIds = new();
     private static readonly HashSet<byte> DisabledCombinationBaselineIds = new();
 
     public static void ResetForNewModel()
     {
-        NativeLockedGroupIds.Clear();
         DisabledCombinationBaselineIds.Clear();
         TensorWeightScheme.ResetAllRuntimeBans();
     }
 
-    public static bool IsGroupLockedToNative(TensorGroup group)
+    public static bool BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
     {
-        return NativeLockedGroupIds.Contains(group.UniqueId);
+        if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
+            return false;
+
+        if (scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+            return false;
+
+        if (scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
+            return false;
+
+        scheme.BannedGroups.Add(group);
+        return true;
     }
 
-    public static void LockGroupToNative(TensorGroup group)
+    public static int BanAllExplicitTensorSchemesForGroup(TensorGroup group)
     {
-        if (!NativeLockedGroupIds.Add(group.UniqueId))
-            return;
+        int applied = 0;
 
         foreach (var scheme in TensorWeightScheme.All)
         {
@@ -32,16 +39,41 @@ public static class RuntimeSearchSpace
             if (scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
                 continue;
 
-            if (!scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
-                scheme.BannedGroups.Add(group);
+            if (BanSchemeForGroup(group, scheme))
+                applied++;
         }
+
+        return applied;
     }
 
-    public static IReadOnlyList<TensorGroup> GetNativeLockedGroups()
+    public static IReadOnlyList<TensorWeightScheme> GetRuntimeExplicitBansForGroup(TensorGroup group)
+    {
+        return TensorWeightScheme.All
+            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Where(x => x.IsBannedFor(group))
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+    }
+
+    public static bool IsGroupExplicitQuantBanned(TensorGroup group)
+    {
+        var explicitSchemes = TensorWeightScheme.All
+            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .ToList();
+
+        if (explicitSchemes.Count == 0)
+            return false;
+
+        return explicitSchemes.All(x => x.IsBannedFor(group));
+    }
+
+    public static IReadOnlyList<TensorGroup> GetGroupsWithExplicitQuantBanned()
     {
         return TReg.All
-            .Where(g => NativeLockedGroupIds.Contains(g.UniqueId))
-            .OrderBy(g => g.UniqueId)
+            .Where(IsGroupExplicitQuantBanned)
+            .OrderBy(x => x.UniqueId)
             .ToList();
     }
 
