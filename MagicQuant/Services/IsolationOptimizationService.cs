@@ -63,8 +63,8 @@ public class IsolationOptimizationService
         var result = new InitialIsolationAnalysisResult();
 
         var nativeBaseline = await LoadSnapshotAsync(
-            HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()), ct)
-            ?? throw new InvalidOperationException("Native BF16 baseline benchmark was not found.");
+                                 HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()), ct)
+                             ?? throw new InvalidOperationException("Native BF16 baseline benchmark was not found.");
 
         var carrierBaselineId = BaselineQuants.Q8_0.UniqueId;
 
@@ -74,7 +74,7 @@ public class IsolationOptimizationService
             x.Key.StartsWith("carrier-baseonly:", StringComparison.Ordinal));
 
         var carrierBaseOnly = await LoadSnapshotAsync(carrierBaseOnlyPlan.Quant, ct)
-            ?? throw new InvalidOperationException("Carrier base-only benchmark was not found.");
+                              ?? throw new InvalidOperationException("Carrier base-only benchmark was not found.");
 
         var groupPlans = plan.Plans
             .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe)
@@ -149,8 +149,8 @@ public class IsolationOptimizationService
         var result = new IsolationOptimizationResult();
 
         var nativeBaseline = await LoadSnapshotAsync(
-            HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()), ct)
-            ?? throw new InvalidOperationException("Native BF16 baseline benchmark was not found.");
+                                 HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()), ct)
+                             ?? throw new InvalidOperationException("Native BF16 baseline benchmark was not found.");
 
         var carrierBaselineId = BaselineQuants.Q8_0.UniqueId;
 
@@ -160,10 +160,11 @@ public class IsolationOptimizationService
             x.Key.StartsWith("carrier-baseonly:", StringComparison.Ordinal));
 
         var carrierBaseOnly = await LoadSnapshotAsync(carrierBaseOnlyPlan.Quant, ct)
-            ?? throw new InvalidOperationException("Carrier base-only benchmark was not found.");
+                              ?? throw new InvalidOperationException("Carrier base-only benchmark was not found.");
 
         var groupPlans = fullPlan.Plans
-            .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe || x.Kind == RequiredSampleKind.GroupIsolationContinuation)
+            .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe ||
+                        x.Kind == RequiredSampleKind.GroupIsolationContinuation)
             .Where(x => x.TestedBaselineId == carrierBaselineId)
             .GroupBy(x => x.TargetGroupId!.Value)
             .OrderBy(x => x.Key)
@@ -301,7 +302,8 @@ public class IsolationOptimizationService
     private static List<GroupCandidate> FilterSurvivors(TensorGroup group, List<GroupCandidate> candidates)
     {
         return candidates
-            .Where(x => x.Scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId || !RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, x.Scheme))
+            .Where(x => x.Scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId ||
+                        !RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, x.Scheme))
             .ToList();
     }
 
@@ -357,50 +359,69 @@ public class IsolationOptimizationService
         var explicitCandidates = candidates
             .Where(x => x.Scheme.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
             .Where(x => !x.Scheme.RequiresImatrix)
+            .OrderBy(x => x.SizeBytes)
             .ToList();
 
+        // Compare only to nearby larger neighbors, not the whole ladder.
         for (int i = 0; i < explicitCandidates.Count; i++)
         {
-            for (int j = 0; j < explicitCandidates.Count; j++)
+            var smaller = explicitCandidates[i];
+
+            for (int j = i + 1; j < explicitCandidates.Count && j <= i + 2; j++)
             {
-                if (i == j)
-                    continue;
+                var larger = explicitCandidates[j];
 
-                var a = explicitCandidates[i];
-                var b = explicitCandidates[j];
+                double sizeDeltaPercent =
+                    ((double)larger.SizeBytes - smaller.SizeBytes) / larger.SizeBytes * 100.0;
 
-                if (a.SizeBytes >= b.SizeBytes)
-                    continue;
-
-                double sizeDeltaPercent = (b.SizeBytes - a.SizeBytes) / (double)b.SizeBytes * 100.0;
                 if (sizeDeltaPercent > IsolationPruningConfig.BadTradeMaxSizeDeltaPercent)
                     continue;
 
-                double kldRatio = b.Kld <= IsolationPruningConfig.FloatingPointEpsilon
+                double smallerPplAbs = Math.Abs(smaller.PplDeltaPercent);
+                double largerPplAbs = Math.Abs(larger.PplDeltaPercent);
+
+                double kldRatio = larger.Kld <= IsolationPruningConfig.FloatingPointEpsilon
                     ? double.PositiveInfinity
-                    : a.Kld / b.Kld;
+                    : smaller.Kld / larger.Kld;
 
-                double pplRatio = b.PplDeltaPercent <= IsolationPruningConfig.FloatingPointEpsilon
+                double pplRatio = largerPplAbs <= IsolationPruningConfig.FloatingPointEpsilon
                     ? double.PositiveInfinity
-                    : a.PplDeltaPercent / b.PplDeltaPercent;
+                    : smallerPplAbs / largerPplAbs;
 
-                bool badTrade =
-                    a.Kld > b.Kld * IsolationPruningConfig.BadTradeKldMultiplier ||
-                    a.PplDeltaPercent > b.PplDeltaPercent * IsolationPruningConfig.BadTradePplMultiplier;
+                bool kldBadTrade =
+                    smaller.Kld > larger.Kld * IsolationPruningConfig.BadTradeKldMultiplier;
 
-                if (!badTrade)
+                bool pplBadTrade =
+                    smallerPplAbs > largerPplAbs * IsolationPruningConfig.BadTradePplMultiplier;
+
+                bool smallerMeaningfullyBetterKld =
+                    smaller.Kld + IsolationPruningConfig.FloatingPointEpsilon < larger.Kld * 0.90;
+
+                bool smallerMeaningfullyBetterPpl =
+                    smallerPplAbs + IsolationPruningConfig.FloatingPointEpsilon < largerPplAbs * 0.90;
+
+                bool mixedTradeoff =
+                    (kldBadTrade && smallerMeaningfullyBetterPpl) ||
+                    (pplBadTrade && smallerMeaningfullyBetterKld);
+
+                if (mixedTradeoff)
                     continue;
 
-                if (!RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, a.Scheme))
+                if (!kldBadTrade && !pplBadTrade)
+                    continue;
+
+                if (!RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, smaller.Scheme))
                 {
-                    RuntimeSearchSpace.BanSchemeForGroup(group, a.Scheme);
+                    RuntimeSearchSpace.BanSchemeForGroup(group, smaller.Scheme);
                     result.BadTradeEliminations++;
 
                     result.Notes.Add(
-                        $"Bad trade elimination: '{a.Scheme.Names[0]}' removed vs '{b.Scheme.Names[0]}' for '{group.Name}'. " +
+                        $"Bad trade elimination: '{smaller.Scheme.Names[0]}' removed vs '{larger.Scheme.Names[0]}' for '{group.Name}'. " +
                         $"Reason: small size gain ({sizeDeltaPercent:F2}%) but disproportionate damage " +
-                        $"(KLD x{kldRatio:F2}, PPL x{pplRatio:F2}).");
+                        $"(KLD x{kldRatio:F2}, |PPL| x{pplRatio:F2}).");
                 }
+
+                break;
             }
         }
     }
@@ -424,17 +445,17 @@ public class IsolationOptimizationService
                 c => c.Id,
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
-                x.b.AiModelHashId == model.Id &&
-                x.c.BaseQuant == lookup.BaseQuant &&
-                x.c.Embeddings == lookup.Embeddings &&
-                x.c.LmHead == lookup.LmHead &&
-                x.c.AttnQ == lookup.AttnQ &&
-                x.c.AttnKV == lookup.AttnKV &&
-                x.c.AttnOutput == lookup.AttnOutput &&
-                x.c.FfnUpGate == lookup.FfnUpGate &&
-                x.c.FfnDown == lookup.FfnDown &&
-                x.c.MoeExperts == lookup.MoeExperts &&
-                x.c.MoeRouter == lookup.MoeRouter,
+                    x.b.AiModelHashId == model.Id &&
+                    x.c.BaseQuant == lookup.BaseQuant &&
+                    x.c.Embeddings == lookup.Embeddings &&
+                    x.c.LmHead == lookup.LmHead &&
+                    x.c.AttnQ == lookup.AttnQ &&
+                    x.c.AttnKV == lookup.AttnKV &&
+                    x.c.AttnOutput == lookup.AttnOutput &&
+                    x.c.FfnUpGate == lookup.FfnUpGate &&
+                    x.c.FfnDown == lookup.FfnDown &&
+                    x.c.MoeExperts == lookup.MoeExperts &&
+                    x.c.MoeRouter == lookup.MoeRouter,
                 ct);
 
         if (row == null)
