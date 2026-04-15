@@ -7,6 +7,7 @@ using MagicQuant.Helpers;
 using MQ.DB;
 using MQ.DB.Data;
 using MQ.DB.Models;
+using MQ.DB.Models.DbModels;
 using Microsoft.EntityFrameworkCore;
 using Spectre.Console;
 
@@ -230,6 +231,9 @@ public class QuantizationService
         string modelBenchDir = Path.Combine(_benchDir, modelName);
         string baseLogitsDir = GetBaseLogitsDirectory();
 
+        DateTime startedUtc = DateTime.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
+
         // 1. Fast path: valid artifacts already exist on disk and can be synced/reused
         if (await _benchmarker.TryReuseExistingBenchmarksAsync(
                 quantConfig: quant,
@@ -294,7 +298,40 @@ public class QuantizationService
                 saveLogits: false,
                 domainsOverride: new[] { "general" });
 
+            stopwatch.Stop();
+
+            await PersistQuantizationRunAsync(
+                quant: quant,
+                startedUtc: startedUtc,
+                completedUtc: DateTime.UtcNow,
+                succeeded: true,
+                outputModelPath: quantPath,
+                error: null,
+                ct: ct);
+
             return SampleProcessState.Completed;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+
+            try
+            {
+                await PersistQuantizationRunAsync(
+                    quant: quant,
+                    startedUtc: startedUtc,
+                    completedUtc: DateTime.UtcNow,
+                    succeeded: false,
+                    outputModelPath: quantPath,
+                    error: ex.ToString(),
+                    ct: ct);
+            }
+            catch
+            {
+                // Never hide the original exception because timing persistence failed.
+            }
+
+            throw;
         }
         finally
         {
@@ -357,66 +394,88 @@ public class QuantizationService
             return false;
 
         // Require at least one category row too, so a half-baked parent row doesn't count as complete.
-        bool hasCategory = await db.Set<MQ.DB.Models.DbModels.CategoryBenchmark>()
+        bool hasCategory = await db.Set<CategoryBenchmark>()
             .AsNoTracking()
             .AnyAsync(x => x.AiBenchmarkId == bench, ct);
 
         return hasCategory;
     }
 
-    private static (
-        byte BaseQuant,
-        byte Embeddings,
-        byte LmHead,
-        byte AttnQ,
-        byte AttnKV,
-        byte AttnOutput,
-        byte FfnUpGate,
-        byte FfnDown,
-        byte MoeExperts,
-        byte MoeRouter) BuildTensorLookup(HybridQuant quant)
+    private static TensorConfig BuildTensorLookup(HybridQuant quant)
     {
-        byte embeddings = 0;
-        byte lmHead = 0;
-        byte attnQ = 0;
-        byte attnKV = 0;
-        byte attnOutput = 0;
-        byte ffnUpGate = 0;
-        byte ffnDown = 0;
-        byte moeExperts = 0;
-        byte moeRouter = 0;
+        return (TensorConfig)quant;
+    }
 
-        if (quant.Tensors != null)
+    private async Task PersistQuantizationRunAsync(
+        HybridQuant quant,
+        DateTime startedUtc,
+        DateTime completedUtc,
+        bool succeeded,
+        string? outputModelPath,
+        string? error,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            throw new InvalidOperationException("Cache.CurrentModelId is not set.");
+
+        var lookup = BuildTensorLookup(quant);
+
+        await using var db = new MagicQuantContext();
+
+        var aiModelHash = await db.AiModelHashes
+            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+        if (aiModelHash == null)
         {
-            foreach (var tensor in quant.Tensors)
+            aiModelHash = new AiModelHash
             {
-                if (tensor?.TGroup == null)
-                    continue;
+                UniqueHash = Cache.CurrentModelId
+            };
 
-                if (tensor.TGroup.UniqueId == TReg.Embeddings.UniqueId) embeddings = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.LmHead.UniqueId) lmHead = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.AttnQ.UniqueId) attnQ = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.AttnKV.UniqueId) attnKV = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.AttnOutput.UniqueId) attnOutput = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.FfnUpGate.UniqueId) ffnUpGate = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.FfnDown.UniqueId) ffnDown = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.MoeExperts.UniqueId) moeExperts = tensor.TensorType.UniqueId;
-                else if (tensor.TGroup.UniqueId == TReg.MoeRouter.UniqueId) moeRouter = tensor.TensorType.UniqueId;
-            }
+            db.AiModelHashes.Add(aiModelHash);
+            await db.SaveChangesAsync(ct);
         }
 
-        return (
-            quant.BaseQuant.UniqueId,
-            embeddings,
-            lmHead,
-            attnQ,
-            attnKV,
-            attnOutput,
-            ffnUpGate,
-            ffnDown,
-            moeExperts,
-            moeRouter
-        );
+        var tensorCombo = await db.TensorCombos.FirstOrDefaultAsync(x =>
+            x.BaseQuant == lookup.BaseQuant &&
+            x.Embeddings == lookup.Embeddings &&
+            x.LmHead == lookup.LmHead &&
+            x.AttnQ == lookup.AttnQ &&
+            x.AttnKV == lookup.AttnKV &&
+            x.AttnOutput == lookup.AttnOutput &&
+            x.FfnUpGate == lookup.FfnUpGate &&
+            x.FfnDown == lookup.FfnDown &&
+            x.MoeExperts == lookup.MoeExperts &&
+            x.MoeRouter == lookup.MoeRouter, ct);
+
+        if (tensorCombo == null)
+        {
+            tensorCombo = new TensorCombo(lookup);
+            db.TensorCombos.Add(tensorCombo);
+            await db.SaveChangesAsync(ct);
+        }
+
+        uint? aiBenchmarkId = await db.AiBenchmarks
+            .Where(x => x.AiModelHashId == aiModelHash.Id && x.TensorComboId == tensorCombo.Id)
+            .Select(x => (uint?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        var row = new QuantizationRun
+        {
+            Id = Guid.NewGuid(),
+            AiModelHashId = aiModelHash.Id,
+            TensorComboId = tensorCombo.Id,
+            AiBenchmarkId = aiBenchmarkId,
+            StartedUtc = startedUtc,
+            CompletedUtc = completedUtc,
+            DurationMs = Math.Max(0L, (long)(completedUtc - startedUtc).TotalMilliseconds),
+            Succeeded = succeeded,
+            Error = error,
+            OutputModelPath = outputModelPath
+        };
+
+        db.QuantizationRuns.Add(row);
+        await db.SaveChangesAsync(ct);
     }
 
     private bool IsProtectedModel(string name)

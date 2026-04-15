@@ -15,27 +15,40 @@ public class MagicQuantContext : DbContext
 
     public MagicQuantContext()
     {
-        // On the very first instantiation (e.g., first benchmark run),
-        // we ensure the folder exists and migrations are applied.
-        if (!_isInitialized)
+        EnsureInitialized();
+    }
+
+    public MagicQuantContext(DbContextOptions<MagicQuantContext> options)
+        : base(options)
+    {
+        EnsureInitialized();
+    }
+
+    private void EnsureInitialized()
+    {
+        // 🚫 Never run during EF tooling (migrations, etc.)
+        if (IsDesignTime())
+            return;
+
+        if (_isInitialized)
+            return;
+
+        lock (_initLock)
         {
-            lock (_initLock)
-            {
-                if (!_isInitialized)
-                {
-                    InitializeDatabase();
-                    _isInitialized = true;
-                }
-            }
+            if (_isInitialized)
+                return;
+
+            InitializeDatabase();
+            _isInitialized = true;
         }
     }
 
     private void InitializeDatabase()
     {
         var directory = Cache.MagicQuantDirectory;
-        
-        // Safety: fallback if Cache isn't set yet (rare, but good for stability)
-        if (string.IsNullOrEmpty(directory)) 
+
+        // Safety fallback
+        if (string.IsNullOrEmpty(directory))
             directory = Directory.GetCurrentDirectory();
 
         if (!Directory.Exists(directory))
@@ -43,31 +56,42 @@ public class MagicQuantContext : DbContext
             Directory.CreateDirectory(directory);
         }
 
-        // Apply Migrations automatically
+        // 🔥 Apply migrations automatically
         Database.Migrate();
     }
 
-    // --------------------------------------------------------
-    // Standard DbContext Configuration
-    // --------------------------------------------------------
+    private static bool IsDesignTime()
+    {
+        return AppDomain.CurrentDomain.GetAssemblies()
+            .Any(a => a.FullName != null &&
+                      a.FullName.Contains("EntityFrameworkCore.Design", StringComparison.OrdinalIgnoreCase));
+    }
 
-    public MagicQuantContext(DbContextOptions<MagicQuantContext> options) : base(options) { }
+    // --------------------------------------------------------
+    // DbSets
+    // --------------------------------------------------------
 
     public DbSet<AiBenchmark> AiBenchmarks { get; set; }
     public DbSet<AiModelHash> AiModelHashes { get; set; }
     public DbSet<TensorCombo> TensorCombos { get; set; }
+    public DbSet<QuantizationRun> QuantizationRuns { get; set; }
+    public DbSet<BenchmarkRun> BenchmarkRuns { get; set; }
+
+    // --------------------------------------------------------
+    // Configuration
+    // --------------------------------------------------------
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         if (!optionsBuilder.IsConfigured)
         {
             var directory = Cache.MagicQuantDirectory;
+
             if (string.IsNullOrEmpty(directory))
-            {
                 directory = Directory.GetCurrentDirectory();
-            }
 
             var dbPath = Path.Combine(directory, "MagicQuant_SQLite.db");
+
             optionsBuilder.UseSqlite($"Data Source={dbPath};Foreign Keys=True;");
         }
     }
@@ -78,6 +102,10 @@ public class MagicQuantContext : DbContext
         ValidateDbSetsImplementInterface();
         base.OnModelCreating(modelBuilder);
     }
+
+    // --------------------------------------------------------
+    // Strict Validation
+    // --------------------------------------------------------
 
     private void ValidateDbSetsImplementInterface()
     {

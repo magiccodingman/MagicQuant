@@ -6,14 +6,15 @@ public record BaselineQuants(
     byte UniqueId,
     bool RequiresImatrix,
     ImmutableArray<string> Names,
+    TensorWeightScheme? DefaultTensorScheme,
     HybridQuant? BaseConversionBase = null)
 {
     public const byte NativeSourceUniqueId = 250;
 
-    public static readonly BaselineQuants Q8_0 = new(0, false, ["Q8_0"]);
-    public static readonly BaselineQuants Q6_K = new(1, false, ["Q6_K"]);
-    public static readonly BaselineQuants Q5_K = new(2, false, ["Q5_K"]);
-    public static readonly BaselineQuants Q4_K_M = new(3, false, ["Q4_K_M"]);
+    public static readonly BaselineQuants Q8_0 = new(0, false, ["Q8_0"], TensorWeightScheme.Q8_0);
+    public static readonly BaselineQuants Q6_K = new(1, false, ["Q6_K"], TensorWeightScheme.Q6_K);
+    public static readonly BaselineQuants Q5_K = new(2, false, ["Q5_K"], TensorWeightScheme.Q5_K);
+    public static readonly BaselineQuants Q4_K_M = new(3, false, ["Q4_K_M"], TensorWeightScheme.Q4_K);
 
     /*public static readonly BaselineQuants MXFP4_MOE = new(
         4,
@@ -31,12 +32,13 @@ public record BaselineQuants(
                 .ToList()
         });*/
 
-    public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"]);
+    public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"], TensorWeightScheme.IQ4_NL);
 
     public static readonly BaselineQuants IQ4_XS = new(
         6,
         false,
         ["IQ4_XS"],
+        TensorWeightScheme.IQ4_XS,
         new HybridQuant
         {
             BaseQuant = null!,
@@ -77,7 +79,8 @@ public record BaselineQuants(
         return new(
             NativeSourceUniqueId,
             false,
-            [(Cache.TorchType ?? Cache.MainTorchType.BF16).ToString()]);
+            [(Cache.TorchType ?? Cache.MainTorchType.BF16).ToString()],
+            TensorWeightScheme.BF16_F16);
     }
 
     public static BaselineQuants FromId(byte id)

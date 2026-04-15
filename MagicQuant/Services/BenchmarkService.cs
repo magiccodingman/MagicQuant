@@ -10,7 +10,6 @@ using MQ.DB.Models;
 using MQ.DB.Models.DbModels;
 using Microsoft.EntityFrameworkCore;
 using Spectre.Console;
-using System.Text.Json;
 
 namespace MagicQuant.Services;
 
@@ -289,8 +288,6 @@ public class BenchmarkService
             }
         }
 
-        // This should not normally happen because "all GPUs as one slot" already passed,
-        // but keeping a hard fallback is still worthwhile.
         return new BenchmarkExecutionPlan(
             planModelPath: q8ModelPath,
             staticNgl: targetNgl.Value,
@@ -559,20 +556,15 @@ public class BenchmarkService
 
         using var db = new MagicQuantContext();
 
-        var currentHashStr = Cache.CurrentModelId;
-        var aiModelHash = await db.AiModelHashes
-            .FirstOrDefaultAsync(x => x.UniqueHash == currentHashStr);
+        var identity = await GetOrCreateBenchmarkIdentityAsync(db, quantConfig);
+        await SaveBenchmarkToDbAsync(
+            db: db,
+            model: identity.AiModelHash,
+            combo: identity.TensorCombo,
+            res: reused,
+            modelPath: modelPath,
+            executedRunTimings: new List<PendingBenchmarkRunTiming>());
 
-        if (aiModelHash == null)
-        {
-            aiModelHash = new AiModelHash { UniqueHash = currentHashStr };
-            db.AiModelHashes.Add(aiModelHash);
-            await db.SaveChangesAsync();
-        }
-
-        var tensorCombo = await GetOrCreateTensorComboAsync(db, quantConfig);
-
-        await SaveBenchmarkToDbAsync(db, aiModelHash, tensorCombo, reused, modelPath);
         await WriteMetricsJsonAsync(benchDir, reused);
 
         return true;
@@ -595,18 +587,9 @@ public class BenchmarkService
 
         using var db = new MagicQuantContext();
 
-        var currentHashStr = Cache.CurrentModelId;
-        var aiModelHash = await db.AiModelHashes
-            .FirstOrDefaultAsync(x => x.UniqueHash == currentHashStr);
-
-        if (aiModelHash == null)
-        {
-            aiModelHash = new AiModelHash { UniqueHash = currentHashStr };
-            db.AiModelHashes.Add(aiModelHash);
-            await db.SaveChangesAsync();
-        }
-
-        var tensorCombo = await GetOrCreateTensorComboAsync(db, quantConfig);
+        var identity = await GetOrCreateBenchmarkIdentityAsync(db, quantConfig);
+        var aiModelHash = identity.AiModelHash;
+        var tensorCombo = identity.TensorCombo;
 
         var existingBench = await db.AiBenchmarks
             .Include(x => x.CategorBenchmarks)
@@ -621,9 +604,15 @@ public class BenchmarkService
                 var repairedSize = TryGetModelSize(modelPath);
                 if (repairedSize > 0)
                 {
-                    existingBench.SizeBytes = repairedSize;
-                    db.AiBenchmarks.Update(existingBench);
-                    await db.SaveChangesAsync();
+                    var trackedRepair = await db.AiBenchmarks
+                        .FirstOrDefaultAsync(x => x.Id == existingBench.Id);
+
+                    if (trackedRepair != null)
+                    {
+                        trackedRepair.SizeBytes = repairedSize;
+                        await db.SaveChangesAsync();
+                        existingBench.SizeBytes = repairedSize;
+                    }
                 }
             }
 
@@ -644,7 +633,14 @@ public class BenchmarkService
         if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var reused))
         {
             reused.ModelSizeBytes ??= TryGetModelSize(modelPath);
-            await SaveBenchmarkToDbAsync(db, aiModelHash, tensorCombo, reused, modelPath);
+            await SaveBenchmarkToDbAsync(
+                db: db,
+                model: aiModelHash,
+                combo: tensorCombo,
+                res: reused,
+                modelPath: modelPath,
+                executedRunTimings: new List<PendingBenchmarkRunTiming>());
+
             await WriteMetricsJsonAsync(benchDir, reused);
             return reused;
         }
@@ -655,6 +651,25 @@ public class BenchmarkService
             throw new InvalidOperationException(
                 "No benchmark execution plan has been discovered yet. " +
                 "You must call EnsureExecutionPlanAsync() with the pure Q8 model first.");
+        }
+
+        var trackedBench = await db.AiBenchmarks
+            .Include(x => x.CategorBenchmarks)
+            .FirstOrDefaultAsync(x => x.AiModelHashId == aiModelHash.Id && x.TensorComboId == tensorCombo.Id);
+
+        if (trackedBench == null)
+        {
+            trackedBench = new AiBenchmark
+            {
+                AiModelHashId = aiModelHash.Id,
+                TensorComboId = tensorCombo.Id,
+                Ngl = 0,
+                SizeBytes = 0,
+                TokensPerSecond = 0
+            };
+
+            db.AiBenchmarks.Add(trackedBench);
+            await db.SaveChangesAsync();
         }
 
         await using var slotLease = await AcquireBenchmarkSlotAsync();
@@ -669,19 +684,9 @@ public class BenchmarkService
             ModelSizeBytes = TryGetModelSize(modelPath)
         };
 
-        // Disabled for now. Too many variables that're annoying to track
-        /*string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
-        if (TryReadExistingLlamaBenchLog(llamaBenchPath, out var existingLlamaBench))
-        {
-            result.LlamaBench = existingLlamaBench;
-        }
-        else
-        {
-            AnsiConsole.MarkupLine(
-                $"[yellow]Running Llama-Bench[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
-            result.LlamaBench = await RunLlamaBenchAsync(modelPath, benchDir, effectiveNgl, slot);
-        }*/
+        var executedRunTimings = new List<PendingBenchmarkRunTiming>();
 
+        // Disabled for now. Too many variables that're annoying to track
         result.LlamaBench = new LlamaBenchMetrics
         {
             LogPath = null,
@@ -713,31 +718,72 @@ public class BenchmarkService
             string corpusPath = Path.Combine(corporaRoot, $"ppl_corpus_{domain}.txt");
             await PreparePplCorpusAsync(domain, corpusPath, tokenTarget);
 
-            AnsiConsole.MarkupLine(
-                $"[yellow]Running Perplexity ({Markup.Escape(domain)})[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
+            DateTime startedUtc = DateTime.UtcNow;
+            var sw = Stopwatch.StartNew();
 
-            var metrics = await RunPplBenchmarkAsync(
-                modelPath: modelPath,
-                benchDir: benchDir,
-                domain: domain,
-                corpusPath: corpusPath,
-                fixedNgl: effectiveNgl,
-                slot: slot,
-                klLogitsDir: klLogitsDir,
-                saveLogits: saveLogits);
-
-            if (requireKld && !HasMeaningfulKld(metrics.Kld))
+            try
             {
-                throw new InvalidOperationException(
-                    $"Non-base benchmark produced invalid KLD for domain '{domain}'. " +
-                    $"KLD must exist and be > 0. Parsed value: {(metrics.Kld.HasValue ? metrics.Kld.Value.ToString(CultureInfo.InvariantCulture) : "null")}");
-            }
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Running Perplexity ({Markup.Escape(domain)})[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
 
-            result.Perplexity[domain] = metrics;
+                var metrics = await RunPplBenchmarkAsync(
+                    modelPath: modelPath,
+                    benchDir: benchDir,
+                    domain: domain,
+                    corpusPath: corpusPath,
+                    fixedNgl: effectiveNgl,
+                    slot: slot,
+                    klLogitsDir: klLogitsDir,
+                    saveLogits: saveLogits);
+
+                if (requireKld && !HasMeaningfulKld(metrics.Kld))
+                {
+                    throw new InvalidOperationException(
+                        $"Non-base benchmark produced invalid KLD for domain '{domain}'. " +
+                        $"KLD must exist and be > 0. Parsed value: {(metrics.Kld.HasValue ? metrics.Kld.Value.ToString(CultureInfo.InvariantCulture) : "null")}");
+                }
+
+                sw.Stop();
+
+                result.Perplexity[domain] = metrics;
+
+                executedRunTimings.Add(new PendingBenchmarkRunTiming
+                {
+                    Domain = domain,
+                    Category = DomainToCategory(domain),
+                    StartedUtc = startedUtc,
+                    CompletedUtc = DateTime.UtcNow,
+                    Succeeded = true,
+                    Error = null
+                });
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+
+                await PersistFailedBenchmarkRunAsync(
+                    db: db,
+                    aiModelHashId: aiModelHash.Id,
+                    tensorComboId: tensorCombo.Id,
+                    aiBenchmarkId: trackedBench.Id,
+                    category: DomainToCategory(domain),
+                    startedUtc: startedUtc,
+                    completedUtc: DateTime.UtcNow,
+                    error: ex.ToString());
+
+                throw;
+            }
         }
 
         await WriteMetricsJsonAsync(benchDir, result);
-        await SaveBenchmarkToDbAsync(db, aiModelHash, tensorCombo, result, modelPath);
+
+        await SaveBenchmarkToDbAsync(
+            db: db,
+            model: aiModelHash,
+            combo: tensorCombo,
+            res: result,
+            modelPath: modelPath,
+            executedRunTimings: executedRunTimings);
 
         return result;
     }
@@ -746,47 +792,36 @@ public class BenchmarkService
     // Database helpers
     // ----------------------------------------------------------------
 
-    private async Task<TensorCombo> GetOrCreateTensorComboAsync(MagicQuantContext db, HybridQuant quant)
+    private async Task<(AiModelHash AiModelHash, TensorCombo TensorCombo)> GetOrCreateBenchmarkIdentityAsync(
+        MagicQuantContext db,
+        HybridQuant quantConfig,
+        CancellationToken ct = default)
     {
-        byte baseQuant = quant.BaseQuant.UniqueId;
+        var currentHashStr = Cache.CurrentModelId;
+        if (string.IsNullOrWhiteSpace(currentHashStr))
+            throw new InvalidOperationException("Cache.CurrentModelId is not set.");
 
-        byte embeddings = 0;
-        byte lmHead = 0;
-        byte attnQ = 0;
-        byte attnKV = 0;
-        byte attnOutput = 0;
-        byte ffnUpGate = 0;
-        byte ffnDown = 0;
-        byte moeExperts = 0;
-        byte moeRouter = 0;
+        var aiModelHash = await db.AiModelHashes
+            .FirstOrDefaultAsync(x => x.UniqueHash == currentHashStr, ct);
 
-        if (quant.Tensors != null)
+        if (aiModelHash == null)
         {
-            foreach (var t in quant.Tensors)
-            {
-                if (t.TGroup.UniqueId == TReg.Embeddings.UniqueId) embeddings = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.LmHead.UniqueId) lmHead = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.AttnQ.UniqueId) attnQ = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.AttnKV.UniqueId) attnKV = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.AttnOutput.UniqueId) attnOutput = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.FfnUpGate.UniqueId) ffnUpGate = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.FfnDown.UniqueId) ffnDown = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.MoeExperts.UniqueId) moeExperts = t.TensorType.UniqueId;
-                else if (t.TGroup.UniqueId == TReg.MoeRouter.UniqueId) moeRouter = t.TensorType.UniqueId;
-            }
+            aiModelHash = new AiModelHash { UniqueHash = currentHashStr };
+            db.AiModelHashes.Add(aiModelHash);
+            await db.SaveChangesAsync(ct);
         }
 
-        var c = new TensorConfig(
-            baseQuant,
-            embeddings,
-            lmHead,
-            attnQ,
-            attnKV,
-            attnOutput,
-            ffnUpGate,
-            ffnDown,
-            moeExperts,
-            moeRouter);
+        var tensorCombo = await GetOrCreateTensorComboAsync(db, quantConfig, ct);
+
+        return (aiModelHash, tensorCombo);
+    }
+
+    private async Task<TensorCombo> GetOrCreateTensorComboAsync(
+        MagicQuantContext db,
+        HybridQuant quant,
+        CancellationToken ct = default)
+    {
+        var c = (TensorConfig)quant;
 
         var existing = await db.TensorCombos.FirstOrDefaultAsync(x =>
             x.BaseQuant == c.BaseQuant &&
@@ -798,14 +833,14 @@ public class BenchmarkService
             x.FfnUpGate == c.FfnUpGate &&
             x.FfnDown == c.FfnDown &&
             x.MoeExperts == c.MoeExperts &&
-            x.MoeRouter == c.MoeRouter);
+            x.MoeRouter == c.MoeRouter, ct);
 
         if (existing != null)
             return existing;
 
         var newCombo = new TensorCombo(c);
         db.TensorCombos.Add(newCombo);
-        await db.SaveChangesAsync();
+        await db.SaveChangesAsync(ct);
         return newCombo;
     }
 
@@ -814,7 +849,8 @@ public class BenchmarkService
         AiModelHash model,
         TensorCombo combo,
         BenchmarkResult res,
-        string modelPath)
+        string modelPath,
+        IReadOnlyCollection<PendingBenchmarkRunTiming> executedRunTimings)
     {
         using var transaction = await db.Database.BeginTransactionAsync();
 
@@ -852,6 +888,7 @@ public class BenchmarkService
                 };
 
                 db.AiBenchmarks.Add(bench);
+                await db.SaveChangesAsync();
             }
 
             bench.TokensPerSecond = res.LlamaBench?.Tps ?? 0;
@@ -863,7 +900,6 @@ public class BenchmarkService
             }
             else if (bench.SizeBytes == 0)
             {
-                // only leave it zero if we truly have no better information
                 bench.SizeBytes = 0;
             }
 
@@ -882,13 +918,7 @@ public class BenchmarkService
                 string domain = kvp.Key.ToLowerInvariant();
                 var m = kvp.Value;
 
-                byte category = domain switch
-                {
-                    "general" => (byte)BenchmarkCategory.General,
-                    "math" => (byte)BenchmarkCategory.Math,
-                    "code" => (byte)BenchmarkCategory.Code,
-                    _ => throw new InvalidOperationException($"Unknown benchmark domain '{domain}'.")
-                };
+                byte category = DomainToCategory(domain);
 
                 double kld;
                 if (isBaseModel)
@@ -922,6 +952,37 @@ public class BenchmarkService
                 await db.SaveChangesAsync();
             }
 
+            if (executedRunTimings.Count > 0)
+            {
+                var categoryIdLookup = await db.Set<CategoryBenchmark>()
+                    .Where(x => x.AiBenchmarkId == bench.Id)
+                    .ToDictionaryAsync(x => x.Category, x => x.Id);
+
+                foreach (var timing in executedRunTimings)
+                {
+                    uint? categoryBenchmarkId = null;
+                    if (categoryIdLookup.TryGetValue(timing.Category, out var foundCategoryId))
+                        categoryBenchmarkId = foundCategoryId;
+
+                    db.BenchmarkRuns.Add(new BenchmarkRun
+                    {
+                        Id = Guid.NewGuid(),
+                        AiModelHashId = model.Id,
+                        TensorComboId = combo.Id,
+                        AiBenchmarkId = bench.Id,
+                        CategoryBenchmarkId = categoryBenchmarkId,
+                        Category = timing.Category,
+                        StartedUtc = timing.StartedUtc,
+                        CompletedUtc = timing.CompletedUtc,
+                        DurationMs = Math.Max(0L, (long)(timing.CompletedUtc - timing.StartedUtc).TotalMilliseconds),
+                        Succeeded = timing.Succeeded,
+                        Error = timing.Error
+                    });
+                }
+
+                await db.SaveChangesAsync();
+            }
+
             await transaction.CommitAsync();
         }
         catch (Exception ex)
@@ -941,6 +1002,55 @@ public class BenchmarkService
 
             throw;
         }
+    }
+
+    private static byte DomainToCategory(string domain)
+    {
+        return domain.Trim().ToLowerInvariant() switch
+        {
+            "general" => (byte)BenchmarkCategory.General,
+            "math" => (byte)BenchmarkCategory.Math,
+            "code" => (byte)BenchmarkCategory.Code,
+            _ => throw new InvalidOperationException($"Unknown benchmark domain '{domain}'.")
+        };
+    }
+
+    private async Task PersistFailedBenchmarkRunAsync(
+        MagicQuantContext db,
+        uint aiModelHashId,
+        uint tensorComboId,
+        uint aiBenchmarkId,
+        byte category,
+        DateTime startedUtc,
+        DateTime completedUtc,
+        string error)
+    {
+        db.BenchmarkRuns.Add(new BenchmarkRun
+        {
+            Id = Guid.NewGuid(),
+            AiModelHashId = aiModelHashId,
+            TensorComboId = tensorComboId,
+            AiBenchmarkId = aiBenchmarkId,
+            CategoryBenchmarkId = null,
+            Category = category,
+            StartedUtc = startedUtc,
+            CompletedUtc = completedUtc,
+            DurationMs = Math.Max(0L, (long)(completedUtc - startedUtc).TotalMilliseconds),
+            Succeeded = false,
+            Error = error
+        });
+
+        await db.SaveChangesAsync();
+    }
+
+    private sealed class PendingBenchmarkRunTiming
+    {
+        public string Domain { get; set; } = string.Empty;
+        public byte Category { get; set; }
+        public DateTime StartedUtc { get; set; }
+        public DateTime CompletedUtc { get; set; }
+        public bool Succeeded { get; set; }
+        public string? Error { get; set; }
     }
 
     // ----------------------------------------------------------------
@@ -983,16 +1093,6 @@ public class BenchmarkService
             }
         }
 
-        // not currently requiring llama bench
-        /*string llamaBenchPath = Path.Combine(benchDir, "llamabench.md");
-        if (!TryReadExistingLlamaBenchLog(llamaBenchPath, out var llamaBench))
-            return false;
-
-        var rebuilt = new BenchmarkResult
-        {
-            LlamaBench = llamaBench
-        };*/
-
         var rebuilt = new BenchmarkResult
         {
             LlamaBench = new LlamaBenchMetrics
@@ -1029,10 +1129,6 @@ public class BenchmarkService
         IReadOnlyCollection<string> requestedDomains,
         bool requireKld)
     {
-        // llama bench removed for now
-        /*if (result.LlamaBench == null || !result.LlamaBench.Tps.HasValue || result.LlamaBench.Tps.Value <= 0)
-            return false;*/
-
         foreach (var domain in requestedDomains)
         {
             if (!result.Perplexity.TryGetValue(domain, out var ppl))
@@ -1133,8 +1229,6 @@ public class BenchmarkService
                 return false;
         }
 
-        // no longer requiring llama bench atm until furthern otice
-        //return bench.TokensPerSecond > 0 && bench.SizeBytes > 0;
         return bench.SizeBytes > 0;
     }
 
@@ -1327,7 +1421,6 @@ public class BenchmarkService
             return false;
         }
     }
-
 
     private static bool LooksLikeRetryableGpuFailure(string logContent)
     {
