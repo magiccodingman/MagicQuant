@@ -62,11 +62,13 @@ public static class CliHelpers
         Console.WriteLine("---------------");
         Console.WriteLine();
 
-        var samplePlan = TensorConfigGenerator.GenerateRequiredSamplePlan(realResults ? Cache.UnusedTensorGroups : null);
+        var samplePlan = TensorConfigGenerator.GenerateInitialIsolationSamplePlan(
+            realResults ? Cache.UnusedTensorGroups : null);
+
         AnsiConsole.MarkupLine($"[bold green]Required pure baselines:[/] {samplePlan.PureBaselineCount:N0}");
         AnsiConsole.MarkupLine($"[bold green]Required base-only isolations:[/] {samplePlan.BaseOnlyIsolationCount:N0}");
-        AnsiConsole.MarkupLine($"[bold green]Required group isolations:[/] {samplePlan.GroupIsolationCount:N0}");
-        AnsiConsole.MarkupLine($"[bold green]Total required samples:[/] {samplePlan.TotalCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Required smallest-probe isolations:[/] {samplePlan.GroupIsolationCount:N0}");
+        AnsiConsole.MarkupLine($"[bold green]Total required startup samples:[/] {samplePlan.TotalCount:N0}");
     }
 
     public static void PrintTotalCombinationCount()

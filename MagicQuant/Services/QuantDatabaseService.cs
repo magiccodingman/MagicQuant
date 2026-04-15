@@ -3,7 +3,9 @@ using System.Numerics;
 using DuckDB.NET.Data;
 using MagicQuant.Helpers;
 using MQ.DB;
+using MQ.DB.Data;
 using MQ.DB.Models;
+using Microsoft.EntityFrameworkCore;
 using Spectre.Console;
 
 namespace MagicQuant.Services;
@@ -57,6 +59,87 @@ public class QuantDatabaseService
         await InitializeAsync(forceRebuild: true, ct: ct);
     }
 
+    public async Task<long> PrunePredictedLargerThanQ8Async(
+        RequiredSampleGenerationResult fullPlan,
+        CancellationToken ct = default)
+    {
+        using var connection = new DuckDBConnection(ConnectionString);
+        await connection.OpenAsync(ct);
+
+        var predictionContext = await BuildPredictionContextAsync(fullPlan, ct);
+
+        if (predictionContext == null)
+        {
+            AnsiConsole.MarkupLine("[yellow]Predicted-size pruning skipped: prediction context was incomplete.[/]");
+            return 0;
+        }
+
+        var rows = new List<TensorConfig>();
+
+        var select = connection.CreateCommand();
+        select.CommandText = $@"
+            SELECT BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter
+            FROM {TableName};";
+
+        using (var reader = await select.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+            {
+                rows.Add(new TensorConfig(
+                    baseQuant: Convert.ToByte(reader.GetValue(0)),
+                    embeddings: Convert.ToByte(reader.GetValue(1)),
+                    lmHead: Convert.ToByte(reader.GetValue(2)),
+                    attnQ: Convert.ToByte(reader.GetValue(3)),
+                    attnKV: Convert.ToByte(reader.GetValue(4)),
+                    attnOutput: Convert.ToByte(reader.GetValue(5)),
+                    ffnUpGate: Convert.ToByte(reader.GetValue(6)),
+                    ffnDown: Convert.ToByte(reader.GetValue(7)),
+                    moeExperts: Convert.ToByte(reader.GetValue(8)),
+                    moeRouter: Convert.ToByte(reader.GetValue(9))
+                ));
+            }
+        }
+
+        var kept = new List<TensorConfig>(rows.Count);
+
+        foreach (var row in rows)
+        {
+            ulong predicted = predictionContext.Predict(row);
+            if (predicted <= predictionContext.PureQ8BaseSize)
+                kept.Add(row);
+        }
+
+        long removed = rows.Count - kept.Count;
+
+        if (removed <= 0)
+        {
+            AnsiConsole.MarkupLine("[green]Predicted-size pruning removed 0 combinations.[/]");
+            return 0;
+        }
+
+        var createCmd = connection.CreateCommand();
+        createCmd.CommandText = $@"
+            DROP TABLE IF EXISTS {TableName};
+            CREATE TABLE {TableName} (
+                BaseQuant TINYINT,
+                Embeddings TINYINT,
+                LmHead TINYINT,
+                AttnQ TINYINT,
+                AttnKV TINYINT,
+                AttnOutput TINYINT,
+                FfnUpGate TINYINT,
+                FfnDown TINYINT,
+                MoeExperts TINYINT,
+                MoeRouter TINYINT
+            );";
+        await createCmd.ExecuteNonQueryAsync(ct);
+
+        await BulkInsertAsync(connection, kept, ct);
+
+        AnsiConsole.MarkupLine($"[yellow]Predicted-size pruning removed:[/] [red]{removed:N0}[/] combo(s) larger than pure Q8.");
+        return removed;
+    }
+
     private async Task<long> GetRowCountAsync(DuckDBConnection connection, CancellationToken ct)
     {
         var checkCmd = connection.CreateCommand();
@@ -98,43 +181,196 @@ public class QuantDatabaseService
         long insertedTotal = 0;
         var bases = RuntimeSearchSpace.GetActiveCombinationBaselines();
 
-        AnsiConsole.MarkupLine($"[grey]Starting bulk insert of {expectedTotal:N0} rows...[/]");
+        AnsiConsole.MarkupLine($"Starting bulk insert of {expectedTotal:N0} rows...");
 
         foreach (var baseline in bases)
         {
-            foreach (var batch in TensorConfigGenerator.GenerateTensorConfigBatches(
-                         baseline,
-                         batchSize: 1_000_000,
-                         ct: ct))
+            foreach (var batch in TensorConfigGenerator.GenerateTensorConfigBatches(baseline, ct: ct))
             {
-                using (var appender = connection.CreateAppender(TableName))
-                {
-                    foreach (var config in batch)
-                    {
-                        var row = appender.CreateRow();
-
-                        row.AppendValue(config.BaseQuant);
-                        row.AppendValue(config.Embeddings);
-                        row.AppendValue(config.LmHead);
-                        row.AppendValue(config.AttnQ);
-                        row.AppendValue(config.AttnKV);
-                        row.AppendValue(config.AttnOutput);
-                        row.AppendValue(config.FfnUpGate);
-                        row.AppendValue(config.FfnDown);
-                        row.AppendValue(config.MoeExperts);
-                        row.AppendValue(config.MoeRouter);
-
-                        row.EndRow();
-                    }
-                }
-
+                await BulkInsertAsync(connection, batch, ct);
                 insertedTotal += batch.Count;
-                AnsiConsole.MarkupLine($"  [grey]Inserted batch... Total so far:[/] {insertedTotal:N0}");
-                batch.Clear();
+                AnsiConsole.MarkupLine($"  Inserted batch... Total so far: {insertedTotal:N0}");
             }
         }
 
         sw.Stop();
-        AnsiConsole.MarkupLine($"[bold green]DuckDB rebuild complete![/] in {sw.Elapsed.TotalSeconds:F2}s");
+        AnsiConsole.MarkupLine($"DuckDB rebuild complete! in {sw.Elapsed.TotalSeconds:F2}s");
+    }
+
+    private async Task BulkInsertAsync(
+        DuckDBConnection connection,
+        IReadOnlyCollection<TensorConfig> rows,
+        CancellationToken ct)
+    {
+        if (rows.Count == 0)
+            return;
+
+        using var tx = connection.BeginTransaction();
+
+        foreach (var row in rows)
+        {
+            var cmd = connection.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = $@"
+                INSERT INTO {TableName}
+                (BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.BaseQuant });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.Embeddings });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.LmHead });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.AttnQ });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.AttnKV });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.AttnOutput });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.FfnUpGate });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.FfnDown });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.MoeExperts });
+            cmd.Parameters.Add(new DuckDBParameter { Value = row.MoeRouter });
+
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        tx.Commit();
+    }
+
+    private async Task<PredictionContext?> BuildPredictionContextAsync(
+        RequiredSampleGenerationResult fullPlan,
+        CancellationToken ct)
+    {
+        await using var db = new MagicQuantContext();
+
+        var model = await db.AiModelHashes
+            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+        if (model == null)
+            return null;
+
+        var pureQ8 = await LoadSnapshotByQuantAsync(
+            db,
+            model.Id,
+            HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0),
+            ct);
+
+        var carrierBaseOnlyPlan = fullPlan.Plans.FirstOrDefault(x =>
+            x.Kind == RequiredSampleKind.BaseOnlyIsolation &&
+            x.TestedBaselineId == BaselineQuants.Q8_0.UniqueId &&
+            x.Key.StartsWith("carrier-baseonly:", StringComparison.Ordinal));
+
+        if (pureQ8 == null || carrierBaseOnlyPlan == null)
+            return null;
+
+        var carrier = await LoadSnapshotByQuantAsync(db, model.Id, carrierBaseOnlyPlan.Quant, ct);
+        if (carrier == null)
+            return null;
+
+        var deltaByGroupAndScheme = new Dictionary<(byte GroupId, byte SchemeId), long>();
+
+        var groupPlans = fullPlan.Plans
+            .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe || x.Kind == RequiredSampleKind.GroupIsolationContinuation)
+            .Where(x => x.TestedBaselineId == BaselineQuants.Q8_0.UniqueId)
+            .ToList();
+
+        foreach (var plan in groupPlans)
+        {
+            if (!plan.TargetGroupId.HasValue || !plan.TestedSchemeId.HasValue)
+                continue;
+
+            var snap = await LoadSnapshotByQuantAsync(db, model.Id, plan.Quant, ct);
+            if (snap == null)
+                continue;
+
+            long delta = (long)snap.SizeBytes - (long)carrier.SizeBytes;
+            deltaByGroupAndScheme[(plan.TargetGroupId.Value, plan.TestedSchemeId.Value)] = delta;
+        }
+
+        return new PredictionContext(
+            pureQ8BaseSize: pureQ8.SizeBytes,
+            carrierBaseOnlySize: carrier.SizeBytes,
+            deltas: deltaByGroupAndScheme);
+    }
+
+    private static async Task<BenchmarkRow?> LoadSnapshotByQuantAsync(
+        MagicQuantContext db,
+        uint modelId,
+        HybridQuant quant,
+        CancellationToken ct)
+    {
+        var lookup = (TensorConfig)quant;
+
+        var row = await db.AiBenchmarks
+            .Join(db.TensorCombos,
+                b => b.TensorComboId,
+                c => c.Id,
+                (b, c) => new { b, c })
+            .FirstOrDefaultAsync(x =>
+                x.b.AiModelHashId == modelId &&
+                x.c.BaseQuant == lookup.BaseQuant &&
+                x.c.Embeddings == lookup.Embeddings &&
+                x.c.LmHead == lookup.LmHead &&
+                x.c.AttnQ == lookup.AttnQ &&
+                x.c.AttnKV == lookup.AttnKV &&
+                x.c.AttnOutput == lookup.AttnOutput &&
+                x.c.FfnUpGate == lookup.FfnUpGate &&
+                x.c.FfnDown == lookup.FfnDown &&
+                x.c.MoeExperts == lookup.MoeExperts &&
+                x.c.MoeRouter == lookup.MoeRouter,
+                ct);
+
+        if (row == null)
+            return null;
+
+        return new BenchmarkRow { SizeBytes = row.b.SizeBytes };
+    }
+
+    private sealed class BenchmarkRow
+    {
+        public ulong SizeBytes { get; set; }
+    }
+
+    private sealed class PredictionContext
+    {
+        private readonly Dictionary<(byte GroupId, byte SchemeId), long> _deltas;
+
+        public ulong PureQ8BaseSize { get; }
+        public ulong CarrierBaseOnlySize { get; }
+
+        public PredictionContext(
+            ulong pureQ8BaseSize,
+            ulong carrierBaseOnlySize,
+            Dictionary<(byte GroupId, byte SchemeId), long> deltas)
+        {
+            PureQ8BaseSize = pureQ8BaseSize;
+            CarrierBaseOnlySize = carrierBaseOnlySize;
+            _deltas = deltas;
+        }
+
+        public ulong Predict(TensorConfig config)
+        {
+            long total = (long)CarrierBaseOnlySize;
+
+            AddDelta(TReg.Embeddings.UniqueId, config.Embeddings, ref total);
+            AddDelta(TReg.LmHead.UniqueId, config.LmHead, ref total);
+            AddDelta(TReg.AttnQ.UniqueId, config.AttnQ, ref total);
+            AddDelta(TReg.AttnKV.UniqueId, config.AttnKV, ref total);
+            AddDelta(TReg.AttnOutput.UniqueId, config.AttnOutput, ref total);
+            AddDelta(TReg.FfnUpGate.UniqueId, config.FfnUpGate, ref total);
+            AddDelta(TReg.FfnDown.UniqueId, config.FfnDown, ref total);
+            AddDelta(TReg.MoeExperts.UniqueId, config.MoeExperts, ref total);
+            AddDelta(TReg.MoeRouter.UniqueId, config.MoeRouter, ref total);
+
+            if (total < 0)
+                total = 0;
+
+            return (ulong)total;
+        }
+
+        private void AddDelta(byte groupId, byte schemeId, ref long total)
+        {
+            if (schemeId == TensorWeightScheme.BF16_F16.UniqueId)
+                return;
+
+            if (_deltas.TryGetValue((groupId, schemeId), out long delta))
+                total += delta;
+        }
     }
 }

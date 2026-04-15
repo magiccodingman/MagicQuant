@@ -32,19 +32,28 @@ public static class ComboLogic
                 continue;
             }
 
-            var ids = schemesForBase
-                .Where(s => !s.IsBannedFor(group))
-                .Select(s => s.UniqueId)
-                .Distinct()
-                .ToArray();
+            var ids = new List<byte>();
 
-            if (ids.Length == 0)
+            if (!RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
+                ids.Add(TensorWeightScheme.BF16_F16.UniqueId);
+
+            foreach (var scheme in schemesForBase)
             {
-                throw new InvalidOperationException(
-                    $"Group '{group.Name}' has no valid tensor schemes for base '{string.Join("/", baseQuant.Names)}'.");
+                if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId || scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+                    continue;
+
+                if (scheme.IsBannedFor(group))
+                    continue;
+
+                ids.Add(scheme.UniqueId);
             }
 
-            builder.Add(ids);
+            ids = ids.Distinct().OrderBy(x => x).ToList();
+
+            if (ids.Count == 0)
+                throw new InvalidOperationException($"Group '{group.Name}' has no valid tensor schemes for base '{string.Join("/", baseQuant.Names)}'.");
+
+            builder.Add(ids.ToArray());
         }
 
         return builder.ToImmutable();

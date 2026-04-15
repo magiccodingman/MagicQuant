@@ -89,7 +89,7 @@ public class QuantizationService
         var shimmedPlans = quants
             .Select((quant, index) => new RequiredSamplePlan
             {
-                Kind = RequiredSampleKind.GroupIsolation,
+                Kind = RequiredSampleKind.GroupIsolationContinuation,
                 Key = $"legacy:{index}",
                 Description = "Legacy batch item",
                 Quant = quant

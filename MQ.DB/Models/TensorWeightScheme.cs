@@ -39,15 +39,11 @@ public sealed class TensorWeightScheme
     public void ResetRuntimeBans()
     {
         BannedGroups.Clear();
-
         foreach (var group in TReg.All.Where(x => _defaultBannedGroupIds.Contains(x.UniqueId)))
             BannedGroups.Add(group);
     }
 
-    public bool IsBannedFor(TensorGroup group)
-    {
-        return BannedGroups.Any(x => x.UniqueId == group.UniqueId);
-    }
+    public bool IsBannedFor(TensorGroup group) => BannedGroups.Any(x => x.UniqueId == group.UniqueId);
 
     public static void ResetAllRuntimeBans()
     {
@@ -55,59 +51,43 @@ public sealed class TensorWeightScheme
             scheme.ResetRuntimeBans();
     }
 
+    public static void ValidateSmallestConfiguration()
+    {
+        var nonImatrixSmallest = All
+            .Where(x => x.UniqueId != NULL.UniqueId)
+            .Where(x => x.UniqueId != BF16_F16.UniqueId)
+            .Where(x => !x.RequiresImatrix)
+            .Where(x => x.IsSmallest)
+            .ToList();
+
+        if (nonImatrixSmallest.Count != 1)
+        {
+            string found = nonImatrixSmallest.Count == 0
+                ? "none"
+                : string.Join(", ", nonImatrixSmallest.Select(x => x.Names[0]));
+
+            throw new InvalidOperationException(
+                $"Exactly one non-imatrix TensorWeightScheme must have IsSmallest=true. Found: {found}");
+        }
+    }
+
     public static TensorWeightScheme GetSmallestNonImatrix()
     {
         ValidateSmallestConfiguration();
 
-        return All.Single(x =>
-            !x.RequiresImatrix &&
-            x.UniqueId != NULL.UniqueId &&
-            x.UniqueId != BF16_F16.UniqueId &&
-            x.IsSmallest);
-    }
-
-    public static void ValidateSmallestConfiguration()
-    {
-        var marked = All
-            .Where(x => !x.RequiresImatrix)
-            .Where(x => x.UniqueId != NULL.UniqueId)
-            .Where(x => x.UniqueId != BF16_F16.UniqueId)
-            .Where(x => x.IsSmallest)
-            .ToList();
-
-        if (marked.Count != 1)
-        {
-            throw new InvalidOperationException(
-                $"Exactly one non-imatrix TensorWeightScheme must have IsSmallest=true. Found {marked.Count}. " +
-                $"Marked: [{string.Join(", ", marked.Select(x => x.Names[0]))}]");
-        }
-    }
-
-    public static IReadOnlyList<TensorWeightScheme> GetExplicitSchemes(bool includeImatrix = true)
-    {
         return All
             .Where(x => x.UniqueId != NULL.UniqueId)
             .Where(x => x.UniqueId != BF16_F16.UniqueId)
-            .Where(x => includeImatrix || !x.RequiresImatrix)
-            .ToList();
+            .Where(x => !x.RequiresImatrix)
+            .Single(x => x.IsSmallest);
     }
 
     public static readonly TensorWeightScheme NULL =
-        new(
-            0,
-            false,
-            ["NULL"],
-            Array.Empty<TensorGroup>(),
-            null);
+        new(0, false, ["NULL"], Array.Empty<TensorGroup>(), null);
 
     public static readonly TensorWeightScheme BF16_F16 =
-        new(
-            1,
-            false,
-            ["BF16", "F16", "F32"],
-            Array.Empty<TensorGroup>(),
-            null);
-
+        new(1, false, ["BF16", "F16", "F32"], Array.Empty<TensorGroup>(), null);
+    
     /*public static readonly TensorWeightScheme MXFP4 =
         new(
             2,
@@ -128,23 +108,12 @@ public sealed class TensorWeightScheme
         new(4, false, ["Q6_K"], Array.Empty<TensorGroup>(), 256);
 
     public static readonly TensorWeightScheme Q5_K =
-        new(
-            5,
-            false,
-            ["Q5_K"],
-            new[] { TReg.MoeRouter },
-            256);
+        new(5, false, ["Q5_K"], new[] { TReg.MoeRouter }, 256);
 
     public static readonly TensorWeightScheme IQ4_XS =
-        new(
-            6,
-            false,
-            ["IQ4_XS"],
-            new[] { TReg.MoeRouter },
-            32,
-            true);
-
-    /*
+        new(6, false, ["IQ4_XS"], new[] { TReg.MoeRouter }, 32, true);
+    
+ /*
     public static TensorWeightScheme IQ4_NL =
         new(
             7,
@@ -242,22 +211,22 @@ public sealed class TensorWeightScheme
             32
         );
     */
-
-    public static readonly ImmutableArray<TensorWeightScheme> All =
-    [
-        NULL,
-        BF16_F16,
-        // MXFP4,
-        Q8_0,
-        Q6_K,
-        Q5_K,
-        IQ4_XS,
-        // IQ4_NL,
-        // IQ3_S,
-        // IQ3_XS,
-        // IQ3_XXS,
-        // IQ2_S,
-        // IQ2_XS,
-        // IQ2_XXS
-    ];
+ 
+ public static readonly ImmutableArray<TensorWeightScheme> All =
+ [
+     NULL,
+     BF16_F16,
+     // MXFP4,
+     Q8_0,
+     Q6_K,
+     Q5_K,
+     IQ4_XS,
+     // IQ4_NL,
+     // IQ3_S,
+     // IQ3_XS,
+     // IQ3_XXS,
+     // IQ2_S,
+     // IQ2_XS,
+     // IQ2_XXS
+ ];
 }

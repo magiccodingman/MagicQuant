@@ -4,7 +4,8 @@ public enum RequiredSampleKind
 {
     PureBaseline = 1,
     BaseOnlyIsolation = 2,
-    GroupIsolation = 3
+    GroupIsolationProbe = 3,
+    GroupIsolationContinuation = 4
 }
 
 public sealed class RequiredSamplePlan
@@ -13,40 +14,31 @@ public sealed class RequiredSamplePlan
     public string Key { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public HybridQuant Quant { get; set; } = default!;
-
     public byte? TargetGroupId { get; set; }
     public byte? TestedSchemeId { get; set; }
     public byte? TestedBaselineId { get; set; }
+    public bool IsSmallestProbe { get; set; }
 }
 
 public sealed class RequiredSampleGenerationResult
 {
     public List<RequiredSamplePlan> Plans { get; set; } = new();
-
     public int PureBaselineCount { get; set; }
     public int BaseOnlyIsolationCount { get; set; }
     public int GroupIsolationCount { get; set; }
-
     public int TotalCount => Plans.Count;
 
-    public void AppendFrom(RequiredSampleGenerationResult other)
+    public RequiredSampleGenerationResult MergeWith(RequiredSampleGenerationResult other)
     {
-        if (other == null)
-            return;
+        var merged = new RequiredSampleGenerationResult
+        {
+            PureBaselineCount = PureBaselineCount + other.PureBaselineCount,
+            BaseOnlyIsolationCount = BaseOnlyIsolationCount + other.BaseOnlyIsolationCount,
+            GroupIsolationCount = GroupIsolationCount + other.GroupIsolationCount
+        };
 
-        Plans.AddRange(other.Plans);
-        PureBaselineCount += other.PureBaselineCount;
-        BaseOnlyIsolationCount += other.BaseOnlyIsolationCount;
-        GroupIsolationCount += other.GroupIsolationCount;
-    }
-
-    public static RequiredSampleGenerationResult Merge(params RequiredSampleGenerationResult[] items)
-    {
-        var merged = new RequiredSampleGenerationResult();
-
-        foreach (var item in items)
-            merged.AppendFrom(item);
-
+        merged.Plans.AddRange(Plans);
+        merged.Plans.AddRange(other.Plans);
         return merged;
     }
 }

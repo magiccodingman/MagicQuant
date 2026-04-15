@@ -1,7 +1,7 @@
+using System.Numerics;
 using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
-using System.Numerics;
 
 namespace MagicQuant.Helpers;
 
@@ -29,14 +29,23 @@ public static class SearchSpaceDebugPrinter
                 AnsiConsole.MarkupLine($"  [grey]- {string.Join("/", baseline.Names)}[/] (Id={baseline.UniqueId})");
         }
 
-        var fullyPrunedGroups = RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned();
-        AnsiConsole.MarkupLine($"[green]Groups with explicit tensor quant banned:[/] {fullyPrunedGroups.Count}");
-        foreach (var group in fullyPrunedGroups)
-            AnsiConsole.MarkupLine($"  [yellow]- {group.Name}[/] (Id={group.UniqueId})");
+        var explicitBannedGroups = RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned();
+        if (explicitBannedGroups.Count > 0)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Explicit-quant-banned groups:[/] {explicitBannedGroups.Count}");
+            foreach (var group in explicitBannedGroups)
+                AnsiConsole.MarkupLine($"  [yellow]- {group.Name}[/]");
+        }
 
-        var unusedIds = Cache.UnusedTensorGroups
-            .Select(x => x.UniqueId)
-            .ToHashSet();
+        var bf16SuppressedGroups = RuntimeSearchSpace.GetBf16SuppressedGroups();
+        if (bf16SuppressedGroups.Count > 0)
+        {
+            AnsiConsole.MarkupLine($"[yellow]BF16 tensor-choice suppressed groups:[/] {bf16SuppressedGroups.Count}");
+            foreach (var group in bf16SuppressedGroups)
+                AnsiConsole.MarkupLine($"  [yellow]- {group.Name}[/]");
+        }
+
+        var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
 
         foreach (var baseline in activeBaselines)
         {
@@ -51,35 +60,24 @@ public static class SearchSpaceDebugPrinter
                 var ids = allowed[i];
                 baseCount *= ids.Length;
 
-                var names = ids
-                    .Select(id =>
-                    {
-                        if (id == TensorWeightScheme.NULL.UniqueId)
-                            return "NULL";
+                var names = ids.Select(id =>
+                {
+                    if (id == TensorWeightScheme.NULL.UniqueId)
+                        return "NULL";
 
-                        var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
-                        return scheme?.Names[0] ?? $"Unknown({id})";
-                    })
-                    .ToList();
-
-                var runtimeBans = RuntimeSearchSpace.GetRuntimeExplicitBansForGroup(group)
-                    .Select(x => x.Names[0])
-                    .ToList();
+                    var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
+                    return scheme?.Names[0] ?? $"Unknown({id})";
+                }).ToList();
 
                 string state =
                     unusedIds.Contains(group.UniqueId) ? "unused->NULL" :
-                    RuntimeSearchSpace.IsGroupExplicitQuantBanned(group) ? "explicit-quant-banned" :
-                    runtimeBans.Count > 0 ? "runtime-pruned" :
+                    RuntimeSearchSpace.IsGroupExplicitQuantBanned(group) ? "BF16-only" :
+                    RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group) ? "BF16-suppressed" :
                     "variable";
 
                 AnsiConsole.MarkupLine(
-                    $"  [cyan]{Markup.Escape(group.Name)}[/] => [green]{ids.Length}[/] choice(s) [grey][[{Markup.Escape(state)}]][/] :: {Markup.Escape(string.Join(", ", names))}");
-
-                if (runtimeBans.Count > 0)
-                {
-                    AnsiConsole.MarkupLine(
-                        $"      [grey]runtime bans:[/] {Markup.Escape(string.Join(", ", runtimeBans))}");
-                }
+                    $"  [cyan]{Markup.Escape(group.Name)}[/] => [green]{ids.Length}[/] choice(s) " +
+                    $"[grey][[{Markup.Escape(state)}]][/] :: {Markup.Escape(string.Join(", ", names))}");
             }
 
             AnsiConsole.MarkupLine($"  [bold green]Base total:[/] {baseCount:N0}");

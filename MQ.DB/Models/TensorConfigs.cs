@@ -46,25 +46,24 @@ public readonly struct TensorConfig
     public TensorConfig(HybridQuant h)
         : this(
             baseQuant:  checked((byte)h.BaseQuant.UniqueId),
-            embeddings: GetSchemeId(h, TReg.Embeddings),
-            lmHead:     GetSchemeId(h, TReg.LmHead),
-            attnQ:      GetSchemeId(h, TReg.AttnQ),
-            attnKV:     GetSchemeId(h, TReg.AttnKV),
-            attnOutput: GetSchemeId(h, TReg.AttnOutput),
-            ffnUpGate:  GetSchemeId(h, TReg.FfnUpGate),
-            ffnDown:    GetSchemeId(h, TReg.FfnDown),
-            moeExperts: GetSchemeId(h, TReg.MoeExperts),
-            moeRouter:  GetSchemeId(h, TReg.MoeRouter))
+            embeddings: GetSchemeIdOrDefault(h, TReg.Embeddings),
+            lmHead:     GetSchemeIdOrDefault(h, TReg.LmHead),
+            attnQ:      GetSchemeIdOrDefault(h, TReg.AttnQ),
+            attnKV:     GetSchemeIdOrDefault(h, TReg.AttnKV),
+            attnOutput: GetSchemeIdOrDefault(h, TReg.AttnOutput),
+            ffnUpGate:  GetSchemeIdOrDefault(h, TReg.FfnUpGate),
+            ffnDown:    GetSchemeIdOrDefault(h, TReg.FfnDown),
+            moeExperts: GetSchemeIdOrDefault(h, TReg.MoeExperts),
+            moeRouter:  GetSchemeIdOrDefault(h, TReg.MoeRouter))
     { }
 
-    private static byte GetSchemeId(HybridQuant h, TensorGroup group)
+    private static byte GetSchemeIdOrDefault(HybridQuant h, TensorGroup group)
     {
-        if (h.Tensors == null)
-            throw new ArgumentNullException(nameof(h.Tensors));
+        if (h.Tensors == null || h.Tensors.Count == 0)
+            return TensorWeightScheme.NULL.UniqueId;
 
         TensorWeightScheme? found = null;
 
-        // Single pass: find the tensor type for the requested group
         for (int i = 0; i < h.Tensors.Count; i++)
         {
             var t = h.Tensors[i];
@@ -75,21 +74,18 @@ public readonly struct TensorConfig
                 continue;
 
             if (found != null)
+            {
                 throw new InvalidOperationException(
                     $"HybridQuant contains duplicate entries for group '{group.Name}' (UniqueId={group.UniqueId}).");
+            }
 
             found = t.TensorType;
         }
 
-        if (found == null)
-            throw new InvalidOperationException(
-                $"HybridQuant missing tensor entry for group '{group.Name}' (UniqueId={group.UniqueId}).");
-
-        return checked((byte)found.UniqueId);
+        return found == null
+            ? TensorWeightScheme.NULL.UniqueId
+            : checked((byte)found.UniqueId);
     }
-    
-    // Conversion operator: HybridQuant -> TensorConfig
+
     public static explicit operator TensorConfig(HybridQuant h) => new TensorConfig(h);
 }
-
-

@@ -4,56 +4,52 @@ namespace MagicQuant.Helpers;
 
 public static class RuntimeSearchSpace
 {
+    private static readonly Dictionary<byte, HashSet<byte>> ExplicitSchemeBansByGroup = new();
     private static readonly HashSet<byte> DisabledCombinationBaselineIds = new();
+    private static readonly HashSet<byte> Bf16SuppressedTensorChoiceGroupIds = new();
 
     public static void ResetForNewModel()
     {
+        ExplicitSchemeBansByGroup.Clear();
         DisabledCombinationBaselineIds.Clear();
+        Bf16SuppressedTensorChoiceGroupIds.Clear();
         TensorWeightScheme.ResetAllRuntimeBans();
     }
 
-    public static bool BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
+    public static void BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
     {
-        if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
-            return false;
+        if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId || scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+            return;
 
-        if (scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
-            return false;
-
-        if (scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
-            return false;
-
-        scheme.BannedGroups.Add(group);
-        return true;
-    }
-
-    public static int BanAllExplicitTensorSchemesForGroup(TensorGroup group)
-    {
-        int applied = 0;
-
-        foreach (var scheme in TensorWeightScheme.All)
+        if (!ExplicitSchemeBansByGroup.TryGetValue(group.UniqueId, out var set))
         {
-            if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
-                continue;
-
-            if (scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
-                continue;
-
-            if (BanSchemeForGroup(group, scheme))
-                applied++;
+            set = new HashSet<byte>();
+            ExplicitSchemeBansByGroup[group.UniqueId] = set;
         }
 
-        return applied;
+        set.Add(scheme.UniqueId);
+
+        if (!scheme.IsBannedFor(group))
+            scheme.BannedGroups.Add(group);
+    }
+
+    public static void BanAllExplicitTensorSchemesForGroup(TensorGroup group)
+    {
+        foreach (var scheme in TensorWeightScheme.All.Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId && x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId))
+            BanSchemeForGroup(group, scheme);
     }
 
     public static IReadOnlyList<TensorWeightScheme> GetRuntimeExplicitBansForGroup(TensorGroup group)
     {
-        return TensorWeightScheme.All
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => x.IsBannedFor(group))
-            .OrderBy(x => x.UniqueId)
-            .ToList();
+        if (!ExplicitSchemeBansByGroup.TryGetValue(group.UniqueId, out var set))
+            return Array.Empty<TensorWeightScheme>();
+
+        return TensorWeightScheme.All.Where(x => set.Contains(x.UniqueId)).OrderBy(x => x.UniqueId).ToList();
+    }
+
+    public static bool IsSchemeRuntimeBannedForGroup(TensorGroup group, TensorWeightScheme scheme)
+    {
+        return ExplicitSchemeBansByGroup.TryGetValue(group.UniqueId, out var set) && set.Contains(scheme.UniqueId);
     }
 
     public static bool IsGroupExplicitQuantBanned(TensorGroup group)
@@ -63,19 +59,17 @@ public static class RuntimeSearchSpace
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
             .ToList();
 
-        if (explicitSchemes.Count == 0)
-            return false;
-
         return explicitSchemes.All(x => x.IsBannedFor(group));
     }
 
     public static IReadOnlyList<TensorGroup> GetGroupsWithExplicitQuantBanned()
     {
-        return TReg.All
-            .Where(IsGroupExplicitQuantBanned)
-            .OrderBy(x => x.UniqueId)
-            .ToList();
+        return TReg.All.Where(IsGroupExplicitQuantBanned).OrderBy(x => x.UniqueId).ToList();
     }
+
+    public static void SuppressBf16TensorChoice(TensorGroup group) => Bf16SuppressedTensorChoiceGroupIds.Add(group.UniqueId);
+    public static bool IsBf16TensorChoiceSuppressed(TensorGroup group) => Bf16SuppressedTensorChoiceGroupIds.Contains(group.UniqueId);
+    public static IReadOnlyList<TensorGroup> GetBf16SuppressedGroups() => TReg.All.Where(x => Bf16SuppressedTensorChoiceGroupIds.Contains(x.UniqueId)).OrderBy(x => x.UniqueId).ToList();
 
     public static IReadOnlyList<BaselineQuants> GetActiveCombinationBaselines()
     {
@@ -88,7 +82,7 @@ public static class RuntimeSearchSpace
 
     public static bool DisableCombinationBaseline(BaselineQuants baseline, bool allowDisablingLast = false)
     {
-        if (DisabledCombinationBaselineIds.Contains(baseline.UniqueId))
+        if (baseline.BaseConversionBase == null || DisabledCombinationBaselineIds.Contains(baseline.UniqueId))
             return false;
 
         int currentlyActive = GetActiveCombinationBaselines().Count;
@@ -99,8 +93,5 @@ public static class RuntimeSearchSpace
         return true;
     }
 
-    public static bool IsCombinationBaselineDisabled(BaselineQuants baseline)
-    {
-        return DisabledCombinationBaselineIds.Contains(baseline.UniqueId);
-    }
+    public static bool IsCombinationBaselineDisabled(BaselineQuants baseline) => DisabledCombinationBaselineIds.Contains(baseline.UniqueId);
 }
