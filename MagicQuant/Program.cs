@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using MagicQuant.Commands;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
+using MagicQuant.Services;
 using Spectre.Console;
 using System.Collections.Immutable;
 using MQ.DB.Models;
@@ -55,6 +56,7 @@ try
     // strict startup integrity checks
     TensorWeightScheme.ValidateSmallestConfiguration();
     BaselineQuants.ValidateIntegrityOrThrow();
+    QuantizationService.ValidateQuantNameNormalizationOrThrow();
 
     // 6. Mandatory Validation for non-init commands
     if (!commandInput.Equals("initialize-llama-cpp", StringComparison.OrdinalIgnoreCase))

@@ -100,6 +100,8 @@ public class Evolution : ICommand
             saveLogits: true,
             domainsOverride: new[] { "general", "code", "math" });
 
+        await quantizationService.LearnNativeSourceTruthAsync(bf16ModelGgufPath);
+
         var compatibilityService = new ModelCompatibilityService(pyManager);
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
 

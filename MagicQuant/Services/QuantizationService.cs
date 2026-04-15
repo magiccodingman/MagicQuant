@@ -77,6 +77,35 @@ public class QuantizationService
         _cpuQuantLock = new SemaphoreSlim(_maxConcurrentQuantizations, _maxConcurrentQuantizations);
     }
 
+    public static void ValidateQuantNameNormalizationOrThrow()
+    {
+        var aliasExpectations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["bf16"] = "BF16",
+            ["bfloat16"] = "BF16",
+            ["f16"] = "F16",
+            ["float16"] = "F16",
+            ["f32"] = "F32",
+            ["float32"] = "F32",
+            ["q6_k"] = "Q6_K",
+            ["q5_k"] = "Q5_K",
+            ["q8_0"] = "Q8_0",
+            ["iq4_xs"] = "IQ4_XS",
+            ["iq4_nl"] = "IQ4_NL"
+        };
+
+        var mismatches = aliasExpectations
+            .Where(x => !string.Equals(NormalizeQuantName(x.Key), x.Value, StringComparison.Ordinal))
+            .Select(x => $"{x.Key}->{NormalizeQuantName(x.Key)} (expected {x.Value})")
+            .ToList();
+
+        if (mismatches.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Quant name alias normalization is misconfigured: " + string.Join(", ", mismatches));
+        }
+    }
+
     // ----------------------------------------------------------------
     // Batch processing
     // ----------------------------------------------------------------
@@ -841,7 +870,106 @@ public class QuantizationService
         if (Directory.Exists(debugDir))
             Directory.Delete(debugDir, recursive: true);
 
+        string nativeType = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
+        string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
+        string nativeBaseFile = Path.Combine(_ggufDir, $"{modelName}-{nativeType}.gguf");
+        await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile);
+        await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile + ".success.json");
+        await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile + ".convert.log");
+
+        string nativeBenchDir = Path.Combine(_benchDir, nativeType);
+        if (Directory.Exists(nativeBenchDir))
+            Directory.Delete(nativeBenchDir, recursive: true);
+
         AnsiConsole.MarkupLine("[yellow]Relearn requested:[/] baseline artifacts, benchmark caches, and learning diagnostics were invalidated.");
+    }
+
+    public async Task LearnNativeSourceTruthAsync(
+        string nativeGgufPath,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(nativeGgufPath) || !File.Exists(nativeGgufPath))
+            throw new FileNotFoundException($"Native GGUF path not found for learning: {nativeGgufPath}");
+
+        var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, nativeGgufPath);
+        var ggufTruth = metadata.TensorTypes
+            .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
+
+        var truth = BuildTruthMapWithVerification(
+            logTruth: new Dictionary<string, string>(StringComparer.Ordinal),
+            ggufTruth: ggufTruth,
+            baselineName: "NATIVE");
+
+        var grouped = AssignGroups(truth.Keys);
+        var ambiguous = grouped.Where(x => x.Value.MatchedGroups.Count > 1).ToList();
+        var unresolved = grouped.Where(x => x.Value.PrimaryGroup == null).Select(x => x.Key).ToList();
+
+        await using var db = new MagicQuantContext();
+        var model = await db.AiModelHashes.FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct)
+            ?? throw new InvalidOperationException("Could not persist native-source learning because AiModelHash row was missing.");
+
+        var combo = await db.TensorCombos
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.BaseQuant == BaselineQuants.NativeSourceUniqueId &&
+                                      x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
+                                      x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 &&
+                                      x.MoeExperts == 0 && x.MoeRouter == 0, ct);
+
+        if (combo == null)
+            throw new InvalidOperationException("Native-source benchmark TensorCombo is missing; benchmark base model first.");
+
+        var benchmarkId = await db.AiBenchmarks
+            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
+            .OrderByDescending(x => x.Id)
+            .Select(x => (uint?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (!benchmarkId.HasValue)
+            throw new InvalidOperationException("Native-source benchmark row is missing; benchmark base model before native-source learning.");
+
+        await db.LearnedBaselineTensorQuants
+            .Where(x => x.AiModelHashId == model.Id &&
+                        x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                        x.TensorWeightSchemeId == TensorWeightScheme.BF16_F16.UniqueId)
+            .ExecuteDeleteAsync(ct);
+
+        var rows = truth
+            .Where(x => grouped[x.Key].PrimaryGroup != null)
+            .Select(x => new LearnedBaselineTensorQuant
+            {
+                AiBenchmarkId = benchmarkId.Value,
+                AiModelHashId = model.Id,
+                BaselineQuantId = BaselineQuants.NativeSourceUniqueId,
+                TensorWeightSchemeId = TensorWeightScheme.BF16_F16.UniqueId,
+                TensorGroupId = grouped[x.Key].PrimaryGroup!.UniqueId,
+                TensorName = x.Key,
+                FinalQuantType = x.Value.FinalQuantType
+            })
+            .ToList();
+
+        if (rows.Count == 0)
+            throw new InvalidOperationException("Native-source learning produced no persistable rows.");
+
+        db.LearnedBaselineTensorQuants.AddRange(rows);
+        await db.SaveChangesAsync(ct);
+
+        await WriteLearningDiagnosticArtifactAsync(
+            baselineName: "NATIVE",
+            schemeName: TensorWeightScheme.BF16_F16.Names[0],
+            truthByTensor: truth,
+            grouped: grouped,
+            allTensorNamesInModel: metadata.TensorNames,
+            ambiguous: ambiguous,
+            unresolved: unresolved);
+
+        var sourcePrecision = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
+        var distribution = rows.GroupBy(x => x.FinalQuantType)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Key}:{g.Count()}")
+            .ToList();
+
+        AnsiConsole.MarkupLine(
+            $"[green]Native-source learned truth:[/] precision={sourcePrecision}, tensors={rows.Count}, unresolved={unresolved.Count}, ambiguous={ambiguous.Count}, dist=[{Markup.Escape(string.Join(", ", distribution))}]");
     }
 
     private static bool IsLearnableBaselineRun(HybridQuant quant)
@@ -945,7 +1073,14 @@ public class QuantizationService
         db.LearnedBaselineTensorQuants.AddRange(rows);
         await db.SaveChangesAsync(ct);
 
-        await WriteLearningDiagnosticArtifactAsync(quant.BaseQuant, tensorScheme, truth, grouped, ggufMetadata.TensorNames, ambiguous, unresolved);
+        await WriteLearningDiagnosticArtifactAsync(
+            baselineName: quant.BaseQuant.Names[0],
+            schemeName: tensorScheme.Names[0],
+            truthByTensor: truth,
+            grouped: grouped,
+            allTensorNamesInModel: ggufMetadata.TensorNames,
+            ambiguous: ambiguous,
+            unresolved: unresolved);
 
         AnsiConsole.MarkupLine(
             $"[green]Learned baseline tensor mapping persisted:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{quant.BaseQuant.Names[0]}[/].");
@@ -1061,8 +1196,8 @@ public class QuantizationService
     }
 
     private async Task WriteLearningDiagnosticArtifactAsync(
-        BaselineQuants baseline,
-        TensorWeightScheme scheme,
+        string baselineName,
+        string schemeName,
         IReadOnlyDictionary<string, LearnedTensorTruth> truthByTensor,
         IReadOnlyDictionary<string, TensorGroupingResult> grouped,
         IReadOnlyCollection<string> allTensorNamesInModel,
@@ -1120,7 +1255,7 @@ public class QuantizationService
                 : string.Join(", ", sourceCounts.Select(kv => $"{kv.Key}:{kv.Value}"));
 
             AnsiConsole.MarkupLine(
-                $"[grey][learn:{baseline.Names[0]}:{group.Name}] expected={expected.Count} learned={learned.Count} unmatched={unmatched.Count} ambiguous={ambiguous.Count(x => x.Value.MatchedGroups.Contains(group.Name))} dist=[{Markup.Escape(distShort)}] src=[{Markup.Escape(srcShort)}][/]");
+                $"[grey][learn:{baselineName}:{group.Name}] expected={expected.Count} learned={learned.Count} unmatched={unmatched.Count} ambiguous={ambiguous.Count(x => x.Value.MatchedGroups.Contains(group.Name))} dist=[{Markup.Escape(distShort)}] src=[{Markup.Escape(srcShort)}][/]");
 
             if (expected.Count > 0 && unmatched.Count > 0)
             {
@@ -1131,8 +1266,8 @@ public class QuantizationService
 
         var artifact = new
         {
-            Baseline = baseline.Names[0],
-            Scheme = scheme.Names[0],
+            Baseline = baselineName,
+            Scheme = schemeName,
             TotalTruthTensors = truthByTensor.Count,
             UnresolvedTensorCount = unresolved.Count,
             AmbiguousTensorCount = ambiguous.Count,
@@ -1142,7 +1277,7 @@ public class QuantizationService
 
         string debugDir = Path.Combine(_benchDir, "_learning_debug");
         Directory.CreateDirectory(debugDir);
-        string path = Path.Combine(debugDir, $"{baseline.Names[0]}_{scheme.Names[0]}_learned_map.json");
+        string path = Path.Combine(debugDir, $"{baselineName}_{schemeName}_learned_map.json");
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(artifact, new JsonSerializerOptions { WriteIndented = true }));
 
         AnsiConsole.MarkupLine(
@@ -1268,14 +1403,24 @@ public class QuantizationService
         if (model == null)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
-        var baseline = BaselineQuants.All.FirstOrDefault(x => x.DefaultTensorScheme?.UniqueId == sourceScheme.UniqueId);
-        if (baseline == null)
-            return new Dictionary<string, string>(StringComparer.Ordinal);
+        byte baselineId;
+        if (sourceScheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+        {
+            baselineId = BaselineQuants.NativeSourceUniqueId;
+        }
+        else
+        {
+            var baseline = BaselineQuants.All.FirstOrDefault(x => x.DefaultTensorScheme?.UniqueId == sourceScheme.UniqueId);
+            if (baseline == null)
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+
+            baselineId = baseline.UniqueId;
+        }
 
         var rows = db.LearnedBaselineTensorQuants
             .AsNoTracking()
             .Where(x => x.AiModelHashId == model.Id)
-            .Where(x => x.BaselineQuantId == baseline.UniqueId)
+            .Where(x => x.BaselineQuantId == baselineId)
             .Where(x => x.TensorWeightSchemeId == sourceScheme.UniqueId)
             .Where(x => x.TensorGroupId == targetGroup.UniqueId)
             .OrderBy(x => x.TensorName)
@@ -1405,15 +1550,27 @@ public class QuantizationService
 
     private static string NormalizeQuantName(string value)
     {
-        var normalized = value.Trim().ToUpperInvariant();
-        return normalized.Replace("Q5_K", "Q5_K")
-            .Replace("Q6_K", "Q6_K")
-            .Replace("Q8_0", "Q8_0")
-            .Replace("IQ4_XS", "IQ4_XS")
-            .Replace("IQ4_NL", "IQ4_NL")
-            .Replace("BF16", "BF16")
-            .Replace("F16", "F16")
-            .Replace("F32", "F32");
+        var normalized = value
+            .Trim()
+            .Replace("-", "_")
+            .Replace(" ", string.Empty)
+            .ToUpperInvariant();
+
+        return normalized switch
+        {
+            "BF16" => "BF16",
+            "BFLOAT16" => "BF16",
+            "F16" => "F16",
+            "FLOAT16" => "F16",
+            "F32" => "F32",
+            "FLOAT32" => "F32",
+            "Q5_K" => "Q5_K",
+            "Q6_K" => "Q6_K",
+            "Q8_0" => "Q8_0",
+            "IQ4_XS" => "IQ4_XS",
+            "IQ4_NL" => "IQ4_NL",
+            _ => normalized
+        };
     }
 
     private sealed class QuantizationExecutionReport
