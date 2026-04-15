@@ -15,6 +15,70 @@ public class QuantDatabaseService
     private const string DbFileName = "MagicQuant_Combinations.duckdb";
     private const string TableName = "tensor_configs";
 
+    public async Task<long> GetRemainingCombinationCountAsync(CancellationToken ct = default)
+    {
+        using var connection = new DuckDBConnection(ConnectionString);
+        await connection.OpenAsync(ct);
+
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = $"SELECT COUNT(*) FROM {TableName};";
+
+        return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+    }
+
+    public async Task<List<TensorConfig>> GetRemainingTensorConfigsAsync(CancellationToken ct = default)
+    {
+        using var connection = new DuckDBConnection(ConnectionString);
+        await connection.OpenAsync(ct);
+
+        var results = new List<TensorConfig>();
+
+        var cmd = connection.CreateCommand();
+        cmd.CommandText = $@"
+        SELECT
+            BaseQuant,
+            Embeddings,
+            LmHead,
+            AttnQ,
+            AttnKV,
+            AttnOutput,
+            FfnUpGate,
+            FfnDown,
+            MoeExperts,
+            MoeRouter
+        FROM {TableName}
+        ORDER BY
+            BaseQuant,
+            Embeddings,
+            LmHead,
+            AttnQ,
+            AttnKV,
+            AttnOutput,
+            FfnUpGate,
+            FfnDown,
+            MoeExperts,
+            MoeRouter;";
+
+        using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            results.Add(new TensorConfig(
+                baseQuant:  Convert.ToByte(reader.GetValue(0)),
+                embeddings: Convert.ToByte(reader.GetValue(1)),
+                lmHead:     Convert.ToByte(reader.GetValue(2)),
+                attnQ:      Convert.ToByte(reader.GetValue(3)),
+                attnKV:     Convert.ToByte(reader.GetValue(4)),
+                attnOutput: Convert.ToByte(reader.GetValue(5)),
+                ffnUpGate:  Convert.ToByte(reader.GetValue(6)),
+                ffnDown:    Convert.ToByte(reader.GetValue(7)),
+                moeExperts: Convert.ToByte(reader.GetValue(8)),
+                moeRouter:  Convert.ToByte(reader.GetValue(9))
+            ));
+        }
+
+        return results;
+    }
+    
     private static string GetDuckDbDirectory()
     {
         if (!string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))

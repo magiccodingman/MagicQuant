@@ -88,7 +88,7 @@ public sealed class TensorWeightScheme
     public static readonly TensorWeightScheme BF16_F16 =
         new(1, false, ["BF16", "F16", "F32"], Array.Empty<TensorGroup>(), null);
     
-    /*public static readonly TensorWeightScheme MXFP4 =
+    public static readonly TensorWeightScheme MXFP4 =
         new(
             2,
             false,
@@ -99,7 +99,7 @@ public sealed class TensorWeightScheme
                 TReg.MoeRouter,
                 TReg.MoeExperts
             },
-            32);*/
+            32);
 
     public static readonly TensorWeightScheme Q8_0 =
         new(3, false, ["Q8_0"], Array.Empty<TensorGroup>(), null);
@@ -113,7 +113,7 @@ public sealed class TensorWeightScheme
     public static readonly TensorWeightScheme IQ4_XS =
         new(6, false, ["IQ4_XS"], new[] { TReg.MoeRouter }, 32, true);
     
- /*
+
     public static TensorWeightScheme IQ4_NL =
         new(
             7,
@@ -122,8 +122,17 @@ public sealed class TensorWeightScheme
             new[] { TReg.MoeRouter },
             32
         );
+    
+    public static TensorWeightScheme Q4_K =
+        new(
+            14,
+            false,
+            ["Q4_K"],
+            new[] { TReg.MoeRouter },
+            32
+        );
 
-    public static TensorWeightScheme IQ3_S =
+    /* public static TensorWeightScheme IQ3_S =
         new(
             8,
             true,
@@ -216,12 +225,13 @@ public sealed class TensorWeightScheme
  [
      NULL,
      BF16_F16,
-     // MXFP4,
+     MXFP4,
      Q8_0,
      Q6_K,
      Q5_K,
      IQ4_XS,
-     // IQ4_NL,
+     IQ4_NL,
+     Q4_K,
      // IQ3_S,
      // IQ3_XS,
      // IQ3_XXS,

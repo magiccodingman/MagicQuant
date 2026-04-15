@@ -9,6 +9,8 @@ namespace MagicQuant.Commands;
 
 public class Evolution : ICommand
 {
+    private const int BruteForceFinalCombinationThreshold = 1_000;
+    
     public async Task Run(List<CliArg> args)
     {
         if (args.Any(a => a.Name?.ToLower() == "help"))
@@ -183,6 +185,48 @@ public class Evolution : ICommand
 
         foreach (var note in isolationResult.Notes)
             AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
+        
+        long finalRemainingCombinationCount = await dbService.GetRemainingCombinationCountAsync();
+
+        AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
+
+        if (finalRemainingCombinationCount <= BruteForceFinalCombinationThreshold)
+        {
+            AnsiConsole.Write(new Rule("[yellow]Final Brute Force Benchmark Phase[/]") { Justification = Justify.Left });
+
+            AnsiConsole.MarkupLine(
+                $"[green]Final combination count[/] [cyan]{finalRemainingCombinationCount:N0}[/] " +
+                $"is at or below the brute-force threshold of [yellow]{BruteForceFinalCombinationThreshold:N0}[/].");
+
+            var finalConfigs = await dbService.GetRemainingTensorConfigsAsync();
+            var finalQuants = finalConfigs
+                .Select(x => (HybridQuant)x)
+                .ToList();
+
+            var finalSummary = await quantizationService.ProcessHybridBatchAsync(finalQuants);
+
+            AnsiConsole.MarkupLine("[bold green]Final brute force benchmarking complete.[/]");
+            AnsiConsole.MarkupLine($"  [green]Requested:[/] {finalSummary.Requested:N0}");
+            AnsiConsole.MarkupLine($"  [green]Completed:[/] {finalSummary.Completed:N0}");
+            AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {finalSummary.Skipped:N0}");
+            AnsiConsole.MarkupLine($"  [red]Failed:[/] {finalSummary.Failed:N0}");
+
+            AnsiConsole.MarkupLine("[yellow]Note:[/] Final model creation/export functionality is still being implemented.");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[yellow]Note:[/] Final model creation/export functionality is still being implemented.");
+
+            throw new InvalidOperationException(
+                $"Prediction engine not created yet. " +
+                $"Final surviving combinations were {finalRemainingCombinationCount:N0}, " +
+                $"which is above the brute-force threshold of {BruteForceFinalCombinationThreshold:N0}.");
+        }
+        
+        AnsiConsole.MarkupLine($"[green]Combination count before pruning:[/] {comboCountBefore:N0}");
+        AnsiConsole.MarkupLine($"[green]Combination count after rule pruning:[/] {comboCountAfterRulePruning:N0}");
+        AnsiConsole.MarkupLine($"[green]Predicted-size combo removals:[/] {predictedSizePruned:N0}");
+        AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
     }
 
     private void ShowEvolutionHelp()
