@@ -16,21 +16,7 @@ public record BaselineQuants(
     public static readonly BaselineQuants Q5_K = new(2, false, ["Q5_K"], TensorWeightScheme.Q5_K);
     public static readonly BaselineQuants Q4_K_M = new(3, false, ["Q4_K_M"], TensorWeightScheme.Q4_K);
 
-    /*public static readonly BaselineQuants MXFP4_MOE = new(
-        4,
-        false,
-        ["MXFP4_MOE"],
-        new HybridQuant
-        {
-            BaseQuant = null!,
-            Tensors = TReg.All
-                .Select(g => new HybridTensor
-                {
-                    TGroup = g,
-                    TensorType = TensorWeightScheme.MXFP4
-                })
-                .ToList()
-        });*/
+    public static readonly BaselineQuants MXFP4 = new(4, false, ["MXFP4"], TensorWeightScheme.MXFP4);
 
     public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"], TensorWeightScheme.IQ4_NL);
 
@@ -61,7 +47,7 @@ public record BaselineQuants(
         Q6_K,
         Q5_K,
         Q4_K_M,
-        //MXFP4_MOE,
+        MXFP4,
         IQ4_NL,
         IQ4_XS,
         //IQ3_M,
@@ -70,8 +56,53 @@ public record BaselineQuants(
 
     static BaselineQuants()
     {
-        //MXFP4_MOE.BaseConversionBase!.BaseQuant = MXFP4_MOE;
         IQ4_XS.BaseConversionBase!.BaseQuant = IQ4_XS;
+        ValidateIntegrityOrThrow();
+    }
+
+    public static void ValidateIntegrityOrThrow()
+    {
+        var invalidBaselines = All
+            .Where(x => x.DefaultTensorScheme == null)
+            .Select(x => x.Names.IsDefaultOrEmpty ? $"id:{x.UniqueId}" : x.Names[0])
+            .ToList();
+
+        if (invalidBaselines.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Every BaselineQuants entry must define DefaultTensorScheme. Missing for: " +
+                string.Join(", ", invalidBaselines));
+        }
+
+        var duplicateDefaultSchemeIds = All
+            .GroupBy(x => x.DefaultTensorScheme!.UniqueId)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        if (duplicateDefaultSchemeIds.Count > 0)
+        {
+            var duplicateNames = duplicateDefaultSchemeIds
+                .Select(id => TensorWeightScheme.All.First(s => s.UniqueId == id).Names[0]);
+
+            throw new InvalidOperationException(
+                "DefaultTensorScheme must be unique across BaselineQuants entries. Duplicates: " +
+                string.Join(", ", duplicateNames));
+        }
+
+        var schemesMissingBaseline = TensorWeightScheme.All
+            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Where(x => !All.Any(b => b.DefaultTensorScheme!.UniqueId == x.UniqueId))
+            .Select(x => x.Names[0])
+            .ToList();
+
+        if (schemesMissingBaseline.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Every TensorWeightScheme must be linked by exactly one BaselineQuants.DefaultTensorScheme. Missing for: " +
+                string.Join(", ", schemesMissingBaseline));
+        }
     }
 
     public static BaselineQuants GetBF16Quant()

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using MagicQuant.Helpers;
 using MQ.DB;
 using MQ.DB.Data;
@@ -114,8 +115,60 @@ public class QuantizationService
 
         await EnsureBaseModelFileAsync(false);
 
+        var learnableBaselinePlans = plans
+            .Where(p => IsLearnableBaselineRun(p.Quant))
+            .OrderBy(p => p.Quant.BaseQuant.UniqueId)
+            .ToList();
+
+        foreach (var baselinePlan in learnableBaselinePlans)
+        {
+            var baselineRecord = new SampleProcessingRecord
+            {
+                Plan = baselinePlan,
+                ModelName = GenerateHybridName(baselinePlan.Quant)
+            };
+
+            try
+            {
+                var state = await ProcessHybridQuantAsync(baselinePlan.Quant, ct);
+                baselineRecord.State = state;
+
+                var identity = await ResolveBenchmarkIdentityAsync(baselinePlan.Quant, ct);
+                baselineRecord.TensorComboId = identity.TensorComboId;
+                baselineRecord.BenchmarkId = identity.BenchmarkId;
+
+                switch (state)
+                {
+                    case SampleProcessState.Completed:
+                        completed++;
+                        break;
+                    case SampleProcessState.Skipped:
+                        skipped++;
+                        break;
+                    default:
+                        failed++;
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                baselineRecord.State = SampleProcessState.Failed;
+                baselineRecord.Error = ex.Message;
+                failed++;
+
+                AnsiConsole.MarkupLine($"[red]Baseline sample failed:[/] {Markup.Escape(baselineRecord.ModelName)}");
+                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
+            }
+            finally
+            {
+                records.Add(baselineRecord);
+            }
+        }
+
+        var remainingPlans = plans.Except(learnableBaselinePlans).ToList();
+
         await Parallel.ForEachAsync(
-            plans,
+            remainingPlans,
             new ParallelOptions
             {
                 MaxDegreeOfParallelism = _maxConcurrentQuantizations,
@@ -233,9 +286,10 @@ public class QuantizationService
 
         DateTime startedUtc = DateTime.UtcNow;
         var stopwatch = Stopwatch.StartNew();
+        var forceBaselineRelearn = Cache.ForceRelearnBaselineTensorMappings && IsLearnableBaselineRun(quant);
 
         // 1. Fast path: valid artifacts already exist on disk and can be synced/reused
-        if (await _benchmarker.TryReuseExistingBenchmarksAsync(
+        if (!forceBaselineRelearn && await _benchmarker.TryReuseExistingBenchmarksAsync(
                 quantConfig: quant,
                 modelPath: quantPath,
                 benchDir: modelBenchDir,
@@ -251,7 +305,7 @@ public class QuantizationService
         }
 
         // 2. DB truth still matters too
-        if (await BenchmarkExistsAsync(quant, ct))
+        if (!forceBaselineRelearn && await BenchmarkExistsAsync(quant, ct))
         {
             AnsiConsole.MarkupLine($"[grey]Skipping already completed sample:[/] {Markup.Escape(modelName)}");
 
@@ -264,14 +318,15 @@ public class QuantizationService
         try
         {
             string basePath = await EnsureBaseModelFileAsync();
+            QuantizationExecutionReport? quantizationReport = null;
 
             await _cpuQuantLock.WaitAsync(ct);
             try
             {
-                if (!File.Exists(quantPath))
+                if (!File.Exists(quantPath) || forceBaselineRelearn)
                 {
                     AnsiConsole.MarkupLine($"[cyan]Building sample:[/] {Markup.Escape(modelName)}");
-                    await RunLlamaQuantizeAsync(basePath, quantPath, quant);
+                    quantizationReport = await RunLlamaQuantizeAsync(basePath, quantPath, quant);
                 }
             }
             finally
@@ -280,7 +335,7 @@ public class QuantizationService
             }
 
             // Re-check after build in case another worker finished the DB sync while we were quantizing
-            if (await BenchmarkExistsAsync(quant, ct))
+            if (!forceBaselineRelearn && await BenchmarkExistsAsync(quant, ct))
             {
                 if (!IsProtectedModel(modelName))
                     await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
@@ -308,6 +363,11 @@ public class QuantizationService
                 outputModelPath: quantPath,
                 error: null,
                 ct: ct);
+
+            if (IsLearnableBaselineRun(quant))
+            {
+                await LearnAndPersistBaselineTensorMapAsync(quant, quantPath, quantizationReport, ct);
+            }
 
             return SampleProcessState.Completed;
         }
@@ -656,7 +716,7 @@ public class QuantizationService
     // Quantization
     // ----------------------------------------------------------------
 
-    public async Task RunLlamaQuantizeAsync(string inputFile, string outputFile, HybridQuant quant)
+    private async Task<QuantizationExecutionReport> RunLlamaQuantizeAsync(string inputFile, string outputFile, HybridQuant quant)
     {
         if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
             throw new FileNotFoundException($"Input GGUF not found: {inputFile}");
@@ -724,6 +784,12 @@ public class QuantizationService
         }
 
         AnsiConsole.MarkupLine($"[green]Quantized model ready:[/] {Markup.Escape(outputFile)}");
+
+        return new QuantizationExecutionReport
+        {
+            LogPath = quantizeLogPath,
+            ResolvedOverrides = concreteOverrides
+        };
     }
 
     private static string ResolveQuantizeBaseArgument(
@@ -741,6 +807,164 @@ public class QuantizationService
         }
 
         return ResolveBaseName(quant.BaseQuant);
+    }
+
+    public async Task ClearLearnedBaselineTensorMappingsAsync(CancellationToken ct = default)
+    {
+        await using var db = new MagicQuantContext();
+        int removed = await db.LearnedBaselineTensorQuants.ExecuteDeleteAsync(ct);
+        AnsiConsole.MarkupLine($"[yellow]Relearn requested:[/] removed [red]{removed:N0}[/] learned baseline tensor mapping rows.");
+    }
+
+    private static bool IsLearnableBaselineRun(HybridQuant quant)
+    {
+        return quant.Tensors.Count == 0 &&
+               quant.BaseQuant.UniqueId != BaselineQuants.NativeSourceUniqueId &&
+               quant.BaseQuant.DefaultTensorScheme != null;
+    }
+
+    private async Task LearnAndPersistBaselineTensorMapAsync(
+        HybridQuant quant,
+        string quantizedModelPath,
+        QuantizationExecutionReport? report,
+        CancellationToken ct)
+    {
+        if (!IsLearnableBaselineRun(quant))
+            return;
+
+        var tensorScheme = quant.BaseQuant.DefaultTensorScheme!;
+        var parsed = ParseQuantizeLogForTensorTypes(report?.LogPath ?? (quantizedModelPath + ".quantize.log"));
+        if (parsed.Count == 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[red]WARNING:[/] learned mapping parse returned no tensors for baseline [yellow]{quant.BaseQuant.Names[0]}[/].");
+            return;
+        }
+
+        var grouped = AssignGroups(parsed.Keys);
+        var ambiguous = grouped.Where(x => x.Value.MatchedGroups.Count > 1).ToList();
+        if (ambiguous.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[red]WARNING:[/] {ambiguous.Count} tensor(s) matched multiple groups while learning baseline {quant.BaseQuant.Names[0]}.");
+            AnsiConsole.MarkupLine($"[grey]Example: {Markup.Escape(ambiguous[0].Key)} => {string.Join(", ", ambiguous[0].Value.MatchedGroups)}[/]");
+        }
+
+        var unresolved = grouped.Where(x => x.Value.PrimaryGroup == null).Select(x => x.Key).ToList();
+        if (unresolved.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]WARNING:[/] {unresolved.Count} tensor(s) had no tensor-group match while learning baseline {quant.BaseQuant.Names[0]}.");
+        }
+
+        await using var db = new MagicQuantContext();
+
+        var model = await db.AiModelHashes.FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+        if (model == null)
+            throw new InvalidOperationException("Unable to persist learned mappings because AiModelHash row was not found.");
+
+        var combo = await db.TensorCombos
+            .AsNoTracking()
+            .FirstAsync(x => x.BaseQuant == quant.BaseQuant.UniqueId &&
+                             x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
+                             x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 && x.MoeRouter == 0, ct);
+
+        var benchmarkId = await db.AiBenchmarks
+            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
+            .OrderByDescending(x => x.Id)
+            .Select(x => (uint?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (!benchmarkId.HasValue)
+            throw new InvalidOperationException($"Unable to persist learned mappings because no AiBenchmark exists for baseline '{quant.BaseQuant.Names[0]}'.");
+
+        await db.LearnedBaselineTensorQuants
+            .Where(x => x.AiModelHashId == model.Id &&
+                        x.BaselineQuantId == quant.BaseQuant.UniqueId &&
+                        x.TensorWeightSchemeId == tensorScheme.UniqueId)
+            .ExecuteDeleteAsync(ct);
+
+        var rows = new List<LearnedBaselineTensorQuant>(parsed.Count);
+        foreach (var kv in parsed.OrderBy(x => x.Key, StringComparer.Ordinal))
+        {
+            var match = grouped[kv.Key];
+            if (match.PrimaryGroup == null)
+                continue;
+
+            rows.Add(new LearnedBaselineTensorQuant
+            {
+                AiBenchmarkId = benchmarkId.Value,
+                AiModelHashId = model.Id,
+                BaselineQuantId = quant.BaseQuant.UniqueId,
+                TensorWeightSchemeId = tensorScheme.UniqueId,
+                TensorGroupId = match.PrimaryGroup.UniqueId,
+                TensorName = kv.Key,
+                FinalQuantType = kv.Value
+            });
+        }
+
+        if (rows.Count == 0)
+            throw new InvalidOperationException($"Learning baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
+
+        db.LearnedBaselineTensorQuants.AddRange(rows);
+        await db.SaveChangesAsync(ct);
+
+        AnsiConsole.MarkupLine(
+            $"[green]Learned baseline tensor mapping persisted:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{quant.BaseQuant.Names[0]}[/].");
+    }
+
+    private Dictionary<string, string> ParseQuantizeLogForTensorTypes(string logPath)
+    {
+        if (!File.Exists(logPath))
+        {
+            AnsiConsole.MarkupLine($"[red]WARNING:[/] quantization log does not exist, cannot learn tensor mapping: {Markup.Escape(logPath)}");
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        var byTensor = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var raw in File.ReadLines(logPath))
+        {
+            var match = TensorLogLineRegex.Match(raw);
+            if (!match.Success)
+                continue;
+
+            string tensorName = match.Groups["tensor"].Value.Trim();
+            string declaredType = NormalizeQuantName(match.Groups["type"].Value);
+
+            string final = declaredType;
+            var convert = match.Groups["convert"];
+            if (convert.Success && !string.IsNullOrWhiteSpace(convert.Value))
+                final = NormalizeQuantName(convert.Value);
+
+            byTensor[tensorName] = final;
+        }
+
+        return byTensor;
+    }
+
+    private Dictionary<string, TensorGroupingResult> AssignGroups(IEnumerable<string> tensorNames)
+    {
+        var dict = new Dictionary<string, TensorGroupingResult>(StringComparer.Ordinal);
+
+        foreach (var tensorName in tensorNames)
+        {
+            var matched = new List<TensorGroup>();
+
+            foreach (var group in TReg.All)
+            {
+                if (group.Tensors.Any(pattern => Regex.IsMatch(tensorName, $"^{pattern}$")))
+                    matched.Add(group);
+            }
+
+            dict[tensorName] = new TensorGroupingResult
+            {
+                MatchedGroups = matched.Select(x => x.Name).ToList(),
+                PrimaryGroup = matched.FirstOrDefault()
+            };
+        }
+
+        return dict;
     }
 
     private static TensorWeightScheme? TryResolveBaseTensorScheme(BaselineQuants baseQuant)
@@ -778,17 +1002,56 @@ public class QuantizationService
             if (baseScheme != null && hybrid.TensorType.UniqueId == baseScheme.UniqueId)
                 continue;
 
-            string schemeName = ResolveSchemeName(hybrid.TensorType);
-
-            result.Add(new RequestedTensorOverride
+            var learned = TryLoadLearnedTensorMapping(hybrid.TensorType, hybrid.TGroup);
+            if (learned.Count == 0)
             {
-                GroupName = hybrid.TGroup.Name,
-                SchemeName = schemeName,
-                Patterns = hybrid.TGroup.Tensors.ToList()
-            });
+                throw new InvalidOperationException(
+                    $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + scheme '{hybrid.TensorType.Names[0]}'. " +
+                    "Run with --relearn-baseline-mappings to regenerate.");
+            }
+
+            foreach (var kv in learned)
+            {
+                result.Add(new RequestedTensorOverride
+                {
+                    GroupName = hybrid.TGroup.Name,
+                    TensorName = kv.Key,
+                    SchemeName = kv.Value
+                });
+            }
         }
 
         return result;
+    }
+
+    private Dictionary<string, string> TryLoadLearnedTensorMapping(TensorWeightScheme sourceScheme, TensorGroup targetGroup)
+    {
+        using var db = new MagicQuantContext();
+
+        var model = db.AiModelHashes
+            .AsNoTracking()
+            .FirstOrDefault(x => x.UniqueHash == Cache.CurrentModelId);
+
+        if (model == null)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var baseline = BaselineQuants.All.FirstOrDefault(x => x.DefaultTensorScheme?.UniqueId == sourceScheme.UniqueId);
+        if (baseline == null)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var rows = db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == model.Id)
+            .Where(x => x.BaselineQuantId == baseline.UniqueId)
+            .Where(x => x.TensorWeightSchemeId == sourceScheme.UniqueId)
+            .Where(x => x.TensorGroupId == targetGroup.UniqueId)
+            .OrderBy(x => x.TensorName)
+            .ToList();
+
+        if (rows.Count == 0)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        return rows.ToDictionary(x => x.TensorName, x => x.FinalQuantType, StringComparer.Ordinal);
     }
 
     private async Task<List<ConcreteTensorOverride>> ResolveConcreteTensorOverridesAsync(
@@ -798,130 +1061,89 @@ public class QuantizationService
     {
         if (requestedOverrides.Count == 0)
             return new List<ConcreteTensorOverride>();
+        var allTensorNames = await ReadTensorNamesFromGgufAsync(inputGgufPath, outputFilePath);
+        var nameSet = allTensorNames.ToHashSet(StringComparer.Ordinal);
 
+        var missing = requestedOverrides
+            .Where(x => !nameSet.Contains(x.TensorName))
+            .ToList();
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Required learned tensor mappings were missing in source GGUF ({missing.Count} tensors). " +
+                $"Examples: {string.Join(", ", missing.Take(10).Select(x => x.TensorName))}");
+        }
+
+        var duplicates = requestedOverrides
+            .GroupBy(x => x.TensorName, StringComparer.Ordinal)
+            .Where(g => g.Select(x => x.SchemeName).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        if (duplicates.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Conflicting learned mappings tried to assign multiple quant types to the same tensor: " +
+                $"{string.Join(", ", duplicates.Take(20))}");
+        }
+
+        return requestedOverrides
+            .GroupBy(x => x.TensorName, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .Select(x => new ConcreteTensorOverride
+            {
+                GroupName = x.GroupName,
+                SchemeName = x.SchemeName,
+                TensorName = x.TensorName
+            })
+            .ToList();
+    }
+
+    private async Task<List<string>> ReadTensorNamesFromGgufAsync(string ggufPath, string outputFilePath)
+    {
         string workingDir = Path.GetDirectoryName(outputFilePath)!;
         string unique = Guid.NewGuid().ToString("N");
-
-        string payloadPath = Path.Combine(workingDir, $"resolve_tensor_overrides_{unique}.json");
-        string resultPath = Path.Combine(workingDir, $"resolve_tensor_overrides_result_{unique}.json");
-        string scriptPath = Path.Combine(workingDir, $"resolve_tensor_overrides_{unique}.py");
+        string payloadPath = Path.Combine(workingDir, $"read_gguf_tensors_{unique}.json");
+        string resultPath = Path.Combine(workingDir, $"read_gguf_tensors_result_{unique}.json");
+        string scriptPath = Path.Combine(workingDir, $"read_gguf_tensors_{unique}.py");
 
         try
         {
-            var payload = new
-            {
-                gguf_path = inputGgufPath,
-                output_path = resultPath,
-                requests = requestedOverrides
-            };
+            await File.WriteAllTextAsync(payloadPath, JsonSerializer.Serialize(new { gguf_path = ggufPath, output_path = resultPath }));
 
-            await File.WriteAllTextAsync(
-                payloadPath,
-                JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            const string py = """
+                              import json
+                              import sys
 
-            string py = """
-                        import json
-                        import re
-                        import sys
+                              payload_path = sys.argv[1]
+                              with open(payload_path, "r", encoding="utf-8") as f:
+                                  payload = json.load(f)
 
-                        payload_path = sys.argv[1]
+                              output_path = payload["output_path"]
 
-                        def write_result(obj, output_path):
-                            with open(output_path, "w", encoding="utf-8") as f:
-                                json.dump(obj, f, indent=2)
+                              try:
+                                  import gguf
+                                  reader = gguf.GGUFReader(payload["gguf_path"])
+                                  tensor_names = [t.name for t in reader.tensors]
+                                  result = {"TensorNames": tensor_names}
+                              except Exception as e:
+                                  result = {"Error": str(e), "TensorNames": []}
 
-                        with open(payload_path, "r", encoding="utf-8") as f:
-                            payload = json.load(f)
-
-                        output_path = payload["output_path"]
-
-                        try:
-                            import gguf
-                        except Exception as e:
-                            write_result({"Error": f"Failed to import gguf: {e}"}, output_path)
-                            sys.exit(0)
-
-                        try:
-                            reader = gguf.GGUFReader(payload["gguf_path"])
-                        except Exception as e:
-                            write_result({"Error": f"Failed to read GGUF: {e}"}, output_path)
-                            sys.exit(0)
-
-                        tensor_names = [t.name for t in reader.tensors]
-
-                        resolved = []
-                        group_counts = {}
-                        unmatched = []
-                        duplicates = []
-                        seen = {}
-
-                        for req in payload["requests"]:
-                            group = req["GroupName"]
-                            scheme = req["SchemeName"]
-                            patterns = req["Patterns"]
-
-                            compiled = [re.compile(p) for p in patterns]
-                            matches = []
-
-                            for name in tensor_names:
-                                if any(r.fullmatch(name) for r in compiled):
-                                    matches.append(name)
-
-                            group_counts[group] = len(matches)
-
-                            if len(matches) == 0:
-                                unmatched.append(group)
-
-                            for name in matches:
-                                if name in seen and seen[name] != group:
-                                    duplicates.append(name)
-                                else:
-                                    seen[name] = group
-
-                                resolved.append({
-                                    "TensorName": name,
-                                    "SchemeName": scheme,
-                                    "GroupName": group
-                                })
-
-                        write_result({
-                            "Resolved": resolved,
-                            "GroupMatchCounts": group_counts,
-                            "UnmatchedGroups": unmatched,
-                            "DuplicateTensors": sorted(set(duplicates))
-                        }, output_path)
-                        """;
+                              with open(output_path, "w", encoding="utf-8") as f:
+                                  json.dump(result, f, indent=2)
+                              """;
 
             await File.WriteAllTextAsync(scriptPath, py);
             await _python.RunPythonScriptAsync(scriptPath, $"\"{payloadPath}\"");
 
-            if (!File.Exists(resultPath))
-                throw new InvalidOperationException("Tensor override resolution produced no result file.");
-
-            var result = JsonSerializer.Deserialize<TensorResolutionResult>(
-                await File.ReadAllTextAsync(resultPath));
-
+            var result = JsonSerializer.Deserialize<TensorNameReadResult>(await File.ReadAllTextAsync(resultPath));
             if (result == null)
-                throw new InvalidOperationException("Tensor override resolution returned null.");
-
+                throw new InvalidOperationException("Failed to parse GGUF tensor list result.");
             if (!string.IsNullOrWhiteSpace(result.Error))
-                throw new InvalidOperationException(result.Error);
+                throw new InvalidOperationException($"Failed to read GGUF tensor names: {result.Error}");
 
-            if (result.UnmatchedGroups.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    $"The following requested override groups matched zero tensors in the input GGUF: " +
-                    $"{string.Join(", ", result.UnmatchedGroups)}");
-            }
-
-            if (result.DuplicateTensors.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    $"A tensor matched more than one override group, which is ambiguous: " +
-                    $"{string.Join(", ", result.DuplicateTensors.Take(20))}");
-            }
-
-            return result.Resolved;
+            return result.TensorNames;
         }
         finally
         {
@@ -935,11 +1157,34 @@ public class QuantizationService
     // Internal DTOs
     // ----------------------------------------------------------------
 
+    private static readonly Regex TensorLogLineRegex = new(
+        @"\]\s+(?<tensor>[^\s]+)\s+-\s+\[[^\]]+\],\s+type\s*=\s*(?<type>[A-Za-z0-9_]+)(?:.*?converting to\s+(?<convert>[A-Za-z0-9_]+))?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static string NormalizeQuantName(string value)
+    {
+        var normalized = value.Trim().ToUpperInvariant();
+        return normalized.Replace("Q5_K", "Q5_K")
+            .Replace("Q6_K", "Q6_K")
+            .Replace("Q8_0", "Q8_0")
+            .Replace("IQ4_XS", "IQ4_XS")
+            .Replace("IQ4_NL", "IQ4_NL")
+            .Replace("BF16", "BF16")
+            .Replace("F16", "F16")
+            .Replace("F32", "F32");
+    }
+
+    private sealed class QuantizationExecutionReport
+    {
+        public string LogPath { get; set; } = string.Empty;
+        public List<ConcreteTensorOverride> ResolvedOverrides { get; set; } = new();
+    }
+
     private sealed class RequestedTensorOverride
     {
         public string GroupName { get; set; } = string.Empty;
+        public string TensorName { get; set; } = string.Empty;
         public string SchemeName { get; set; } = string.Empty;
-        public List<string> Patterns { get; set; } = new();
     }
 
     private sealed class ConcreteTensorOverride
@@ -949,13 +1194,16 @@ public class QuantizationService
         public string GroupName { get; set; } = string.Empty;
     }
 
-    private sealed class TensorResolutionResult
+    private sealed class TensorGroupingResult
+    {
+        public TensorGroup? PrimaryGroup { get; set; }
+        public List<string> MatchedGroups { get; set; } = new();
+    }
+
+    private sealed class TensorNameReadResult
     {
         public string? Error { get; set; }
-        public List<ConcreteTensorOverride> Resolved { get; set; } = new();
-        public Dictionary<string, int> GroupMatchCounts { get; set; } = new();
-        public List<string> UnmatchedGroups { get; set; } = new();
-        public List<string> DuplicateTensors { get; set; } = new();
+        public List<string> TensorNames { get; set; } = new();
     }
 
     // ----------------------------------------------------------------

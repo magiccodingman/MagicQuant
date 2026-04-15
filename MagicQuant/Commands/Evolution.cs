@@ -50,6 +50,8 @@ public class Evolution : ICommand
 
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
+        Cache.ForceRelearnBaselineTensorMappings = args.Any(a =>
+            string.Equals(a.Name, "relearn-baseline-mappings", StringComparison.OrdinalIgnoreCase));
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
         if (!Directory.Exists(Cache.ModelMagicQuantDirectory))
@@ -71,6 +73,12 @@ public class Evolution : ICommand
         var pyManager = new PythonManager(Cache.MagicQuantDirectory);
         var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
+
+        if (Cache.ForceRelearnBaselineTensorMappings)
+        {
+            await quantizationService.ClearLearnedBaselineTensorMappingsAsync();
+            AnsiConsole.MarkupLine("[yellow]Forced relearn is ON: pure baseline samples will be rebuilt and relearned.[/]");
+        }
 
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
         var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
@@ -239,6 +247,7 @@ public class Evolution : ICommand
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Required)");
+        AnsiConsole.MarkupLine("  [green]--relearn-baseline-mappings[/]    Delete and relearn baseline tensor mappings (Optional)");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Example:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");

@@ -58,6 +58,48 @@ public class MagicQuantContext : DbContext
 
         // 🔥 Apply migrations automatically
         Database.Migrate();
+        EnsureBaselineQuantDefinitions();
+    }
+
+    private void EnsureBaselineQuantDefinitions()
+    {
+        var expected = BaselineQuants.All
+            .Select(x => new BaselineQuantDefinition
+            {
+                BaselineQuantId = x.UniqueId,
+                BaselineName = x.Names[0],
+                DefaultTensorSchemeId = x.DefaultTensorScheme!.UniqueId,
+                DefaultTensorSchemeName = x.DefaultTensorScheme.Names[0]
+            })
+            .OrderBy(x => x.BaselineQuantId)
+            .ToList();
+
+        var current = BaselineQuantDefinitions
+            .AsNoTracking()
+            .OrderBy(x => x.BaselineQuantId)
+            .ToList();
+
+        if (current.Count == 0)
+        {
+            BaselineQuantDefinitions.AddRange(expected);
+            SaveChanges();
+            return;
+        }
+
+        var mismatch = current.Count != expected.Count ||
+                       current.Zip(expected, (a, b) =>
+                           a.BaselineQuantId == b.BaselineQuantId &&
+                           a.DefaultTensorSchemeId == b.DefaultTensorSchemeId &&
+                           string.Equals(a.BaselineName, b.BaselineName, StringComparison.Ordinal) &&
+                           string.Equals(a.DefaultTensorSchemeName, b.DefaultTensorSchemeName, StringComparison.Ordinal))
+                           .Any(equal => !equal);
+
+        if (mismatch)
+        {
+            throw new InvalidOperationException(
+                "BaselineQuantDefinitions table is out of sync with code-defined BaselineQuants/DefaultTensorScheme mappings. " +
+                "Run migrations and regenerate the DB definitions.");
+        }
     }
 
     private static bool IsDesignTime()
@@ -76,6 +118,8 @@ public class MagicQuantContext : DbContext
     public DbSet<TensorCombo> TensorCombos { get; set; }
     public DbSet<QuantizationRun> QuantizationRuns { get; set; }
     public DbSet<BenchmarkRun> BenchmarkRuns { get; set; }
+    public DbSet<LearnedBaselineTensorQuant> LearnedBaselineTensorQuants { get; set; }
+    public DbSet<BaselineQuantDefinition> BaselineQuantDefinitions { get; set; }
 
     // --------------------------------------------------------
     // Configuration

@@ -59,4 +59,6 @@ public class Cache
     public static List<TensorGroup> UnusedTensorGroups = new List<TensorGroup>();
     
     public static string CurrentModelId { get; set; }
+
+    public static bool ForceRelearnBaselineTensorMappings { get; set; }
 }

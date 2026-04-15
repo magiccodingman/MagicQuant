@@ -6,6 +6,7 @@ using MagicQuant.Helpers;
 using MagicQuant.Models;
 using Spectre.Console;
 using System.Collections.Immutable;
+using MQ.DB.Models;
 
 #if DEBUG
 // If we are in Debug and no arguments were passed, default to "evolution"
@@ -51,6 +52,10 @@ List<CliArg> parsedArgs = CliHelpers.ParseArguments(remainingArgsString);
 
 try
 {
+    // strict startup integrity checks
+    TensorWeightScheme.ValidateSmallestConfiguration();
+    BaselineQuants.ValidateIntegrityOrThrow();
+
     // 6. Mandatory Validation for non-init commands
     if (!commandInput.Equals("initialize-llama-cpp", StringComparison.OrdinalIgnoreCase))
     {
