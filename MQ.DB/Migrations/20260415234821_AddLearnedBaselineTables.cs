@@ -1,11 +1,13 @@
-using Microsoft.EntityFrameworkCore.Migrations;
+﻿using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace MQ.DB.Migrations
 {
+    /// <inheritdoc />
     public partial class AddLearnedBaselineTables : Migration
     {
+        /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
@@ -88,13 +90,14 @@ namespace MQ.DB.Migrations
                 unique: true);
         }
 
+        /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "LearnedBaselineTensorQuants");
+                name: "BaselineQuantDefinitions");
 
             migrationBuilder.DropTable(
-                name: "BaselineQuantDefinitions");
+                name: "LearnedBaselineTensorQuants");
         }
     }
 }
