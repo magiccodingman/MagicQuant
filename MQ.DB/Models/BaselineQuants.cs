@@ -16,8 +16,6 @@ public record BaselineQuants(
     public static readonly BaselineQuants Q5_K = new(2, false, ["Q5_K"], TensorWeightScheme.Q5_K);
     public static readonly BaselineQuants Q4_K_M = new(3, false, ["Q4_K_M"], TensorWeightScheme.Q4_K);
 
-    public static readonly BaselineQuants MXFP4 = new(4, false, ["MXFP4"], TensorWeightScheme.MXFP4);
-
     public static readonly BaselineQuants IQ4_NL = new(5, false, ["IQ4_NL"], TensorWeightScheme.IQ4_NL);
 
     public static readonly BaselineQuants IQ4_XS = new(
@@ -47,7 +45,6 @@ public record BaselineQuants(
         Q6_K,
         Q5_K,
         Q4_K_M,
-        MXFP4,
         IQ4_NL,
         IQ4_XS,
         //IQ3_M,
@@ -93,6 +90,9 @@ public record BaselineQuants(
         var schemesMissingBaseline = TensorWeightScheme.All
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            // Some schemes can be experimental and intentionally not promoted to baseline.
+            // Hard-enforce only for the established shipped baseline set.
+            .Where(x => x.UniqueId != TensorWeightScheme.MXFP4.UniqueId)
             .Where(x => !All.Any(b => b.DefaultTensorScheme!.UniqueId == x.UniqueId))
             .Select(x => x.Names[0])
             .ToList();

@@ -76,7 +76,7 @@ public class Evolution : ICommand
 
         if (Cache.ForceRelearnBaselineTensorMappings)
         {
-            await quantizationService.ClearLearnedBaselineTensorMappingsAsync();
+            await quantizationService.InvalidateBaselineArtifactsAsync();
             AnsiConsole.MarkupLine("[yellow]Forced relearn is ON: pure baseline samples will be rebuilt and relearned.[/]");
         }
 
