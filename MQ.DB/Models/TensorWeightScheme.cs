@@ -47,13 +47,13 @@ public sealed class TensorWeightScheme
 
     public static void ResetAllRuntimeBans()
     {
-        foreach (var scheme in All)
+        foreach (var scheme in All_Allowed_Hybrid_Quants)
             scheme.ResetRuntimeBans();
     }
 
     public static void ValidateSmallestConfiguration()
     {
-        var nonImatrixSmallest = All
+        var nonImatrixSmallest = All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != NULL.UniqueId)
             .Where(x => x.UniqueId != BF16_F16.UniqueId)
             .Where(x => !x.RequiresImatrix)
@@ -75,7 +75,7 @@ public sealed class TensorWeightScheme
     {
         ValidateSmallestConfiguration();
 
-        return All
+        return All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != NULL.UniqueId)
             .Where(x => x.UniqueId != BF16_F16.UniqueId)
             .Where(x => !x.RequiresImatrix)
@@ -221,7 +221,7 @@ public sealed class TensorWeightScheme
         );
     */
  
- public static readonly ImmutableArray<TensorWeightScheme> All =
+ public static readonly ImmutableArray<TensorWeightScheme> All_Allowed_Hybrid_Quants =
  [
      NULL,
      BF16_F16,

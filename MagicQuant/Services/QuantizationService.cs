@@ -26,8 +26,8 @@ public sealed class SampleProcessingRecord
     public RequiredSamplePlan Plan { get; set; } = default!;
     public SampleProcessState State { get; set; }
     public string ModelName { get; set; } = string.Empty;
-    public uint? TensorComboId { get; set; }
-    public uint? BenchmarkId { get; set; }
+    public Guid? TensorComboId { get; set; }
+    public Guid? BenchmarkId { get; set; }
     public string? Error { get; set; }
 }
 
@@ -258,7 +258,7 @@ public class QuantizationService
         };
     }
 
-    private async Task<(uint? TensorComboId, uint? BenchmarkId)> ResolveBenchmarkIdentityAsync(
+    private async Task<(Guid? TensorComboId, Guid? BenchmarkId)> ResolveBenchmarkIdentityAsync(
         HybridQuant quant,
         CancellationToken ct)
     {
@@ -292,7 +292,7 @@ public class QuantizationService
             .Select(x => x.Id)
             .FirstOrDefaultAsync(ct);
 
-        if (comboId == 0)
+        if (comboId == Guid.Empty)
             return (null, null);
 
         var benchmarkId = await db.AiBenchmarks
@@ -301,7 +301,7 @@ public class QuantizationService
             .Select(x => x.Id)
             .FirstOrDefaultAsync(ct);
 
-        return (comboId, benchmarkId == 0 ? null : benchmarkId);
+        return (comboId, benchmarkId == Guid.Empty ? null : benchmarkId);
     }
 
     public async Task<SampleProcessState> ProcessHybridQuantAsync(
@@ -479,7 +479,7 @@ public class QuantizationService
             .Select(x => x.benchmark.Id)
             .FirstOrDefaultAsync(ct);
 
-        if (bench == 0)
+        if (bench == Guid.Empty)
             return false;
 
         // Require at least one category row too, so a half-baked parent row doesn't count as complete.
@@ -544,9 +544,9 @@ public class QuantizationService
             await db.SaveChangesAsync(ct);
         }
 
-        uint? aiBenchmarkId = await db.AiBenchmarks
+        Guid? aiBenchmarkId = await db.AiBenchmarks
             .Where(x => x.AiModelHashId == aiModelHash.Id && x.TensorComboId == tensorCombo.Id)
-            .Select(x => (uint?)x.Id)
+            .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
         var row = new QuantizationRun
@@ -921,7 +921,7 @@ public class QuantizationService
         var benchmarkId = await db.AiBenchmarks
             .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
-            .Select(x => (uint?)x.Id)
+            .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
         if (!benchmarkId.HasValue)
@@ -1036,7 +1036,7 @@ public class QuantizationService
         var benchmarkId = await db.AiBenchmarks
             .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
-            .Select(x => (uint?)x.Id)
+            .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
         if (!benchmarkId.HasValue)
@@ -1331,7 +1331,7 @@ public class QuantizationService
         if (baseQuant.Names.IsDefaultOrEmpty)
             return null;
 
-        return TensorWeightScheme.All.FirstOrDefault(s =>
+        return TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(s =>
             !s.Names.IsDefaultOrEmpty &&
             s.Names.Any(sn => baseQuant.Names.Contains(sn, StringComparer.OrdinalIgnoreCase)));
     }

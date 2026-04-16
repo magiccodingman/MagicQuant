@@ -11,16 +11,16 @@ public class BenchmarkRun : ISQLiteEntity<BenchmarkRun>
     public uint AiModelHashId { get; set; }
     public AiModelHash AiModelHash { get; set; } = default!;
 
-    public uint TensorComboId { get; set; }
+    public Guid TensorComboId { get; set; }
     public TensorCombo TensorCombo { get; set; } = default!;
 
-    public uint AiBenchmarkId { get; set; }
+    public Guid AiBenchmarkId { get; set; }
     public AiBenchmark AiBenchmark { get; set; } = default!;
 
     /// <summary>
     /// Nullable until the CategoryBenchmark row is created/persisted.
     /// </summary>
-    public uint? CategoryBenchmarkId { get; set; }
+    public Guid? CategoryBenchmarkId { get; set; }
     public CategoryBenchmark? CategoryBenchmark { get; set; }
 
     /// <summary>

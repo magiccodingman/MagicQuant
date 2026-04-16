@@ -24,7 +24,7 @@ public class TensorCombo : ISQLiteEntity<TensorCombo>
         MoeRouter = c.MoeRouter;
     }
 
-    public uint Id { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
     public readonly byte BaseQuant;
     public readonly byte Embeddings;
     public readonly byte LmHead;
@@ -39,6 +39,9 @@ public class TensorCombo : ISQLiteEntity<TensorCombo>
     public void Configure(EntityTypeBuilder<TensorCombo> builder)
     {
         builder.HasKey(x => x.Id);
+        
+        builder.Property(x => x.Id)
+            .ValueGeneratedNever();
         
         builder.HasIndex(x => new 
         { 

@@ -37,7 +37,7 @@ public class ModelCompatibilityService
         {
             var groupDefinitions = TReg.All.ToDictionary(g => g.Name, g => g.Tensors);
 
-            var blockRequirements = TensorWeightScheme.All
+            var blockRequirements = TensorWeightScheme.All_Allowed_Hybrid_Quants
                 .Where(s => s.BlockNeo.HasValue)
                 .ToDictionary(s => s.Names[0], s => s.BlockNeo!.Value);
 
@@ -97,7 +97,7 @@ public class ModelCompatibilityService
                 unusedCount++;
                 Cache.UnusedTensorGroups.Add(group);
 
-                foreach (var scheme in TensorWeightScheme.All)
+                foreach (var scheme in TensorWeightScheme.All_Allowed_Hybrid_Quants)
                 {
                     if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
                         continue;
@@ -110,7 +110,7 @@ public class ModelCompatibilityService
             foreach (var failure in result.Incompatible)
             {
                 var group = TReg.GetByName(failure.Group);
-                var scheme = TensorWeightScheme.All.FirstOrDefault(s =>
+                var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(s =>
                     s.Names.Any(n => n.Equals(failure.Scheme, StringComparison.OrdinalIgnoreCase)));
 
                 if (group == null || scheme == null)

@@ -6,9 +6,9 @@ namespace MQ.DB.Models.DbModels;
 
 public class LearnedBaselineTensorQuant : ISQLiteEntity<LearnedBaselineTensorQuant>
 {
-    public ulong Id { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
 
-    public uint AiBenchmarkId { get; set; }
+    public Guid AiBenchmarkId { get; set; }
     public AiBenchmark AiBenchmark { get; set; } = default!;
 
     public uint AiModelHashId { get; set; }

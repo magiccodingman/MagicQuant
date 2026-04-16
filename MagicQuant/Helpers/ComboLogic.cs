@@ -14,7 +14,7 @@ public static class ComboLogic
     {
         bool baseRequiresImatrix = baseQuant.RequiresImatrix;
 
-        var schemesForBase = TensorWeightScheme.All
+        var schemesForBase = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(s => baseRequiresImatrix || !s.RequiresImatrix)
             .ToImmutableArray();
 

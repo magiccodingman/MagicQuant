@@ -65,7 +65,7 @@ public static class SearchSpaceDebugPrinter
                     if (id == TensorWeightScheme.NULL.UniqueId)
                         return "NULL";
 
-                    var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
+                    var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(x => x.UniqueId == id);
                     return scheme?.Names[0] ?? $"Unknown({id})";
                 }).ToList();
 

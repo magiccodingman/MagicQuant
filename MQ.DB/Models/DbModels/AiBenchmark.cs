@@ -13,7 +13,7 @@ public enum BenchmarkCategory
 
 public class AiBenchmark : ISQLiteEntity<AiBenchmark>
 {
-    public uint Id { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
     /// n-N gpu layers
@@ -30,7 +30,7 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
     /// <summary>
     /// foreign key
     /// </summary>
-    public uint TensorComboId { get; set; }
+    public Guid TensorComboId { get; set; }
 
     public TensorCombo TensorCombo { get; set; } = default!;
 
@@ -46,6 +46,9 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
     public void Configure(EntityTypeBuilder<AiBenchmark> builder)
     {
         builder.HasKey(x => x.Id);
+        
+        builder.Property(x => x.Id)
+            .ValueGeneratedNever();
 
         builder.HasIndex(x => new { x.AiModelHashId, x.TensorComboId })
             .IsUnique();
@@ -69,12 +72,12 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
 
 public class CategoryBenchmark : ISQLiteEntity<CategoryBenchmark>
 {
-    public uint Id { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
     /// foreign key to AiBenchmark
     /// </summary>
-    public uint AiBenchmarkId { get; set; }
+    public Guid AiBenchmarkId { get; set; }
 
     public AiBenchmark AiBenchmark { get; set; } = default!;
 
@@ -90,6 +93,9 @@ public class CategoryBenchmark : ISQLiteEntity<CategoryBenchmark>
     public void Configure(EntityTypeBuilder<CategoryBenchmark> builder)
     {
         builder.HasKey(x => x.Id);
+        
+        builder.Property(x => x.Id)
+            .ValueGeneratedNever();
 
         builder.HasIndex(x => x.AiBenchmarkId);
 

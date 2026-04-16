@@ -80,14 +80,14 @@ public record BaselineQuants(
         if (duplicateDefaultSchemeIds.Count > 0)
         {
             var duplicateNames = duplicateDefaultSchemeIds
-                .Select(id => TensorWeightScheme.All.First(s => s.UniqueId == id).Names[0]);
+                .Select(id => TensorWeightScheme.All_Allowed_Hybrid_Quants.First(s => s.UniqueId == id).Names[0]);
 
             throw new InvalidOperationException(
                 "DefaultTensorScheme must be unique across BaselineQuants entries. Duplicates: " +
                 string.Join(", ", duplicateNames));
         }
 
-        var schemesMissingBaseline = TensorWeightScheme.All
+        var schemesMissingBaseline = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
             // Some schemes can be experimental and intentionally not promoted to baseline.

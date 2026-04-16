@@ -35,7 +35,7 @@ public static class RuntimeSearchSpace
 
     public static void BanAllExplicitTensorSchemesForGroup(TensorGroup group)
     {
-        foreach (var scheme in TensorWeightScheme.All.Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId && x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId))
+        foreach (var scheme in TensorWeightScheme.All_Allowed_Hybrid_Quants.Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId && x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId))
             BanSchemeForGroup(group, scheme);
     }
 
@@ -44,7 +44,7 @@ public static class RuntimeSearchSpace
         if (!ExplicitSchemeBansByGroup.TryGetValue(group.UniqueId, out var set))
             return Array.Empty<TensorWeightScheme>();
 
-        return TensorWeightScheme.All.Where(x => set.Contains(x.UniqueId)).OrderBy(x => x.UniqueId).ToList();
+        return TensorWeightScheme.All_Allowed_Hybrid_Quants.Where(x => set.Contains(x.UniqueId)).OrderBy(x => x.UniqueId).ToList();
     }
 
     public static bool IsSchemeRuntimeBannedForGroup(TensorGroup group, TensorWeightScheme scheme)
@@ -54,7 +54,7 @@ public static class RuntimeSearchSpace
 
     public static bool IsGroupExplicitQuantBanned(TensorGroup group)
     {
-        var explicitSchemes = TensorWeightScheme.All
+        var explicitSchemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
             .ToList();
