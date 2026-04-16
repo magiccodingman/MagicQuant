@@ -587,7 +587,7 @@ public class QuantizationService
         string benchPath = Path.Combine(_benchDir, typeStr);
         string logitsDir = Path.Combine(benchPath, "logits");
 
-        AnsiConsole.MarkupLine($"[bold yellow]Benchmarking Base {typeStr} (Saving Logits)...[/]");
+        AnsiConsole.MarkupLine($"[bold yellow]Benchmarking Base {Markup.Escape(typeStr)} (Saving Logits)...[/]");
 
         var baseModelQuant = new HybridQuant
         {
@@ -647,7 +647,7 @@ public class QuantizationService
 
             if (!File.Exists(outputPath) || !File.Exists(successFile))
             {
-                AnsiConsole.MarkupLine($"[bold cyan]Converting to {typeStr}...[/]");
+                AnsiConsole.MarkupLine($"[bold cyan]Converting to {Markup.Escape(typeStr)}...[/]");
 
                 await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
 
@@ -969,7 +969,7 @@ public class QuantizationService
             .ToList();
 
         AnsiConsole.MarkupLine(
-            $"[green]Native-source learned truth:[/] precision={sourcePrecision}, tensors={rows.Count}, unresolved={unresolved.Count}, ambiguous={ambiguous.Count}, dist=[{Markup.Escape(string.Join(", ", distribution))}]");
+            $"[green]Native-source learned truth:[/] precision={Markup.Escape(sourcePrecision)}, tensors={rows.Count}, unresolved={unresolved.Count}, ambiguous={ambiguous.Count}, dist={Markup.Escape($"[{string.Join(", ", distribution)}]")}");
     }
 
     private static bool IsLearnableBaselineRun(HybridQuant quant)
@@ -997,7 +997,7 @@ public class QuantizationService
         if (parsed.Count == 0 && ggufTruth.Count == 0)
         {
             AnsiConsole.MarkupLine(
-                $"[red]WARNING:[/] learned mapping parse returned no tensors from logs and GGUF for baseline [yellow]{quant.BaseQuant.Names[0]}[/].");
+                $"[red]WARNING:[/] learned mapping parse returned no tensors from logs and GGUF for baseline [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
             return;
         }
 
@@ -1010,15 +1010,15 @@ public class QuantizationService
         if (ambiguous.Count > 0)
         {
             AnsiConsole.MarkupLine(
-                $"[red]WARNING:[/] {ambiguous.Count} tensor(s) matched multiple groups while learning baseline {quant.BaseQuant.Names[0]}.");
-            AnsiConsole.MarkupLine($"[grey]Example: {Markup.Escape(ambiguous[0].Key)} => {string.Join(", ", ambiguous[0].Value.MatchedGroups)}[/]");
+                $"[red]WARNING:[/] {ambiguous.Count} tensor(s) matched multiple groups while learning baseline {Markup.Escape(quant.BaseQuant.Names[0])}.");
+            AnsiConsole.MarkupLine($"[grey]Example: {Markup.Escape(ambiguous[0].Key)} => {Markup.Escape(string.Join(", ", ambiguous[0].Value.MatchedGroups))}[/]");
         }
 
         var unresolved = grouped.Where(x => x.Value.PrimaryGroup == null).Select(x => x.Key).ToList();
         if (unresolved.Count > 0)
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]WARNING:[/] {unresolved.Count} tensor(s) had no tensor-group match while learning baseline {quant.BaseQuant.Names[0]}.");
+                $"[yellow]WARNING:[/] {unresolved.Count} tensor(s) had no tensor-group match while learning baseline {Markup.Escape(quant.BaseQuant.Names[0])}.");
         }
 
         await using var db = new MagicQuantContext();
@@ -1083,7 +1083,7 @@ public class QuantizationService
             unresolved: unresolved);
 
         AnsiConsole.MarkupLine(
-            $"[green]Learned baseline tensor mapping persisted:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{quant.BaseQuant.Names[0]}[/].");
+            $"[green]Learned baseline tensor mapping persisted:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
     }
 
     private Dictionary<string, string> ParseQuantizeLogForTensorTypes(string logPath)
@@ -1174,7 +1174,7 @@ public class QuantizationService
         if (softMismatches.Count > 0)
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]WARNING:[/] Baseline [yellow]{baselineName}[/] had {softMismatches.Count} GGUF/log mismatches; GGUF truth was used.");
+                $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {softMismatches.Count} GGUF/log mismatches; GGUF truth was used.");
             AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", softMismatches.Take(6)))}[/]");
         }
 
@@ -1254,8 +1254,16 @@ public class QuantizationService
                 ? "none"
                 : string.Join(", ", sourceCounts.Select(kv => $"{kv.Key}:{kv.Value}"));
 
+            var label = $"[learn:{baselineName}:{group.Name}]";
+
             AnsiConsole.MarkupLine(
-                $"[grey][learn:{baselineName}:{group.Name}] expected={expected.Count} learned={learned.Count} unmatched={unmatched.Count} ambiguous={ambiguous.Count(x => x.Value.MatchedGroups.Contains(group.Name))} dist=[{Markup.Escape(distShort)}] src=[{Markup.Escape(srcShort)}][/]");
+                $"[grey]{Markup.Escape(label)} " +
+                $"expected={expected.Count} " +
+                $"learned={learned.Count} " +
+                $"unmatched={unmatched.Count} " +
+                $"ambiguous={ambiguous.Count(x => x.Value.MatchedGroups.Contains(group.Name))} " +
+                $"dist={Markup.Escape($"[{distShort}]")} " +
+                $"src={Markup.Escape($"[{srcShort}]")}[/]");
 
             if (expected.Count > 0 && unmatched.Count > 0)
             {

@@ -48,22 +48,38 @@ public static class Config
     
     public static readonly List<string> MoeIndicatorTensors = new()
     {
+        // Older / generic expert patterns you already had
         "blk.*.ffn_up_expert_0.weight",
         "blk.*.ffn_gate_expert_0.weight",
         "blk.*.ffn_down_expert_0.weight",
 
-        // Qwen3-MOE / Unsloth / modern MOE
+        // Older modern-MoE / GGUF-ish patterns
         "blk.*.ffn_up_exps.weight",
         "blk.*.ffn_gate_exps.weight",
         "blk.*.ffn_down_exps.weight",
         "blk.*.ffn_gate_inp.weight",
 
-        // router variants
+        // Generic router variants
         "router.weight",
         "gate.weight",
         "blk.*.router.*",
         "blk.*.gate_proj.*",
         "blk.*.gate_inp.*",
+
+        // Qwen3.5 native HF MoE
+        "model.language_model.layers.*.mlp.experts.gate_up_proj",
+        "model.language_model.layers.*.mlp.experts.down_proj",
+        "model.language_model.layers.*.mlp.gate.weight",
+        "model.language_model.layers.*.mlp.shared_expert.gate_proj.weight",
+        "model.language_model.layers.*.mlp.shared_expert.up_proj.weight",
+        "model.language_model.layers.*.mlp.shared_expert.down_proj.weight",
+
+        // Gemma 4 MoE
+        "model.language_model.layers.*.experts.gate_up_proj",
+        "model.language_model.layers.*.experts.down_proj",
+        "model.language_model.layers.*.router.proj.weight",
+        "model.language_model.layers.*.router.per_expert_scale",
+        "model.language_model.layers.*.router.scale",
     };
 
 
