@@ -91,14 +91,22 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine("[yellow]Forced relearn is ON:[/] pure baseline samples will be rebuilt and relearned.");
         }
 
-        var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
-        var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
         string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
+        var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
-        await benchmarkService.EnsureExecutionPlanAsync(
-            q8ModelGgufPath,
-            quantizationKey: q8QuantizationKey,
-            forceRediscovery: Cache.ForceRefreshHardwareProbe);
+        bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
+                                   await benchmarkService.TryInitializeExecutionPlanFromCacheAsync(
+                                       quantizationKey: q8QuantizationKey);
+
+        if (!loadedPlanFromCache)
+        {
+            var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
+            await benchmarkService.EnsureExecutionPlanAsync(
+                q8ModelGgufPath,
+                quantizationKey: q8QuantizationKey,
+                forceRediscovery: Cache.ForceRefreshHardwareProbe);
+        }
+
         await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
 
         var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();

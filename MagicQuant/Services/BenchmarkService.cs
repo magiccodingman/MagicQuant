@@ -137,6 +137,37 @@ public class BenchmarkService
         }
     }
 
+    public async Task<bool> TryInitializeExecutionPlanFromCacheAsync(
+        int discoveryTokenTarget = 8192,
+        string quantizationKey = "Q8_0",
+        string? preferredPlanModelPath = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(quantizationKey))
+            throw new ArgumentException("Quantization key was null or empty.", nameof(quantizationKey));
+
+        string normalizedQuantizationKey = quantizationKey.Trim().ToUpperInvariant();
+        string planModelPath = string.IsNullOrWhiteSpace(preferredPlanModelPath)
+            ? $"cached://{normalizedQuantizationKey}"
+            : Path.GetFullPath(preferredPlanModelPath);
+
+        var cacheKey = BuildExecutionPlanCacheKey(planModelPath, discoveryTokenTarget, normalizedQuantizationKey);
+        var plan = await TryLoadCachedExecutionPlanAsync(cacheKey, ct);
+        if (plan == null)
+            return false;
+
+        lock (SlotSync)
+        {
+            _currentPlan = plan;
+            _currentPlanQuantizationKey = normalizedQuantizationKey;
+            _availableSlots = new Queue<BenchmarkSlot>(plan.Slots);
+            _slotSemaphore = new SemaphoreSlim(plan.Slots.Count, plan.Slots.Count);
+        }
+
+        AnsiConsole.MarkupLine("[green]Loaded benchmark execution plan from SQLite cache (no Q8 rebuild needed).[/]");
+        return true;
+    }
+
     public async Task ClampStaticNglWithBaseModelAsync(
         string baseModelPath,
         int discoveryTokenTarget = 8192,
@@ -422,21 +453,11 @@ public class BenchmarkService
     }
 
     private static ExecutionPlanCacheKey BuildExecutionPlanCacheKey(
-        string normalizedModelPath,
+        string planModelPath,
         int discoveryTokenTarget,
         string quantizationKey)
     {
-        string quantizedModelFingerprint;
-        if (File.Exists(normalizedModelPath))
-        {
-            var info = new FileInfo(normalizedModelPath);
-            quantizedModelFingerprint =
-                $"{normalizedModelPath}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
-        }
-        else
-        {
-            quantizedModelFingerprint = normalizedModelPath;
-        }
+        string quantizedModelFingerprint = BuildQuantizedModelFingerprint(quantizationKey);
 
         var sys = Cache.SysInfo;
         string hardwareFingerprint = sys == null
@@ -453,7 +474,15 @@ public class BenchmarkService
             quantizedModelFingerprint,
             quantizationKey,
             discoveryTokenTarget,
-            normalizedModelPath);
+            planModelPath);
+    }
+
+    private static string BuildQuantizedModelFingerprint(string quantizationKey)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            throw new InvalidOperationException("Cache.CurrentModelId is not set.");
+
+        return $"model:{Cache.CurrentModelId}|quant:{quantizationKey}";
     }
 
     private static async Task<uint> GetOrCreateAiModelHashIdAsync(MagicQuantContext db, CancellationToken ct)
