@@ -42,6 +42,7 @@ public class BenchmarkService
     private static readonly object SlotSync = new();
 
     private static BenchmarkExecutionPlan? _currentPlan;
+    private static string _currentPlanQuantizationKey = "Q8_0";
     private static Queue<BenchmarkSlot> _availableSlots = new();
     private static SemaphoreSlim? _slotSemaphore;
 
@@ -63,16 +64,21 @@ public class BenchmarkService
     public async Task EnsureExecutionPlanAsync(
         string q8ModelPath,
         int discoveryTokenTarget = 8192,
+        string quantizationKey = "Q8_0",
         bool forceRediscovery = false,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(q8ModelPath))
             throw new ArgumentException("Q8 model path was null or empty.", nameof(q8ModelPath));
+        if (string.IsNullOrWhiteSpace(quantizationKey))
+            throw new ArgumentException("Quantization key was null or empty.", nameof(quantizationKey));
 
         string normalizedPath = Path.GetFullPath(q8ModelPath);
+        string normalizedQuantizationKey = quantizationKey.Trim().ToUpperInvariant();
 
         if (!forceRediscovery &&
             _currentPlan != null &&
+            string.Equals(_currentPlanQuantizationKey, normalizedQuantizationKey, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(_currentPlan.PlanModelPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
         {
             return;
@@ -83,12 +89,13 @@ public class BenchmarkService
         {
             if (!forceRediscovery &&
                 _currentPlan != null &&
+                string.Equals(_currentPlanQuantizationKey, normalizedQuantizationKey, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(_currentPlan.PlanModelPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
 
-            var cacheKey = BuildExecutionPlanCacheKey(normalizedPath, discoveryTokenTarget);
+            var cacheKey = BuildExecutionPlanCacheKey(normalizedPath, discoveryTokenTarget, normalizedQuantizationKey);
 
             BenchmarkExecutionPlan? plan = null;
             if (!forceRediscovery)
@@ -107,6 +114,7 @@ public class BenchmarkService
             lock (SlotSync)
             {
                 _currentPlan = plan;
+                _currentPlanQuantizationKey = normalizedQuantizationKey;
                 _availableSlots = new Queue<BenchmarkSlot>(plan.Slots);
                 _slotSemaphore = new SemaphoreSlim(plan.Slots.Count, plan.Slots.Count);
             }
@@ -116,6 +124,7 @@ public class BenchmarkService
             AnsiConsole.MarkupLine($"[green]Uses GPU:[/] [cyan]{plan.UsesGpu}[/]");
             AnsiConsole.MarkupLine($"[green]GPU group size:[/] [cyan]{plan.GroupSize}[/]");
             AnsiConsole.MarkupLine($"[green]Parallel benchmark slots:[/] [cyan]{plan.Slots.Count}[/]");
+            AnsiConsole.MarkupLine($"[green]Quantization key:[/] [cyan]{Markup.Escape(normalizedQuantizationKey)}[/]");
 
             foreach (var slot in plan.Slots)
             {
@@ -206,7 +215,10 @@ public class BenchmarkService
                     _slotSemaphore = new SemaphoreSlim(cpuPlan.Slots.Count, cpuPlan.Slots.Count);
                 }
 
-                var cacheKeyCpu = BuildExecutionPlanCacheKey(_currentPlan.PlanModelPath, discoveryTokenTarget);
+                var cacheKeyCpu = BuildExecutionPlanCacheKey(
+                    _currentPlan.PlanModelPath,
+                    discoveryTokenTarget,
+                    _currentPlanQuantizationKey);
                 await UpsertCachedExecutionPlanAsync(cacheKeyCpu, _currentPlan, ct);
 
                 return;
@@ -229,7 +241,10 @@ public class BenchmarkService
                 }
             }
 
-            var cacheKey = BuildExecutionPlanCacheKey(_currentPlan.PlanModelPath, discoveryTokenTarget);
+            var cacheKey = BuildExecutionPlanCacheKey(
+                _currentPlan.PlanModelPath,
+                discoveryTokenTarget,
+                _currentPlanQuantizationKey);
             await UpsertCachedExecutionPlanAsync(cacheKey, _currentPlan, ct);
 
             AnsiConsole.MarkupLine($"[green]Base-model clamped static ngl:[/] [cyan]{chosen.Value}[/]");
@@ -406,7 +421,10 @@ public class BenchmarkService
         await db.SaveChangesAsync(ct);
     }
 
-    private static ExecutionPlanCacheKey BuildExecutionPlanCacheKey(string normalizedModelPath, int discoveryTokenTarget)
+    private static ExecutionPlanCacheKey BuildExecutionPlanCacheKey(
+        string normalizedModelPath,
+        int discoveryTokenTarget,
+        string quantizationKey)
     {
         string quantizedModelFingerprint;
         if (File.Exists(normalizedModelPath))
@@ -433,7 +451,7 @@ public class BenchmarkService
         return new ExecutionPlanCacheKey(
             hardwareFingerprint,
             quantizedModelFingerprint,
-            quantizationKey: "Q8_0",
+            quantizationKey,
             discoveryTokenTarget,
             normalizedModelPath);
     }

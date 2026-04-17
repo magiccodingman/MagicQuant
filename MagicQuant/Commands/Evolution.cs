@@ -93,9 +93,11 @@ public class Evolution : ICommand
 
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
         var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
+        string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
 
         await benchmarkService.EnsureExecutionPlanAsync(
             q8ModelGgufPath,
+            quantizationKey: q8QuantizationKey,
             forceRediscovery: Cache.ForceRefreshHardwareProbe);
         await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
 
