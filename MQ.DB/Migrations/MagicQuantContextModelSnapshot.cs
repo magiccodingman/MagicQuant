@@ -19,9 +19,8 @@ namespace MQ.DB.Migrations
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.AiBenchmark", b =>
                 {
-                    b.Property<uint>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
 
                     b.Property<uint>("AiModelHashId")
                         .HasColumnType("INTEGER");
@@ -32,8 +31,8 @@ namespace MQ.DB.Migrations
                     b.Property<ulong>("SizeBytes")
                         .HasColumnType("INTEGER");
 
-                    b.Property<uint>("TensorComboId")
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("TensorComboId")
+                        .HasColumnType("TEXT");
 
                     b.Property<double>("TokensPerSecond")
                         .HasColumnType("REAL");
@@ -65,13 +64,45 @@ namespace MQ.DB.Migrations
                     b.ToTable("AiModelHashes");
                 });
 
+            modelBuilder.Entity("MQ.DB.Models.DbModels.BaselineQuantDefinition", b =>
+                {
+                    b.Property<byte>("BaselineQuantId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("BaselineName")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte>("DefaultTensorSchemeId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("DefaultTensorSchemeName")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("BaselineQuantId");
+
+                    b.HasIndex("BaselineName")
+                        .IsUnique();
+
+                    b.HasIndex("DefaultTensorSchemeId")
+                        .IsUnique();
+
+                    b.HasIndex("DefaultTensorSchemeName")
+                        .IsUnique();
+
+                    b.ToTable("BaselineQuantDefinitions");
+                });
+
             modelBuilder.Entity("MQ.DB.Models.DbModels.BenchmarkRun", b =>
                 {
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
-                    b.Property<uint>("AiBenchmarkId")
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("AiBenchmarkId")
+                        .HasColumnType("TEXT");
 
                     b.Property<uint>("AiModelHashId")
                         .HasColumnType("INTEGER");
@@ -79,8 +110,8 @@ namespace MQ.DB.Migrations
                     b.Property<byte>("Category")
                         .HasColumnType("INTEGER");
 
-                    b.Property<uint?>("CategoryBenchmarkId")
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid?>("CategoryBenchmarkId")
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTime>("CompletedUtc")
                         .HasColumnType("TEXT");
@@ -98,8 +129,8 @@ namespace MQ.DB.Migrations
                     b.Property<bool>("Succeeded")
                         .HasColumnType("INTEGER");
 
-                    b.Property<uint>("TensorComboId")
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("TensorComboId")
+                        .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 
@@ -120,12 +151,11 @@ namespace MQ.DB.Migrations
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.CategoryBenchmark", b =>
                 {
-                    b.Property<uint>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
 
-                    b.Property<uint>("AiBenchmarkId")
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("AiBenchmarkId")
+                        .HasColumnType("TEXT");
 
                     b.Property<byte>("Category")
                         .HasColumnType("INTEGER");
@@ -146,13 +176,56 @@ namespace MQ.DB.Migrations
                     b.ToTable("CategoryBenchmark");
                 });
 
+            modelBuilder.Entity("MQ.DB.Models.DbModels.LearnedBaselineTensorQuant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("AiBenchmarkId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<uint>("AiModelHashId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("BaselineQuantId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FinalQuantType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte>("TensorGroupId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("TensorName")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte>("TensorWeightSchemeId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AiBenchmarkId");
+
+                    b.HasIndex("AiModelHashId", "BaselineQuantId", "TensorWeightSchemeId", "TensorGroupId");
+
+                    b.HasIndex("AiModelHashId", "BaselineQuantId", "TensorWeightSchemeId", "TensorName")
+                        .IsUnique();
+
+                    b.ToTable("LearnedBaselineTensorQuants");
+                });
+
             modelBuilder.Entity("MQ.DB.Models.DbModels.QuantizationRun", b =>
                 {
                     b.Property<Guid>("Id")
                         .HasColumnType("TEXT");
 
-                    b.Property<uint?>("AiBenchmarkId")
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid?>("AiBenchmarkId")
+                        .HasColumnType("TEXT");
 
                     b.Property<uint>("AiModelHashId")
                         .HasColumnType("INTEGER");
@@ -177,8 +250,8 @@ namespace MQ.DB.Migrations
                     b.Property<bool>("Succeeded")
                         .HasColumnType("INTEGER");
 
-                    b.Property<uint>("TensorComboId")
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("TensorComboId")
+                        .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 
@@ -195,9 +268,8 @@ namespace MQ.DB.Migrations
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.TensorCombo", b =>
                 {
-                    b.Property<uint>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
 
                     b.Property<byte>("AttnKV")
                         .HasColumnType("INTEGER");
@@ -299,6 +371,25 @@ namespace MQ.DB.Migrations
                         .IsRequired();
 
                     b.Navigation("AiBenchmark");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.LearnedBaselineTensorQuant", b =>
+                {
+                    b.HasOne("MQ.DB.Models.DbModels.AiBenchmark", "AiBenchmark")
+                        .WithMany()
+                        .HasForeignKey("AiBenchmarkId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.AiModelHash", "AiModelHash")
+                        .WithMany()
+                        .HasForeignKey("AiModelHashId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AiBenchmark");
+
+                    b.Navigation("AiModelHash");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.QuantizationRun", b =>

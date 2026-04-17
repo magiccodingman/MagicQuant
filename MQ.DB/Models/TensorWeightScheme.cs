@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using MQ.DB;
 
 namespace MQ.DB.Models;
 
@@ -12,6 +13,7 @@ public sealed class TensorWeightScheme
     public List<TensorGroup> BannedGroups { get; }
     public ushort? BlockNeo { get; }
     public bool IsSmallest { get; }
+    public bool IsEligibleForBaseline { get; }
 
     private TensorWeightScheme(
         byte uniqueId,
@@ -19,13 +21,15 @@ public sealed class TensorWeightScheme
         ImmutableArray<string> names,
         IEnumerable<TensorGroup> bannedGroups,
         ushort? blockNeo,
-        bool isSmallest = false)
+        bool isSmallest = false,
+        bool isEligibleForBaseline = true)
     {
         UniqueId = uniqueId;
         RequiresImatrix = requiresImatrix;
         Names = names;
         BlockNeo = blockNeo;
         IsSmallest = isSmallest;
+        IsEligibleForBaseline = isEligibleForBaseline;
 
         var distinctGroups = bannedGroups
             .GroupBy(x => x.UniqueId)
@@ -53,9 +57,11 @@ public sealed class TensorWeightScheme
 
     public static void ValidateSmallestConfiguration()
     {
-        var nonImatrixSmallest = All
+        var nonImatrixSmallest = All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != NULL.UniqueId)
-            .Where(x => x.UniqueId != BF16_F16.UniqueId)
+            .Where(x => x.UniqueId != BF16.UniqueId)
+            .Where(x => x.UniqueId != F16.UniqueId)
+            .Where(x => x.UniqueId != F32.UniqueId)
             .Where(x => !x.RequiresImatrix)
             .Where(x => x.IsSmallest)
             .ToList();
@@ -75,20 +81,43 @@ public sealed class TensorWeightScheme
     {
         ValidateSmallestConfiguration();
 
-        return All
+        return All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != NULL.UniqueId)
-            .Where(x => x.UniqueId != BF16_F16.UniqueId)
+            .Where(x => x.UniqueId != BF16.UniqueId)
+            .Where(x => x.UniqueId != F16.UniqueId)
+            .Where(x => x.UniqueId != F32.UniqueId)
             .Where(x => !x.RequiresImatrix)
             .Single(x => x.IsSmallest);
     }
 
-    public static readonly TensorWeightScheme NULL =
-        new(0, false, ["NULL"], Array.Empty<TensorGroup>(), null);
+    public static TensorWeightScheme GetCurrentNativePrecisionScheme()
+    {
+        return (Cache.TorchType ?? Cache.MainTorchType.BF16) switch
+        {
+            Cache.MainTorchType.BF16 => BF16,
+            Cache.MainTorchType.F16 => F16,
+            Cache.MainTorchType.F32 => F32,
+            _ => BF16
+        };
+    }
 
-    public static readonly TensorWeightScheme BF16_F16 =
-        new(1, false, ["BF16", "F16", "F32"], Array.Empty<TensorGroup>(), null);
-    
-    public static readonly TensorWeightScheme MXFP4 =
+    public static bool IsNativePrecisionScheme(TensorWeightScheme scheme)
+    {
+        return scheme.UniqueId == BF16.UniqueId ||
+               scheme.UniqueId == F16.UniqueId ||
+               scheme.UniqueId == F32.UniqueId;
+    }
+
+    // Compatibility shim for any older code still referencing BF16_F16.
+    public static TensorWeightScheme BF16_F16 => GetCurrentNativePrecisionScheme();
+
+    public static readonly TensorWeightScheme NULL =
+        new(0, false, ["NULL"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+
+    public static readonly TensorWeightScheme BF16 =
+        new(1, false, ["BF16", "BFLOAT16"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+
+    /*public static readonly TensorWeightScheme MXFP4 =
         new(
             2,
             false,
@@ -99,7 +128,8 @@ public sealed class TensorWeightScheme
                 TReg.MoeRouter,
                 TReg.MoeExperts
             },
-            32);
+            32,
+            isEligibleForBaseline: false);*/
 
     public static readonly TensorWeightScheme Q8_0 =
         new(3, false, ["Q8_0"], Array.Empty<TensorGroup>(), null);
@@ -112,27 +142,11 @@ public sealed class TensorWeightScheme
 
     public static readonly TensorWeightScheme IQ4_XS =
         new(6, false, ["IQ4_XS"], new[] { TReg.MoeRouter }, 32, true);
-    
 
-    public static TensorWeightScheme IQ4_NL =
-        new(
-            7,
-            false,
-            ["IQ4_NL"],
-            new[] { TReg.MoeRouter },
-            32
-        );
-    
-    public static TensorWeightScheme Q4_K =
-        new(
-            14,
-            false,
-            ["Q4_K"],
-            new[] { TReg.MoeRouter },
-            32
-        );
+    public static readonly TensorWeightScheme IQ4_NL =
+        new(7, false, ["IQ4_NL"], new[] { TReg.MoeRouter }, 32);
 
-    /* public static TensorWeightScheme IQ3_S =
+    public static readonly TensorWeightScheme IQ3_S =
         new(
             8,
             true,
@@ -146,7 +160,7 @@ public sealed class TensorWeightScheme
             32
         );
 
-    public static TensorWeightScheme IQ3_XS =
+    public static readonly TensorWeightScheme IQ3_XS =
         new(
             9,
             true,
@@ -160,7 +174,7 @@ public sealed class TensorWeightScheme
             32
         );
 
-    public static TensorWeightScheme IQ3_XXS =
+    public static readonly TensorWeightScheme IQ3_XXS =
         new(
             10,
             true,
@@ -174,7 +188,7 @@ public sealed class TensorWeightScheme
             32
         );
 
-    public static TensorWeightScheme IQ2_S =
+    public static readonly TensorWeightScheme IQ2_S =
         new(
             11,
             true,
@@ -189,7 +203,7 @@ public sealed class TensorWeightScheme
             32
         );
 
-    public static TensorWeightScheme IQ2_XS =
+    public static readonly TensorWeightScheme IQ2_XS =
         new(
             12,
             true,
@@ -204,7 +218,7 @@ public sealed class TensorWeightScheme
             32
         );
 
-    public static TensorWeightScheme IQ2_XXS =
+    public static readonly TensorWeightScheme IQ2_XXS =
         new(
             13,
             true,
@@ -219,24 +233,56 @@ public sealed class TensorWeightScheme
             },
             32
         );
-    */
- 
- public static readonly ImmutableArray<TensorWeightScheme> All =
- [
-     NULL,
-     BF16_F16,
-     MXFP4,
-     Q8_0,
-     Q6_K,
-     Q5_K,
-     IQ4_XS,
-     IQ4_NL,
-     Q4_K,
-     // IQ3_S,
-     // IQ3_XS,
-     // IQ3_XXS,
-     // IQ2_S,
-     // IQ2_XS,
-     // IQ2_XXS
- ];
+
+    public static readonly TensorWeightScheme Q4_K =
+        new(
+            14,
+            false,
+            ["Q4_K"],
+            new[] { TReg.MoeRouter },
+            32
+        );
+
+    public static readonly TensorWeightScheme F16 =
+        new(15, false, ["F16", "FLOAT16", "FP16", "HALF"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+
+    public static readonly TensorWeightScheme F32 =
+        new(16, false, ["F32", "FLOAT32", "FP32", "FLOAT"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+
+    // This is the set used by hybrid search / combination generation.
+    public static readonly ImmutableArray<TensorWeightScheme> All_Allowed_Hybrid_Quants =
+    [
+        NULL,
+        BF16,
+        //F16,
+        //MXFP4,
+        Q8_0,
+        Q6_K,
+        Q5_K,
+        IQ4_XS,
+        IQ4_NL,
+        Q4_K
+    ];
+
+    // This is the true registry of everything known.
+    public static readonly ImmutableArray<TensorWeightScheme> All =
+    [
+        NULL,
+        BF16,
+        F16,
+        F32,
+        //MXFP4,
+        Q8_0,
+        Q6_K,
+        Q5_K,
+        IQ4_XS,
+        IQ4_NL,
+        IQ3_S,
+        IQ3_XS,
+        IQ3_XXS,
+        IQ2_S,
+        IQ2_XS,
+        IQ2_XXS,
+        Q4_K
+    ];
 }

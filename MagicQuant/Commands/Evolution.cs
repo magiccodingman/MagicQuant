@@ -10,46 +10,52 @@ namespace MagicQuant.Commands;
 public class Evolution : ICommand
 {
     private const int BruteForceFinalCombinationThreshold = 1_000;
-    
+
     public async Task Run(List<CliArg> args)
     {
-        if (args.Any(a => a.Name?.ToLower() == "help"))
+        if (args.Any(a => string.Equals(a.Name, "help", StringComparison.OrdinalIgnoreCase)))
         {
             ShowEvolutionHelp();
             return;
         }
 
-        string? modelDirRaw = args.FirstOrDefault(a => a.Name?.ToLower() == "model-dir")?.Value;
+        string? modelDirRaw = args.FirstOrDefault(a =>
+            string.Equals(a.Name, "model-dir", StringComparison.OrdinalIgnoreCase))?.Value;
 
         if (string.IsNullOrWhiteSpace(modelDirRaw))
         {
-            string msg = "[red]Error:[/] Missing required argument [yellow]--model-dir[/].";
+            const string msg = "[red]Error:[/] Missing required argument [yellow]--model-dir[/].";
             AnsiConsole.MarkupLine(msg);
             ShowEvolutionHelp();
-            throw new Exception(msg);
+            throw new InvalidOperationException("Missing required argument --model-dir.");
         }
 
         string fullModelPath = Path.GetFullPath(modelDirRaw);
 
         if (!Directory.Exists(fullModelPath))
         {
-            string msg = $"[red]Error:[/] The directory [yellow]'{fullModelPath}'[/] does not exist.";
+            string msg =
+                $"[red]Error:[/] The directory [yellow]{Markup.Escape(fullModelPath)}[/] does not exist.";
             AnsiConsole.MarkupLine(msg);
             ShowEvolutionHelp();
-            throw new Exception(msg);
+            throw new DirectoryNotFoundException($"The directory '{fullModelPath}' does not exist.");
         }
 
         var safeTensorFiles = Directory.GetFiles(fullModelPath, "*.safetensors", SearchOption.TopDirectoryOnly);
 
         if (safeTensorFiles.Length == 0)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] No [yellow].safetensors[/] files found in [blue]{fullModelPath}[/].");
+            AnsiConsole.MarkupLine(
+                $"[red]Error:[/] No [yellow].safetensors[/] files found in [blue]{Markup.Escape(fullModelPath)}[/].");
             AnsiConsole.MarkupLine("[grey]Please ensure this is a valid HuggingFace model directory.[/]");
-            throw new Exception();
+            throw new InvalidOperationException("No .safetensors files were found in the provided model directory.");
         }
 
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
+        Cache.ForceRelearnBaselineTensorMappings = args.Any(a =>
+            string.Equals(a.Name, "relearn-baseline-mappings", StringComparison.OrdinalIgnoreCase));
+
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
         if (!Directory.Exists(Cache.ModelMagicQuantDirectory))
@@ -57,20 +63,26 @@ public class Evolution : ICommand
 
         AnsiConsole.MarkupLine("[green]✔ Model Directory Validated[/]");
         AnsiConsole.Write(new Rule("[yellow]Evolution Configuration[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"Model Path:   [blue]{Cache.ModelDirectory}[/]");
-        AnsiConsole.MarkupLine($"Output Path:  [blue]{Cache.ModelMagicQuantDirectory}[/]");
-        AnsiConsole.MarkupLine($"Files Found:  [green]{safeTensorFiles.Length}[/] safe tensors");
+        AnsiConsole.MarkupLine($"Model Path:   [blue]{Markup.Escape(Cache.ModelDirectory)}[/]");
+        AnsiConsole.MarkupLine($"Output Path:  [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
+        AnsiConsole.MarkupLine($"Files Found:  [green]{safeTensorFiles.Length:N0}[/] safe tensors");
 
         if (string.IsNullOrEmpty(Cache.LlamaBin))
-            AnsiConsole.MarkupLine("[yellow]Warning: Llama binaries path not set in Cache. (Did Initialization run?)[/]");
+            AnsiConsole.MarkupLine("[yellow]Warning:[/] Llama binaries path not set in Cache. (Did Initialization run?)");
 
-        Console.WriteLine("Acquiring unique model ID...");
+        AnsiConsole.MarkupLine("[grey]Acquiring unique model ID...[/]");
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
-        AnsiConsole.MarkupLine($"[green] Model ID Created/Found: {Cache.CurrentModelId}[/]");
+        AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
 
         var pyManager = new PythonManager(Cache.MagicQuantDirectory);
         var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
+
+        if (Cache.ForceRelearnBaselineTensorMappings)
+        {
+            await quantizationService.InvalidateBaselineArtifactsAsync();
+            AnsiConsole.MarkupLine("[yellow]Forced relearn is ON:[/] pure baseline samples will be rebuilt and relearned.");
+        }
 
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
         var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
@@ -91,6 +103,8 @@ public class Evolution : ICommand
             klLogitsDir: baseLogitsDir,
             saveLogits: true,
             domainsOverride: new[] { "general", "code", "math" });
+
+        await quantizationService.LearnNativeSourceTruthAsync(bf16ModelGgufPath);
 
         var compatibilityService = new ModelCompatibilityService(pyManager);
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
@@ -148,6 +162,18 @@ public class Evolution : ICommand
 
         var comboCountBefore = ComboCounter.CountAll();
 
+        var learnedBaselinePruner = new LearnedBaselinePruningService();
+
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning");
+
+        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning[/]") { Justification = Justify.Left });
+        var learnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
+
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning");
+
+        foreach (var note in learnedPruningResult.Notes)
+            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
+
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Final Isolation Optimization");
 
         AnsiConsole.Write(new Rule("[yellow]Final Isolation Optimization[/]") { Justification = Justify.Left });
@@ -157,7 +183,12 @@ public class Evolution : ICommand
 
         foreach (var gd in isolationResult.GroupDetails.OrderBy(x => x.GroupName))
         {
-            AnsiConsole.Write(new Rule($"[yellow]Isolation Group: {Markup.Escape(gd.GroupName)}[/]") { Justification = Justify.Left });
+            AnsiConsole.Write(
+                new Rule($"[yellow]Isolation Group: {Markup.Escape(gd.GroupName)}[/]")
+                {
+                    Justification = Justify.Left
+                });
+
             AnsiConsole.MarkupLine($"[green]Best savings:[/] {gd.BestReductionRatio:P2}");
             AnsiConsole.MarkupLine($"[green]Winning scheme:[/] {Markup.Escape(gd.WinningScheme ?? "n/a")}");
             AnsiConsole.MarkupLine($"[green]Explicit quant banned:[/] {(gd.ExplicitQuantBanned ? "[red]yes[/]" : "[green]no[/]")}");
@@ -173,6 +204,8 @@ public class Evolution : ICommand
 
         long predictedSizePruned = await dbService.PrunePredictedLargerThanQ8Async(mergedPlan);
 
+        AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {learnedPruningResult.GroupSchemeEliminations:N0}");
+        AnsiConsole.MarkupLine($"[green]Baselines skipped without learned rows:[/] {learnedPruningResult.BaselinesSkippedWithoutLearnedRows:N0}");
         AnsiConsole.MarkupLine($"[green]Groups reduced to BF16-only:[/] {isolationResult.ExplicitQuantBannedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]BF16-suppressed groups:[/] {isolationResult.Bf16SuppressedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]Hard damage eliminations:[/] {isolationResult.HardDamageEliminations:N0}");
@@ -185,7 +218,7 @@ public class Evolution : ICommand
 
         foreach (var note in isolationResult.Notes)
             AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
-        
+
         long finalRemainingCombinationCount = await dbService.GetRemainingCombinationCountAsync();
 
         AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
@@ -210,7 +243,6 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine($"  [green]Completed:[/] {finalSummary.Completed:N0}");
             AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {finalSummary.Skipped:N0}");
             AnsiConsole.MarkupLine($"  [red]Failed:[/] {finalSummary.Failed:N0}");
-
             AnsiConsole.MarkupLine("[yellow]Note:[/] Final model creation/export functionality is still being implemented.");
         }
         else
@@ -218,15 +250,9 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine("[yellow]Note:[/] Final model creation/export functionality is still being implemented.");
 
             throw new InvalidOperationException(
-                $"Prediction engine not created yet. " +
-                $"Final surviving combinations were {finalRemainingCombinationCount:N0}, " +
+                $"Prediction engine not created yet. Final surviving combinations were {finalRemainingCombinationCount:N0}, " +
                 $"which is above the brute-force threshold of {BruteForceFinalCombinationThreshold:N0}.");
         }
-        
-        AnsiConsole.MarkupLine($"[green]Combination count before pruning:[/] {comboCountBefore:N0}");
-        AnsiConsole.MarkupLine($"[green]Combination count after rule pruning:[/] {comboCountAfterRulePruning:N0}");
-        AnsiConsole.MarkupLine($"[green]Predicted-size combo removals:[/] {predictedSizePruned:N0}");
-        AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
     }
 
     private void ShowEvolutionHelp()
@@ -239,6 +265,7 @@ public class Evolution : ICommand
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Required)");
+        AnsiConsole.MarkupLine("  [green]--relearn-baseline-mappings[/]    Delete and relearn baseline tensor mappings (Optional)");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Example:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");

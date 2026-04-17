@@ -6,18 +6,18 @@ namespace MQ.DB.Models.DbModels;
 
 public class QuantizationRun : ISQLiteEntity<QuantizationRun>
 {
-    public Guid Id { get; set; }
+    public Guid Id { get; set; } = Guid.NewGuid();
 
     public uint AiModelHashId { get; set; }
     public AiModelHash AiModelHash { get; set; } = default!;
 
-    public uint TensorComboId { get; set; }
+    public Guid TensorComboId { get; set; }
     public TensorCombo TensorCombo { get; set; } = default!;
 
     /// <summary>
     /// Nullable because a quantization can fail before a benchmark row exists.
     /// </summary>
-    public uint? AiBenchmarkId { get; set; }
+    public Guid? AiBenchmarkId { get; set; }
     public AiBenchmark? AiBenchmark { get; set; }
 
     public DateTime StartedUtc { get; set; }

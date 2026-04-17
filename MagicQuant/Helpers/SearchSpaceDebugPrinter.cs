@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.Numerics;
 using MQ.DB;
 using MQ.DB.Models;
@@ -45,11 +47,31 @@ public static class SearchSpaceDebugPrinter
                 AnsiConsole.MarkupLine($"  [yellow]- {group.Name}[/]");
         }
 
+        var learnedPrunedGroups = RuntimeSearchSpace.GetGroupsWithLearnedBaselineMissingPrunes();
+        if (learnedPrunedGroups.Count > 0)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Learned-baseline-pruned groups:[/] {learnedPrunedGroups.Count}");
+
+            foreach (var group in learnedPrunedGroups)
+            {
+                var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedSchemesForGroup(group);
+
+                var parts = learned.Select(x =>
+                    $"{x.Scheme.Names[0]} <= {string.Join("/", x.MissingBaselines.Select(b => b.Names[0]))}");
+
+                AnsiConsole.MarkupLine(
+                    $"  [yellow]- {Markup.Escape(group.Name)}[/] :: [grey]{Markup.Escape(string.Join(", ", parts))}[/]");
+            }
+        }
+
         var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
 
         foreach (var baseline in activeBaselines)
         {
-            AnsiConsole.Write(new Rule($"[blue]Base: {Markup.Escape(string.Join("/", baseline.Names))}[/]") { Justification = Justify.Left });
+            AnsiConsole.Write(new Rule($"[blue]Base: {Markup.Escape(string.Join("/", baseline.Names))}[/]")
+            {
+                Justification = Justify.Left
+            });
 
             var allowed = ComboLogic.GetAllowedSchemeIdsPerGroup(baseline);
             BigInteger baseCount = BigInteger.One;
@@ -65,7 +87,7 @@ public static class SearchSpaceDebugPrinter
                     if (id == TensorWeightScheme.NULL.UniqueId)
                         return "NULL";
 
-                    var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
+                    var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(x => x.UniqueId == id);
                     return scheme?.Names[0] ?? $"Unknown({id})";
                 }).ToList();
 
@@ -73,6 +95,7 @@ public static class SearchSpaceDebugPrinter
                     unusedIds.Contains(group.UniqueId) ? "unused->NULL" :
                     RuntimeSearchSpace.IsGroupExplicitQuantBanned(group) ? "BF16-only" :
                     RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group) ? "BF16-suppressed" :
+                    RuntimeSearchSpace.HasLearnedBaselineMissingPrunesForGroup(group) ? "learned-pruned" :
                     "variable";
 
                 AnsiConsole.MarkupLine(

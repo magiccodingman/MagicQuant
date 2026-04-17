@@ -125,7 +125,7 @@ public static class TensorConfigGenerator
         var carrier = BaselineQuants.Q8_0;
         var smallest = TensorWeightScheme.GetSmallestNonImatrix();
 
-        var schemes = TensorWeightScheme.All
+        var schemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
             .OrderBy(x => x.UniqueId)

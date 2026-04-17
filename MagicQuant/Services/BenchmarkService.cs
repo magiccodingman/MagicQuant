@@ -960,7 +960,7 @@ public class BenchmarkService
 
                 foreach (var timing in executedRunTimings)
                 {
-                    uint? categoryBenchmarkId = null;
+                    Guid? categoryBenchmarkId = null;
                     if (categoryIdLookup.TryGetValue(timing.Category, out var foundCategoryId))
                         categoryBenchmarkId = foundCategoryId;
 
@@ -1018,8 +1018,8 @@ public class BenchmarkService
     private async Task PersistFailedBenchmarkRunAsync(
         MagicQuantContext db,
         uint aiModelHashId,
-        uint tensorComboId,
-        uint aiBenchmarkId,
+        Guid tensorComboId,
+        Guid aiBenchmarkId,
         byte category,
         DateTime startedUtc,
         DateTime completedUtc,

@@ -92,7 +92,7 @@ public class IsolationOptimizationService
             if (snap == null)
                 continue;
 
-            var scheme = TensorWeightScheme.All.First(x => x.UniqueId == item.TestedSchemeId);
+            var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.First(x => x.UniqueId == item.TestedSchemeId);
             var reduction = ComputeReductionRatio(carrierBaseOnly.SizeBytes, snap.SizeBytes);
             var kld = GetAggregateKld(snap);
             var pplDelta = GetAggregatePplDeltaPercent(snap, nativeBaseline);
@@ -182,7 +182,7 @@ public class IsolationOptimizationService
                 if (snap == null)
                     continue;
 
-                var scheme = TensorWeightScheme.All.First(x => x.UniqueId == item.TestedSchemeId);
+                var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.First(x => x.UniqueId == item.TestedSchemeId);
 
                 candidates.Add(new GroupCandidate
                 {

@@ -27,7 +27,7 @@ public class HybridQuant
         if (schemeId == TensorWeightScheme.NULL.UniqueId)
             return;
 
-        var scheme = TensorWeightScheme.All.First(g => g.UniqueId == schemeId);
+        var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.First(g => g.UniqueId == schemeId);
 
         Tensors.Add(new HybridTensor
         {
