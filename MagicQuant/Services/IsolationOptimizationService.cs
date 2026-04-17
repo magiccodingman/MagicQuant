@@ -315,9 +315,7 @@ public class IsolationOptimizationService
         var (explicitAllowed, bf16Allowed) = RuntimeSearchSpace.GetFinalAllowedQuantFamiliesForGroup(group);
 
         decision.ExplicitQuantBanned = !explicitAllowed;
-        // Reporting flag: "BF16 suppressed" is surfaced as "group forced away from explicit quant",
-        // i.e., BF16-only final state. This keeps the displayed flag aligned with final outcomes.
-        decision.Bf16Suppressed = decision.ExplicitQuantBanned;
+        decision.Bf16Suppressed = !bf16Allowed;
 
         if (!explicitAllowed && !bf16Allowed)
         {
@@ -339,10 +337,7 @@ public class IsolationOptimizationService
         List<GroupCandidate> candidates,
         IsolationOptimizationResult result)
     {
-        var explicitCandidates = candidates
-            .Where(x => x.Scheme.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => !x.Scheme.RequiresImatrix)
-            .ToList();
+        var explicitCandidates = GetActiveExplicitCandidates(group, candidates);
 
         for (int i = 0; i < explicitCandidates.Count; i++)
         {
@@ -356,11 +351,11 @@ public class IsolationOptimizationService
 
                 bool sameOrSmaller = a.SizeBytes <= b.SizeBytes;
                 bool kldNoWorse = a.Kld <= b.Kld + IsolationPruningConfig.FloatingPointEpsilon;
-                bool pplNoWorse = a.PplDeltaPercent <= b.PplDeltaPercent + IsolationPruningConfig.FloatingPointEpsilon;
+                bool pplNoWorse = Math.Abs(a.PplDeltaPercent) <= Math.Abs(b.PplDeltaPercent) + IsolationPruningConfig.FloatingPointEpsilon;
 
                 bool strictlyBetter =
                     a.Kld + IsolationPruningConfig.FloatingPointEpsilon < b.Kld ||
-                    a.PplDeltaPercent + IsolationPruningConfig.FloatingPointEpsilon < b.PplDeltaPercent ||
+                    Math.Abs(a.PplDeltaPercent) + IsolationPruningConfig.FloatingPointEpsilon < Math.Abs(b.PplDeltaPercent) ||
                     a.SizeBytes < b.SizeBytes;
 
                 if (sameOrSmaller && kldNoWorse && pplNoWorse && strictlyBetter)
@@ -383,74 +378,146 @@ public class IsolationOptimizationService
         List<GroupCandidate> candidates,
         IsolationOptimizationResult result)
     {
-        var explicitCandidates = candidates
-            .Where(x => x.Scheme.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => !x.Scheme.RequiresImatrix)
-            .OrderBy(x => x.SizeBytes)
-            .ToList();
+        var activeCandidates = GetActiveExplicitCandidates(group, candidates);
+        if (activeCandidates.Count <= 1)
+            return;
 
-        // Compare only to nearby larger neighbors, not the whole ladder.
-        for (int i = 0; i < explicitCandidates.Count; i++)
+        var sizeBuckets = BuildSizeBuckets(activeCandidates);
+        if (sizeBuckets.Count == 0)
+            return;
+
+        var acceptedAnchor = SelectBestBucketSurvivor(sizeBuckets[0]);
+        if (acceptedAnchor == null)
+            return;
+
+        for (int i = 1; i < sizeBuckets.Count; i++)
         {
-            var smaller = explicitCandidates[i];
+            var bucketSurvivors = new List<GroupCandidate>();
 
-            for (int j = i + 1; j < explicitCandidates.Count && j <= i + 2; j++)
+            foreach (var candidate in sizeBuckets[i])
             {
-                var larger = explicitCandidates[j];
-
-                double sizeDeltaPercent =
-                    ((double)larger.SizeBytes - smaller.SizeBytes) / larger.SizeBytes * 100.0;
-
-                if (sizeDeltaPercent > IsolationPruningConfig.BadTradeMaxSizeDeltaPercent)
+                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, candidate.Scheme))
                     continue;
 
-                double smallerPplAbs = Math.Abs(smaller.PplDeltaPercent);
-                double largerPplAbs = Math.Abs(larger.PplDeltaPercent);
-
-                double kldRatio = larger.Kld <= IsolationPruningConfig.FloatingPointEpsilon
-                    ? double.PositiveInfinity
-                    : smaller.Kld / larger.Kld;
-
-                double pplRatio = largerPplAbs <= IsolationPruningConfig.FloatingPointEpsilon
-                    ? double.PositiveInfinity
-                    : smallerPplAbs / largerPplAbs;
-
-                bool kldBadTrade =
-                    smaller.Kld > larger.Kld * IsolationPruningConfig.BadTradeKldMultiplier;
-
-                bool pplBadTrade =
-                    smallerPplAbs > largerPplAbs * IsolationPruningConfig.BadTradePplMultiplier;
-
-                bool smallerMeaningfullyBetterKld =
-                    smaller.Kld + IsolationPruningConfig.FloatingPointEpsilon < larger.Kld * 0.90;
-
-                bool smallerMeaningfullyBetterPpl =
-                    smallerPplAbs + IsolationPruningConfig.FloatingPointEpsilon < largerPplAbs * 0.90;
-
-                bool mixedTradeoff =
-                    (kldBadTrade && smallerMeaningfullyBetterPpl) ||
-                    (pplBadTrade && smallerMeaningfullyBetterKld);
-
-                if (mixedTradeoff)
-                    continue;
-
-                if (!kldBadTrade && !pplBadTrade)
-                    continue;
-
-                if (!RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, smaller.Scheme))
+                if (ShouldEliminateAsBadTrade(acceptedAnchor, candidate, out var reason))
                 {
-                    RuntimeSearchSpace.BanSchemeForGroup(group, smaller.Scheme);
+                    RuntimeSearchSpace.BanSchemeForGroup(group, candidate.Scheme);
                     result.BadTradeEliminations++;
-
                     result.Notes.Add(
-                        $"Bad trade elimination: '{smaller.Scheme.Names[0]}' removed vs '{larger.Scheme.Names[0]}' for '{group.Name}'. " +
-                        $"Reason: small size gain ({sizeDeltaPercent:F2}%) but disproportionate damage " +
-                        $"(KLD x{kldRatio:F2}, |PPL| x{pplRatio:F2}).");
+                        $"Bad trade elimination: '{candidate.Scheme.Names[0]}' removed vs accepted anchor '{acceptedAnchor.Scheme.Names[0]}' for '{group.Name}'. {reason}");
+                    continue;
                 }
 
-                break;
+                bucketSurvivors.Add(candidate);
+            }
+
+            var promotedAnchor = SelectBestBucketSurvivor(bucketSurvivors);
+            if (promotedAnchor != null)
+                acceptedAnchor = promotedAnchor;
+        }
+    }
+
+    private static List<GroupCandidate> GetActiveExplicitCandidates(TensorGroup group, List<GroupCandidate> candidates)
+    {
+        return candidates
+            .Where(x => x.Scheme.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Where(x => !x.Scheme.RequiresImatrix)
+            .Where(x => !RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, x.Scheme))
+            .ToList();
+    }
+
+    private static List<List<GroupCandidate>> BuildSizeBuckets(List<GroupCandidate> candidates)
+    {
+        return candidates
+            .GroupBy(x => x.SizeBytes)
+            .OrderByDescending(x => x.Key)
+            .Select(x => x
+                .OrderBy(c => c.Kld)
+                .ThenBy(c => Math.Abs(c.PplDeltaPercent))
+                .ThenByDescending(c => GetSchemeSafetyScore(c.Scheme))
+                .ThenBy(c => c.Scheme.Names[0], StringComparer.Ordinal)
+                .ToList())
+            .ToList();
+    }
+
+    private static bool ShouldEliminateAsBadTrade(
+        GroupCandidate anchor,
+        GroupCandidate candidate,
+        out string reason)
+    {
+        reason = string.Empty;
+
+        if (anchor.SizeBytes <= candidate.SizeBytes)
+            return false;
+
+        double sizeDeltaPercent =
+            ((double)anchor.SizeBytes - candidate.SizeBytes) / anchor.SizeBytes * 100.0;
+
+        if (sizeDeltaPercent > IsolationPruningConfig.BadTradeMaxSizeDeltaPercent)
+            return false;
+
+        double anchorPplAbs = Math.Abs(anchor.PplDeltaPercent);
+        double candidatePplAbs = Math.Abs(candidate.PplDeltaPercent);
+
+        double kldRatio = anchor.Kld <= IsolationPruningConfig.FloatingPointEpsilon
+            ? double.PositiveInfinity
+            : candidate.Kld / anchor.Kld;
+
+        double pplRatio = anchorPplAbs <= IsolationPruningConfig.FloatingPointEpsilon
+            ? double.PositiveInfinity
+            : candidatePplAbs / anchorPplAbs;
+
+        bool kldBadTrade =
+            candidate.Kld > anchor.Kld * IsolationPruningConfig.BadTradeKldMultiplier;
+
+        bool pplBadTrade =
+            candidatePplAbs > anchorPplAbs * IsolationPruningConfig.BadTradePplMultiplier;
+
+        bool candidateMeaningfullyBetterKld =
+            candidate.Kld + IsolationPruningConfig.FloatingPointEpsilon < anchor.Kld * 0.90;
+
+        bool candidateMeaningfullyBetterPpl =
+            candidatePplAbs + IsolationPruningConfig.FloatingPointEpsilon < anchorPplAbs * 0.90;
+
+        bool mixedTradeoff =
+            (kldBadTrade && candidateMeaningfullyBetterPpl) ||
+            (pplBadTrade && candidateMeaningfullyBetterKld);
+
+        if (mixedTradeoff)
+            return false;
+
+        if (!kldBadTrade && !pplBadTrade)
+            return false;
+
+        reason =
+            $"Reason: small size gain ({sizeDeltaPercent:F2}%) but disproportionate damage (KLD x{kldRatio:F2}, |PPL| x{pplRatio:F2}).";
+
+        return true;
+    }
+
+    private static GroupCandidate? SelectBestBucketSurvivor(List<GroupCandidate> survivors)
+    {
+        return survivors
+            .OrderBy(x => x.Kld)
+            .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+            .ThenByDescending(x => GetSchemeSafetyScore(x.Scheme))
+            .ThenBy(x => x.Scheme.Names[0], StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    private static int GetSchemeSafetyScore(TensorWeightScheme scheme)
+    {
+        string canonical = scheme.Names[0];
+
+        for (int i = 0; i < canonical.Length - 1; i++)
+        {
+            if ((canonical[i] == 'q' || canonical[i] == 'Q') && char.IsDigit(canonical[i + 1]))
+            {
+                return canonical[i + 1] - '0';
             }
         }
+
+        return 0;
     }
 
     private async Task<BenchmarkSnapshot?> LoadSnapshotAsync(HybridQuant quant, CancellationToken ct)
