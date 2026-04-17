@@ -152,9 +152,15 @@ public class BenchmarkService
             : Path.GetFullPath(preferredPlanModelPath);
 
         var cacheKey = BuildExecutionPlanCacheKey(planModelPath, discoveryTokenTarget, normalizedQuantizationKey);
+        AnsiConsole.MarkupLine(
+            $"[grey]Checking execution-plan cache:[/] quant={Markup.Escape(normalizedQuantizationKey)}, tokens={discoveryTokenTarget}");
+
         var plan = await TryLoadCachedExecutionPlanAsync(cacheKey, ct);
         if (plan == null)
+        {
+            AnsiConsole.MarkupLine("[yellow]Execution-plan cache miss:[/] full Q8 probe will run.");
             return false;
+        }
 
         lock (SlotSync)
         {
@@ -391,6 +397,7 @@ public class BenchmarkService
         }
         catch
         {
+            AnsiConsole.MarkupLine("[yellow]Execution-plan cache row was unreadable (slot JSON parse failed). Re-probing.[/]");
             return null;
         }
 

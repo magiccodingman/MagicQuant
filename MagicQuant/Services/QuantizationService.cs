@@ -741,6 +741,31 @@ public class QuantizationService
         return q8Path;
     }
 
+    public async Task CleanupPureQ8ModelAsync()
+    {
+        var pureQ8 = new HybridQuant
+        {
+            BaseQuant = BaselineQuants.Q8_0,
+            Tensors = new List<HybridTensor>()
+        };
+
+        string modelName = GenerateHybridName(pureQ8);
+        string q8Path = Path.Combine(_ggufDir, $"{modelName}.gguf");
+        string successFile = Path.Combine(_ggufDir, $"{Path.GetFileName(q8Path)}.success.json");
+        string quantLog = q8Path + ".quantize.log";
+
+        bool hadQ8 = File.Exists(q8Path) || File.Exists(successFile) || File.Exists(quantLog);
+
+        await HardDeleteHelper.DeleteFileIfExistsAsync(q8Path);
+        await HardDeleteHelper.DeleteFileIfExistsAsync(successFile);
+        await HardDeleteHelper.DeleteFileIfExistsAsync(quantLog);
+
+        if (hadQ8)
+            AnsiConsole.MarkupLine($"[grey]Removed probe-only Q8 artifacts:[/] {Markup.Escape(modelName)}");
+        else
+            AnsiConsole.MarkupLine("[grey]No probe-only Q8 artifacts to clean up.[/]");
+    }
+
     // ----------------------------------------------------------------
     // Quantization
     // ----------------------------------------------------------------

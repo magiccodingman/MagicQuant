@@ -100,6 +100,7 @@ public class Evolution : ICommand
 
         if (!loadedPlanFromCache)
         {
+            AnsiConsole.MarkupLine("[grey]Cache not usable, preparing probe-only Q8 baseline...[/]");
             var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
             await benchmarkService.EnsureExecutionPlanAsync(
                 q8ModelGgufPath,
@@ -108,6 +109,7 @@ public class Evolution : ICommand
         }
 
         await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
+        await quantizationService.CleanupPureQ8ModelAsync();
 
         var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         var baseBenchDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks", baseTypeName);
