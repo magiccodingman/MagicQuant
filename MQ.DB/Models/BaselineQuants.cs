@@ -25,6 +25,24 @@ public record BaselineQuants(
 
     public static readonly BaselineQuants Q4_K_M =
         new(3, false, ["Q4_K_M"], [TensorWeightScheme.Q4_K]);
+    
+    /*public static readonly BaselineQuants MXFP4_MOE =
+        new(
+            4,
+            false,
+            ["MXFP4_MOE"],
+            [TensorWeightScheme.MXFP4],
+            new HybridQuant
+            {
+                BaseQuant = null!,
+                Tensors = TReg.All
+                    .Select(g => new HybridTensor
+                    {
+                        TGroup = g,
+                        TensorType = TensorWeightScheme.MXFP4
+                    })
+                    .ToList()
+            });*/
 
     public static readonly BaselineQuants IQ4_NL =
         new(5, false, ["IQ4_NL"], [TensorWeightScheme.IQ4_NL]);
@@ -65,12 +83,15 @@ public record BaselineQuants(
     public static readonly BaselineQuants IQ2_XXS =
         new(12, true, ["IQ2_XXS"], [TensorWeightScheme.IQ2_XXS]);
 
+   
+    
     public static readonly ImmutableArray<BaselineQuants> All =
     [
         Q8_0,
         Q6_K,
         Q5_K,
         Q4_K_M,
+       // MXFP4_MOE,
         IQ4_NL,
         IQ4_XS,
         IQ3_S,

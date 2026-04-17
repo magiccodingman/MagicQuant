@@ -117,7 +117,7 @@ public sealed class TensorWeightScheme
     public static readonly TensorWeightScheme BF16 =
         new(1, false, ["BF16", "BFLOAT16"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
 
-    public static readonly TensorWeightScheme MXFP4 =
+    /*public static readonly TensorWeightScheme MXFP4 =
         new(
             2,
             false,
@@ -129,7 +129,7 @@ public sealed class TensorWeightScheme
                 TReg.MoeExperts
             },
             32,
-            isEligibleForBaseline: false);
+            isEligibleForBaseline: false);*/
 
     public static readonly TensorWeightScheme Q8_0 =
         new(3, false, ["Q8_0"], Array.Empty<TensorGroup>(), null);
@@ -255,7 +255,7 @@ public sealed class TensorWeightScheme
         NULL,
         BF16,
         //F16,
-        MXFP4,
+        //MXFP4,
         Q8_0,
         Q6_K,
         Q5_K,
@@ -271,7 +271,7 @@ public sealed class TensorWeightScheme
         BF16,
         F16,
         F32,
-        MXFP4,
+        //MXFP4,
         Q8_0,
         Q6_K,
         Q5_K,
