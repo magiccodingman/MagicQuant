@@ -54,22 +54,34 @@ public sealed class TensorWeightScheme
 
     public static void ValidateSmallestConfiguration()
     {
-        var nonImatrixSmallest = All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != NULL.UniqueId)
-            .Where(x => x.UniqueId != BF16.UniqueId)
-            .Where(x => x.UniqueId != F16.UniqueId)
-            .Where(x => x.UniqueId != F32.UniqueId)
-            .Where(x => !x.RequiresImatrix)
+        var ordered = GetSmallestInOrder();
+
+        if (ordered.Length == 0)
+            throw new InvalidOperationException("TensorWeightScheme.GetSmallestInOrder() must return at least one item.");
+
+        var duplicateIds = ordered
+            .GroupBy(x => x.UniqueId)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.First().Names[0])
             .ToList();
 
-        if (nonImatrixSmallest.Count != 1)
+        if (duplicateIds.Count > 0)
         {
-            string found = nonImatrixSmallest.Count == 0
-                ? "none"
-                : string.Join(", ", nonImatrixSmallest.Select(x => x.Names[0]));
-
             throw new InvalidOperationException(
-                $"Exactly one non-imatrix TensorWeightScheme must have IsSmallest=true. Found: {found}");
+                $"TensorWeightScheme.GetSmallestInOrder() contains duplicates: {string.Join(", ", duplicateIds)}");
+        }
+
+        var knownIds = All.Select(x => x.UniqueId).ToHashSet();
+        var unknown = ordered
+            .Where(x => !knownIds.Contains(x.UniqueId))
+            .Select(x => x.Names[0])
+            .Distinct()
+            .ToList();
+
+        if (unknown.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"TensorWeightScheme.GetSmallestInOrder() includes unknown schemes: {string.Join(", ", unknown)}");
         }
     }
 
@@ -82,7 +94,7 @@ public sealed class TensorWeightScheme
     /// <returns></returns>
     public static TensorWeightScheme[] GetSmallestInOrder()
     {
-        return [IQ4_XS, IQ4_NL, Q4_K, Q6_K, Q8_0];
+        return [IQ4_XS, IQ4_NL, Q4_K, Q6_K, Q8_0, BF16, F16, F32];
     }
 
     public static TensorWeightScheme GetCurrentNativePrecisionScheme()

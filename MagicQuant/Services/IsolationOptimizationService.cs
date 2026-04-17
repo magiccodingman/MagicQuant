@@ -264,6 +264,16 @@ public class IsolationOptimizationService
                     $"{candidate.Scheme.Names[0]} | size={(candidate.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={candidate.SavingsRatio:P2} | kld={candidate.Kld:G6} | pplΔ={candidate.PplDeltaPercent:F4}%");
             }
 
+            foreach (var banInfo in RuntimeSearchSpace.GetLearnedBaselineMissingPrunedSchemesForGroup(group))
+            {
+                var sourceBaselines = string.Join(
+                    ", ",
+                    banInfo.MissingBaselines.Select(x => x.Names[0]));
+
+                decision.Candidates.Add(
+                    $"[pruned-early] {banInfo.Scheme.Names[0]} removed by learned-baseline mapping for this group (no matching tensor weights in baseline(s): {sourceBaselines}).");
+            }
+
             result.GroupDetails.Add(decision);
         }
 

@@ -20,7 +20,11 @@ public sealed class LearnedBaselinePruningResult
 
 public sealed class LearnedBaselinePruningService
 {
-    private readonly record struct LearnedRowKey(byte BaselineQuantId, byte TensorWeightSchemeId, byte TensorGroupId);
+    private readonly record struct LearnedRow(
+        byte BaselineQuantId,
+        byte TensorWeightSchemeId,
+        byte TensorGroupId,
+        string FinalQuantType);
 
     public async Task<LearnedBaselinePruningResult> AnalyzeAndApplyAsync(CancellationToken ct = default)
     {
@@ -44,10 +48,11 @@ public sealed class LearnedBaselinePruningService
         var learnedRows = await db.LearnedBaselineTensorQuants
             .AsNoTracking()
             .Where(x => x.AiModelHashId == aiModelHashId.Value)
-            .Select(x => new LearnedRowKey(
+            .Select(x => new LearnedRow(
                 x.BaselineQuantId,
                 x.TensorWeightSchemeId,
-                x.TensorGroupId))
+                x.TensorGroupId,
+                x.FinalQuantType))
             .ToListAsync(ct);
 
         if (learnedRows.Count == 0)
@@ -57,10 +62,30 @@ public sealed class LearnedBaselinePruningService
             return result;
         }
 
-        var learnedRowSet = learnedRows.ToHashSet();
         var baselinesWithAnyLearnedRows = learnedRows
             .Select(x => x.BaselineQuantId)
             .ToHashSet();
+
+        var aliasToSchemeIds = BuildAliasToSchemeIds();
+
+        var effectiveSchemesByBaselineAndGroup = new Dictionary<(byte BaselineId, byte GroupId), HashSet<byte>>();
+
+        foreach (var row in learnedRows)
+        {
+            var key = (row.BaselineQuantId, row.TensorGroupId);
+
+            if (!effectiveSchemesByBaselineAndGroup.TryGetValue(key, out var set))
+            {
+                set = new HashSet<byte>();
+                effectiveSchemesByBaselineAndGroup[key] = set;
+            }
+
+            if (aliasToSchemeIds.TryGetValue(CanonicalizeQuantToken(row.FinalQuantType), out var resolvedIds))
+            {
+                foreach (var resolvedId in resolvedIds)
+                    set.Add(resolvedId);
+            }
+        }
 
         var skippedBaselineNotes = new HashSet<byte>();
         var unusedIds = Cache.UnusedTensorGroups
@@ -107,12 +132,16 @@ public sealed class LearnedBaselinePruningService
                     continue;
                 }
 
-                var lookup = new LearnedRowKey(
-                    owningBaseline.UniqueId,
-                    scheme.UniqueId,
-                    group.UniqueId);
+                var key = (owningBaseline.UniqueId, group.UniqueId);
+                var effectiveForGroup = effectiveSchemesByBaselineAndGroup.TryGetValue(key, out var found)
+                    ? found
+                    : null;
 
-                if (learnedRowSet.Contains(lookup))
+                bool hasAnyConnectedMapping = effectiveForGroup != null &&
+                                              owningBaseline.TensorWeightSchemes.Any(connectedScheme =>
+                                                  effectiveForGroup.Contains(connectedScheme.UniqueId));
+
+                if (hasAnyConnectedMapping)
                     continue;
 
                 RuntimeSearchSpace.BanSchemeForGroupByLearnedBaselineAbsence(group, scheme, owningBaseline);
@@ -124,5 +153,43 @@ public sealed class LearnedBaselinePruningService
         }
 
         return result;
+    }
+
+    private static Dictionary<string, HashSet<byte>> BuildAliasToSchemeIds()
+    {
+        var map = new Dictionary<string, HashSet<byte>>(StringComparer.Ordinal);
+
+        foreach (var scheme in TensorWeightScheme.All)
+        {
+            if (scheme.Names.IsDefaultOrEmpty)
+                continue;
+
+            foreach (var alias in scheme.Names)
+            {
+                var token = CanonicalizeQuantToken(alias);
+
+                if (!map.TryGetValue(token, out var ids))
+                {
+                    ids = new HashSet<byte>();
+                    map[token] = ids;
+                }
+
+                ids.Add(scheme.UniqueId);
+            }
+        }
+
+        return map;
+    }
+
+    private static string CanonicalizeQuantToken(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "UNKNOWN";
+
+        return value
+            .Trim()
+            .Replace("-", "_")
+            .Replace(" ", string.Empty)
+            .ToUpperInvariant();
     }
 }

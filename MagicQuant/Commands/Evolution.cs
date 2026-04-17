@@ -114,6 +114,19 @@ public class Evolution : ICommand
         var dbService = new QuantDatabaseService();
         await dbService.InitializeAsync();
 
+        var comboCountBefore = ComboCounter.CountAll();
+        var learnedBaselinePruner = new LearnedBaselinePruningService();
+
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning");
+
+        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning[/]") { Justification = Justify.Left });
+        var learnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
+
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning");
+
+        foreach (var note in learnedPruningResult.Notes)
+            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
+
         AnsiConsole.Write(new Rule("[yellow]Initial Isolation Startup Samples[/]") { Justification = Justify.Left });
 
         var initialPlan = TensorConfigGenerator.GenerateInitialIsolationSamplePlan(Cache.UnusedTensorGroups);
@@ -159,20 +172,6 @@ public class Evolution : ICommand
         }
 
         var mergedPlan = initialPlan.MergeWith(continuationPlan);
-
-        var comboCountBefore = ComboCounter.CountAll();
-
-        var learnedBaselinePruner = new LearnedBaselinePruningService();
-
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning");
-
-        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning[/]") { Justification = Justify.Left });
-        var learnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
-
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning");
-
-        foreach (var note in learnedPruningResult.Notes)
-            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
 
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Final Isolation Optimization");
 
