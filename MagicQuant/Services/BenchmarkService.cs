@@ -63,6 +63,7 @@ public class BenchmarkService
     public async Task EnsureExecutionPlanAsync(
         string q8ModelPath,
         int discoveryTokenTarget = 8192,
+        bool forceRediscovery = false,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(q8ModelPath))
@@ -70,7 +71,8 @@ public class BenchmarkService
 
         string normalizedPath = Path.GetFullPath(q8ModelPath);
 
-        if (_currentPlan != null &&
+        if (!forceRediscovery &&
+            _currentPlan != null &&
             string.Equals(_currentPlan.PlanModelPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
         {
             return;
@@ -79,13 +81,28 @@ public class BenchmarkService
         await PlanInitLock.WaitAsync(ct);
         try
         {
-            if (_currentPlan != null &&
+            if (!forceRediscovery &&
+                _currentPlan != null &&
                 string.Equals(_currentPlan.PlanModelPath, normalizedPath, StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
 
-            var plan = await BuildExecutionPlanAsync(normalizedPath, discoveryTokenTarget, ct);
+            var cacheKey = BuildExecutionPlanCacheKey(normalizedPath, discoveryTokenTarget);
+
+            BenchmarkExecutionPlan? plan = null;
+            if (!forceRediscovery)
+            {
+                plan = await TryLoadCachedExecutionPlanAsync(cacheKey, ct);
+                if (plan != null)
+                    AnsiConsole.MarkupLine("[green]Loaded benchmark execution plan from SQLite cache.[/]");
+            }
+
+            if (plan == null)
+            {
+                plan = await BuildExecutionPlanAsync(normalizedPath, discoveryTokenTarget, ct);
+                await UpsertCachedExecutionPlanAsync(cacheKey, plan, ct);
+            }
 
             lock (SlotSync)
             {
@@ -189,6 +206,9 @@ public class BenchmarkService
                     _slotSemaphore = new SemaphoreSlim(cpuPlan.Slots.Count, cpuPlan.Slots.Count);
                 }
 
+                var cacheKeyCpu = BuildExecutionPlanCacheKey(_currentPlan.PlanModelPath, discoveryTokenTarget);
+                await UpsertCachedExecutionPlanAsync(cacheKeyCpu, _currentPlan, ct);
+
                 return;
             }
 
@@ -208,6 +228,9 @@ public class BenchmarkService
                     _slotSemaphore = new SemaphoreSlim(updated.Slots.Count, updated.Slots.Count);
                 }
             }
+
+            var cacheKey = BuildExecutionPlanCacheKey(_currentPlan.PlanModelPath, discoveryTokenTarget);
+            await UpsertCachedExecutionPlanAsync(cacheKey, _currentPlan, ct);
 
             AnsiConsole.MarkupLine($"[green]Base-model clamped static ngl:[/] [cyan]{chosen.Value}[/]");
         }
@@ -294,6 +317,140 @@ public class BenchmarkService
             usesGpu: true,
             groupSize: gpuCount,
             slots: new List<BenchmarkSlot> { allGpuSlot });
+    }
+
+    private async Task<BenchmarkExecutionPlan?> TryLoadCachedExecutionPlanAsync(
+        ExecutionPlanCacheKey key,
+        CancellationToken ct)
+    {
+        await using var db = new MagicQuantContext();
+        var aiModelHashId = await GetOrCreateAiModelHashIdAsync(db, ct);
+
+        var row = await db.ExecutionPlanProbeCaches
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x =>
+                x.AiModelHashId == aiModelHashId &&
+                x.HardwareFingerprint == key.HardwareFingerprint &&
+                x.QuantizedModelFingerprint == key.QuantizedModelFingerprint &&
+                x.QuantizationKey == key.QuantizationKey &&
+                x.DiscoveryTokenTarget == key.DiscoveryTokenTarget, ct);
+
+        if (row == null)
+            return null;
+
+        List<int[]> slotDevices;
+        try
+        {
+            slotDevices = JsonSerializer.Deserialize<List<int[]>>(row.SlotsJson) ?? new List<int[]>();
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (slotDevices.Count == 0)
+            return null;
+
+        var slots = slotDevices
+            .Select((devices, idx) => new BenchmarkSlot(idx, devices ?? Array.Empty<int>()))
+            .ToList();
+
+        return new BenchmarkExecutionPlan(
+            planModelPath: key.PlanModelPath,
+            staticNgl: row.StaticNgl,
+            usesGpu: row.UsesGpu,
+            groupSize: row.GroupSize,
+            slots: slots);
+    }
+
+    private async Task UpsertCachedExecutionPlanAsync(
+        ExecutionPlanCacheKey key,
+        BenchmarkExecutionPlan plan,
+        CancellationToken ct)
+    {
+        await using var db = new MagicQuantContext();
+        var aiModelHashId = await GetOrCreateAiModelHashIdAsync(db, ct);
+
+        var existing = await db.ExecutionPlanProbeCaches
+            .FirstOrDefaultAsync(x =>
+                x.AiModelHashId == aiModelHashId &&
+                x.HardwareFingerprint == key.HardwareFingerprint &&
+                x.QuantizedModelFingerprint == key.QuantizedModelFingerprint &&
+                x.QuantizationKey == key.QuantizationKey &&
+                x.DiscoveryTokenTarget == key.DiscoveryTokenTarget, ct);
+
+        string slotsJson = JsonSerializer.Serialize(plan.Slots.Select(x => x.DeviceIndices).ToList());
+        var now = DateTime.UtcNow;
+
+        if (existing == null)
+        {
+            existing = new ExecutionPlanProbeCache
+            {
+                AiModelHashId = aiModelHashId,
+                HardwareFingerprint = key.HardwareFingerprint,
+                QuantizedModelFingerprint = key.QuantizedModelFingerprint,
+                QuantizationKey = key.QuantizationKey,
+                DiscoveryTokenTarget = key.DiscoveryTokenTarget,
+                CreatedUtc = now
+            };
+
+            db.ExecutionPlanProbeCaches.Add(existing);
+        }
+
+        existing.StaticNgl = plan.StaticNgl;
+        existing.UsesGpu = plan.UsesGpu;
+        existing.GroupSize = plan.GroupSize;
+        existing.SlotsJson = slotsJson;
+        existing.UpdatedUtc = now;
+
+        await db.SaveChangesAsync(ct);
+    }
+
+    private static ExecutionPlanCacheKey BuildExecutionPlanCacheKey(string normalizedModelPath, int discoveryTokenTarget)
+    {
+        string quantizedModelFingerprint;
+        if (File.Exists(normalizedModelPath))
+        {
+            var info = new FileInfo(normalizedModelPath);
+            quantizedModelFingerprint =
+                $"{normalizedModelPath}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
+        }
+        else
+        {
+            quantizedModelFingerprint = normalizedModelPath;
+        }
+
+        var sys = Cache.SysInfo;
+        string hardwareFingerprint = sys == null
+            ? "unknown-hardware"
+            : string.Join("|", new[]
+            {
+                $"threads:{sys.ThreadCount}",
+                $"ram:{sys.RamGb:F2}",
+                $"gpu:{string.Join(";", sys.GpuInfo.Select(g => $"{g.GpuVendor}:{g.GpuName}:{g.VramGb:F2}:{g.UniqueId ?? "none"}"))}"
+            });
+
+        return new ExecutionPlanCacheKey(
+            hardwareFingerprint,
+            quantizedModelFingerprint,
+            quantizationKey: "Q8_0",
+            discoveryTokenTarget,
+            normalizedModelPath);
+    }
+
+    private static async Task<uint> GetOrCreateAiModelHashIdAsync(MagicQuantContext db, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            throw new InvalidOperationException("Cache.CurrentModelId is not set.");
+
+        var model = await db.AiModelHashes.FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+        if (model != null)
+            return model.Id;
+
+        model = new AiModelHash { UniqueHash = Cache.CurrentModelId };
+        db.AiModelHashes.Add(model);
+        await db.SaveChangesAsync(ct);
+        return model.Id;
     }
 
     private async Task<int?> ProbeHighestStableNglAsync(
@@ -1783,4 +1940,11 @@ with open(out_path, 'w', encoding='utf-8') as f:
             return ValueTask.CompletedTask;
         }
     }
+
+    private sealed record ExecutionPlanCacheKey(
+        string HardwareFingerprint,
+        string QuantizedModelFingerprint,
+        string QuantizationKey,
+        int DiscoveryTokenTarget,
+        string PlanModelPath);
 }
