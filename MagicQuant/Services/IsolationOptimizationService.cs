@@ -243,8 +243,7 @@ public class IsolationOptimizationService
 
             if (candidates.Count == 0)
             {
-                decision.ExplicitQuantBanned = RuntimeSearchSpace.IsGroupExplicitQuantBanned(group);
-                decision.Bf16Suppressed = RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group);
+                PopulateFinalGroupFlags(group, decision, result);
                 result.GroupDetails.Add(decision);
                 continue;
             }
@@ -255,8 +254,7 @@ public class IsolationOptimizationService
             decision.WinningSizeBytes = winner.SizeBytes;
             decision.WinningKld = winner.Kld;
             decision.WinningPplDelta = winner.PplDeltaPercent;
-            decision.ExplicitQuantBanned = RuntimeSearchSpace.IsGroupExplicitQuantBanned(group);
-            decision.Bf16Suppressed = RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group);
+            PopulateFinalGroupFlags(group, decision, result);
 
             foreach (var candidate in candidates.OrderBy(x => x.SizeBytes))
             {
@@ -304,9 +302,28 @@ public class IsolationOptimizationService
         }
 
         result.ExplicitQuantBannedGroups = RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned().Count;
-        result.Bf16SuppressedGroups = RuntimeSearchSpace.GetBf16SuppressedGroups().Count;
+        result.Bf16SuppressedGroups = result.GroupDetails.Count(x => x.Bf16Suppressed);
 
         return result;
+    }
+
+    private static void PopulateFinalGroupFlags(
+        TensorGroup group,
+        IsolationGroupDecision decision,
+        IsolationOptimizationResult result)
+    {
+        var (explicitAllowed, bf16Allowed) = RuntimeSearchSpace.GetFinalAllowedQuantFamiliesForGroup(group);
+
+        decision.ExplicitQuantBanned = !explicitAllowed;
+        // Reporting flag: "BF16 suppressed" is surfaced as "group forced away from explicit quant",
+        // i.e., BF16-only final state. This keeps the displayed flag aligned with final outcomes.
+        decision.Bf16Suppressed = decision.ExplicitQuantBanned;
+
+        if (!explicitAllowed && !bf16Allowed)
+        {
+            result.Notes.Add(
+                $"[invariant-warning] Invalid final quant-family state for '{group.Name}': neither explicit nor BF16 is allowed.");
+        }
     }
 
     private static List<GroupCandidate> FilterSurvivors(TensorGroup group, List<GroupCandidate> candidates)

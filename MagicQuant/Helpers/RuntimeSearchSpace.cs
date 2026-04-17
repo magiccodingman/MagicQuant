@@ -100,12 +100,7 @@ public static class RuntimeSearchSpace
 
     public static bool IsGroupExplicitQuantBanned(TensorGroup group)
     {
-        var explicitSchemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .ToList();
-
-        return explicitSchemes.All(x => x.IsBannedFor(group));
+        return !HasAnyExplicitSchemeAllowed(group);
     }
 
     public static IReadOnlyList<TensorGroup> GetGroupsWithExplicitQuantBanned()
@@ -165,14 +160,34 @@ public static class RuntimeSearchSpace
         => Bf16SuppressedTensorChoiceGroupIds.Add(group.UniqueId);
 
     public static bool IsBf16TensorChoiceSuppressed(TensorGroup group)
-        => Bf16SuppressedTensorChoiceGroupIds.Contains(group.UniqueId);
+    {
+        // BF16 suppression is only meaningful while at least one explicit tensor scheme remains.
+        // If explicit schemes are all banned, BF16 becomes the only viable tensor choice.
+        return Bf16SuppressedTensorChoiceGroupIds.Contains(group.UniqueId) &&
+               HasAnyExplicitSchemeAllowed(group);
+    }
 
     public static IReadOnlyList<TensorGroup> GetBf16SuppressedGroups()
     {
         return TReg.All
-            .Where(x => Bf16SuppressedTensorChoiceGroupIds.Contains(x.UniqueId))
+            .Where(IsBf16TensorChoiceSuppressed)
             .OrderBy(x => x.UniqueId)
             .ToList();
+    }
+
+    public static (bool ExplicitAllowed, bool Bf16Allowed) GetFinalAllowedQuantFamiliesForGroup(TensorGroup group)
+    {
+        bool explicitAllowed = HasAnyExplicitSchemeAllowed(group);
+        bool bf16Allowed = !IsBf16TensorChoiceSuppressed(group);
+        return (explicitAllowed, bf16Allowed);
+    }
+
+    private static bool HasAnyExplicitSchemeAllowed(TensorGroup group)
+    {
+        return TensorWeightScheme.All_Allowed_Hybrid_Quants
+            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Any(x => !x.IsBannedFor(group));
     }
 
     public static IReadOnlyList<BaselineQuants> GetActiveCombinationBaselines()
