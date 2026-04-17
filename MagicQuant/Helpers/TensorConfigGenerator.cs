@@ -67,7 +67,7 @@ public static class TensorConfigGenerator
 
         result.BaseOnlyIsolationCount++;
 
-        var smallest = TensorWeightScheme.GetSmallestNonImatrix();
+        var smallest = TensorWeightScheme.GetSmallestInOrder().FirstOrDefault();
 
         foreach (var group in activeGroups)
         {
@@ -123,7 +123,7 @@ public static class TensorConfigGenerator
 
         var result = new RequiredSampleGenerationResult();
         var carrier = BaselineQuants.Q8_0;
-        var smallest = TensorWeightScheme.GetSmallestNonImatrix();
+        var smallest = TensorWeightScheme.GetSmallestInOrder().FirstOrDefault();
 
         var schemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)

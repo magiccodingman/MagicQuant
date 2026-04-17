@@ -12,7 +12,6 @@ public sealed class TensorWeightScheme
     public ImmutableArray<string> Names { get; }
     public List<TensorGroup> BannedGroups { get; }
     public ushort? BlockNeo { get; }
-    public bool IsSmallest { get; }
     public bool IsEligibleForBaseline { get; }
 
     private TensorWeightScheme(
@@ -21,14 +20,12 @@ public sealed class TensorWeightScheme
         ImmutableArray<string> names,
         IEnumerable<TensorGroup> bannedGroups,
         ushort? blockNeo,
-        bool isSmallest = false,
         bool isEligibleForBaseline = true)
     {
         UniqueId = uniqueId;
         RequiresImatrix = requiresImatrix;
         Names = names;
         BlockNeo = blockNeo;
-        IsSmallest = isSmallest;
         IsEligibleForBaseline = isEligibleForBaseline;
 
         var distinctGroups = bannedGroups
@@ -63,7 +60,6 @@ public sealed class TensorWeightScheme
             .Where(x => x.UniqueId != F16.UniqueId)
             .Where(x => x.UniqueId != F32.UniqueId)
             .Where(x => !x.RequiresImatrix)
-            .Where(x => x.IsSmallest)
             .ToList();
 
         if (nonImatrixSmallest.Count != 1)
@@ -77,17 +73,16 @@ public sealed class TensorWeightScheme
         }
     }
 
-    public static TensorWeightScheme GetSmallestNonImatrix()
-    {
-        ValidateSmallestConfiguration();
 
-        return All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != NULL.UniqueId)
-            .Where(x => x.UniqueId != BF16.UniqueId)
-            .Where(x => x.UniqueId != F16.UniqueId)
-            .Where(x => x.UniqueId != F32.UniqueId)
-            .Where(x => !x.RequiresImatrix)
-            .Single(x => x.IsSmallest);
+    /// <summary>
+    /// This labels the models that're supposed to quantize the smallest
+    /// in order. Top of array being the smallest, the further down,
+    /// it becomes larger in order of expected quantization size.
+    /// </summary>
+    /// <returns></returns>
+    public static TensorWeightScheme[] GetSmallestInOrder()
+    {
+        return [IQ4_XS, IQ4_NL, Q4_K, Q6_K, Q8_0];
     }
 
     public static TensorWeightScheme GetCurrentNativePrecisionScheme()
@@ -141,7 +136,7 @@ public sealed class TensorWeightScheme
         new(5, false, ["Q5_K"], new[] { TReg.MoeRouter }, 256);
 
     public static readonly TensorWeightScheme IQ4_XS =
-        new(6, false, ["IQ4_XS"], new[] { TReg.MoeRouter }, 32, true);
+        new(6, false, ["IQ4_XS"], new[] { TReg.MoeRouter }, 32);
 
     public static readonly TensorWeightScheme IQ4_NL =
         new(7, false, ["IQ4_NL"], new[] { TReg.MoeRouter }, 32);
