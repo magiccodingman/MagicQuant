@@ -302,7 +302,7 @@ public class IsolationOptimizationService
         }
 
         result.ExplicitQuantBannedGroups = RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned().Count;
-        result.Bf16SuppressedGroups = RuntimeSearchSpace.GetBf16SuppressedGroups().Count;
+        result.Bf16SuppressedGroups = result.GroupDetails.Count(x => x.Bf16Suppressed);
 
         return result;
     }
@@ -315,7 +315,9 @@ public class IsolationOptimizationService
         var (explicitAllowed, bf16Allowed) = RuntimeSearchSpace.GetFinalAllowedQuantFamiliesForGroup(group);
 
         decision.ExplicitQuantBanned = !explicitAllowed;
-        decision.Bf16Suppressed = !bf16Allowed;
+        // Reporting flag: "BF16 suppressed" is surfaced as "group forced away from explicit quant",
+        // i.e., BF16-only final state. This keeps the displayed flag aligned with final outcomes.
+        decision.Bf16Suppressed = decision.ExplicitQuantBanned;
 
         if (!explicitAllowed && !bf16Allowed)
         {
