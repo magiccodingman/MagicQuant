@@ -67,11 +67,10 @@ public static class TensorConfigGenerator
 
         result.BaseOnlyIsolationCount++;
 
-        var smallest = TensorWeightScheme.GetSmallestInOrder().FirstOrDefault();
-
         foreach (var group in activeGroups)
         {
-            if (smallest.IsBannedFor(group))
+            var smallest = GetSmallestAllowedProbeSchemeForGroup(group);
+            if (smallest == null)
                 continue;
 
             var quant = HybridQuant.CreateBlanket(
@@ -123,7 +122,6 @@ public static class TensorConfigGenerator
 
         var result = new RequiredSampleGenerationResult();
         var carrier = BaselineQuants.Q8_0;
-        var smallest = TensorWeightScheme.GetSmallestInOrder().FirstOrDefault();
 
         var schemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
@@ -133,9 +131,11 @@ public static class TensorConfigGenerator
 
         foreach (var group in activeGroups)
         {
+            var smallest = GetSmallestAllowedProbeSchemeForGroup(group);
+
             foreach (var scheme in schemes)
             {
-                if (scheme.UniqueId == smallest.UniqueId)
+                if (smallest != null && scheme.UniqueId == smallest.UniqueId)
                     continue;
 
                 if (scheme.IsBannedFor(group))
@@ -290,6 +290,30 @@ public static class TensorConfigGenerator
             yield return batch;
 
         producer.GetAwaiter().GetResult();
+    }
+
+    private static TensorWeightScheme? GetSmallestAllowedProbeSchemeForGroup(TensorGroup group)
+    {
+        var allowedIds = TensorWeightScheme.All_Allowed_Hybrid_Quants
+            .Select(x => x.UniqueId)
+            .ToHashSet();
+
+        foreach (var scheme in TensorWeightScheme.GetSmallestInOrder())
+        {
+            if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId ||
+                scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+                continue;
+
+            if (!allowedIds.Contains(scheme.UniqueId))
+                continue;
+
+            if (scheme.IsBannedFor(group) || RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
+                continue;
+
+            return scheme;
+        }
+
+        return null;
     }
 
     private static int GetThreadCountSafe()
