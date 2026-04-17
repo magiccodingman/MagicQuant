@@ -628,9 +628,15 @@ public class QuantizationService
                 foreach (var filePath in Directory.EnumerateFiles(_ggufDir, "*.gguf", SearchOption.TopDirectoryOnly))
                 {
                     var currentFileName = Path.GetFileName(filePath);
+                    var currentModelName = Path.GetFileNameWithoutExtension(currentFileName);
 
                     if (isImmune &&
                         string.Equals(currentFileName, normalizedFileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(currentModelName) && IsProtectedModel(currentModelName))
                     {
                         continue;
                     }
