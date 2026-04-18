@@ -912,6 +912,35 @@ public class QuantizationService
         if (string.IsNullOrWhiteSpace(nativeGgufPath) || !File.Exists(nativeGgufPath))
             throw new FileNotFoundException($"Native GGUF path not found for learning: {nativeGgufPath}");
 
+        var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
+        if (!Cache.ForceRelearnBaselineTensorMappings)
+        {
+            await using var precheckDb = new MagicQuantContext();
+            var modelId = await precheckDb.AiModelHashes
+                .AsNoTracking()
+                .Where(x => x.UniqueHash == Cache.CurrentModelId)
+                .Select(x => (Guid?)x.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (modelId.HasValue)
+            {
+                int existingRows = await precheckDb.LearnedBaselineTensorQuants
+                    .AsNoTracking()
+                    .Where(x => x.AiModelHashId == modelId.Value &&
+                                x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                                x.TensorWeightSchemeId == nativeScheme.UniqueId)
+                    .CountAsync(ct);
+
+                if (existingRows > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[grey]Native-source learned truth already exists:[/] [cyan]{existingRows:N0}[/] row(s) for [yellow]{Markup.Escape(nativeScheme.Names[0])}[/]. Skipping relearn. Use [green]--relearn-baseline-mappings[/] to regenerate.");
+                    return;
+                }
+            }
+        }
+
         var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, nativeGgufPath);
         var ggufTruth = metadata.TensorTypes
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
@@ -947,8 +976,6 @@ public class QuantizationService
 
         if (!benchmarkId.HasValue)
             throw new InvalidOperationException("Native-source benchmark row is missing; benchmark base model before native-source learning.");
-
-        var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
 
         await db.LearnedBaselineTensorQuants
             .Where(x => x.AiModelHashId == model.Id &&
