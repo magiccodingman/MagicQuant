@@ -917,17 +917,15 @@ public class QuantizationService
         if (!Cache.ForceRelearnBaselineTensorMappings)
         {
             await using var precheckDb = new MagicQuantContext();
-            var modelId = await precheckDb.AiModelHashes
+            var model = await precheckDb.AiModelHashes
                 .AsNoTracking()
-                .Where(x => x.UniqueHash == Cache.CurrentModelId)
-                .Select(x => (Guid?)x.Id)
-                .FirstOrDefaultAsync(ct);
+                .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
 
-            if (modelId.HasValue)
+            if (model != null)
             {
                 int existingRows = await precheckDb.LearnedBaselineTensorQuants
                     .AsNoTracking()
-                    .Where(x => x.AiModelHashId == modelId.Value &&
+                    .Where(x => x.AiModelHashId == model.Id &&
                                 x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
                                 x.TensorWeightSchemeId == nativeScheme.UniqueId)
                     .CountAsync(ct);
