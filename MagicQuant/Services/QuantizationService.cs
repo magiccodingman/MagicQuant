@@ -905,6 +905,29 @@ public class QuantizationService
         AnsiConsole.MarkupLine("[yellow]Relearn requested:[/] baseline artifacts, benchmark caches, and learning diagnostics were invalidated.");
     }
 
+    public async Task<bool> HasNativeSourceLearnedTruthAsync(CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            return false;
+
+        var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
+        await using var db = new MagicQuantContext();
+        var model = await db.AiModelHashes
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+        if (model == null)
+            return false;
+
+        return await db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == model.Id &&
+                        x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                        x.TensorWeightSchemeId == nativeScheme.UniqueId)
+            .AnyAsync(ct);
+    }
+
     public async Task LearnNativeSourceTruthAsync(
         string nativeGgufPath,
         CancellationToken ct = default)
