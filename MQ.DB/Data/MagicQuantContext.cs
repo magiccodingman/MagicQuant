@@ -120,6 +120,7 @@ public class MagicQuantContext : DbContext
     public DbSet<BenchmarkRun> BenchmarkRuns { get; set; }
     public DbSet<LearnedBaselineTensorQuant> LearnedBaselineTensorQuants { get; set; }
     public DbSet<BaselineQuantDefinition> BaselineQuantDefinitions { get; set; }
+    public DbSet<ExecutionPlanProbeCache> ExecutionPlanProbeCaches { get; set; }
 
     // --------------------------------------------------------
     // Configuration

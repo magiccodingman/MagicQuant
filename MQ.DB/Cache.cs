@@ -61,4 +61,6 @@ public class Cache
     public static string CurrentModelId { get; set; }
 
     public static bool ForceRelearnBaselineTensorMappings { get; set; }
+
+    public static bool ForceRefreshHardwareProbe { get; set; }
 }

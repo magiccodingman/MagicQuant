@@ -2,7 +2,10 @@ using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MagicQuant.Services;
 using MQ.DB;
+using MQ.DB.Data;
 using MQ.DB.Models;
+using MQ.DB.Models.DbModels;
+using Microsoft.EntityFrameworkCore;
 using Spectre.Console;
 
 namespace MagicQuant.Commands;
@@ -55,6 +58,8 @@ public class Evolution : ICommand
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
         Cache.ForceRelearnBaselineTensorMappings = args.Any(a =>
             string.Equals(a.Name, "relearn-baseline-mappings", StringComparison.OrdinalIgnoreCase));
+        Cache.ForceRefreshHardwareProbe = args.Any(a =>
+            string.Equals(a.Name, "recheck-hardware-probe", StringComparison.OrdinalIgnoreCase));
 
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
@@ -74,6 +79,8 @@ public class Evolution : ICommand
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
         AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
 
+        await EnsureSqliteReadyAsync();
+
         var pyManager = new PythonManager(Cache.MagicQuantDirectory);
         var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
@@ -84,11 +91,25 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine("[yellow]Forced relearn is ON:[/] pure baseline samples will be rebuilt and relearned.");
         }
 
+        string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
-        var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
 
-        await benchmarkService.EnsureExecutionPlanAsync(q8ModelGgufPath);
+        bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
+                                   await benchmarkService.TryInitializeExecutionPlanFromCacheAsync(
+                                       quantizationKey: q8QuantizationKey);
+
+        if (!loadedPlanFromCache)
+        {
+            AnsiConsole.MarkupLine("[grey]Cache not usable, preparing probe-only Q8 baseline...[/]");
+            var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
+            await benchmarkService.EnsureExecutionPlanAsync(
+                q8ModelGgufPath,
+                quantizationKey: q8QuantizationKey,
+                forceRediscovery: Cache.ForceRefreshHardwareProbe);
+        }
+
         await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
+        await quantizationService.CleanupPureQ8ModelAsync();
 
         var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         var baseBenchDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks", baseTypeName);
@@ -265,8 +286,24 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Required)");
         AnsiConsole.MarkupLine("  [green]--relearn-baseline-mappings[/]    Delete and relearn baseline tensor mappings (Optional)");
+        AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Example:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");
+    }
+
+    private static async Task EnsureSqliteReadyAsync(CancellationToken ct = default)
+    {
+        await using var db = new MagicQuantContext();
+        await db.Database.MigrateAsync(ct);
+
+        var model = await db.AiModelHashes
+            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+        if (model != null)
+            return;
+
+        db.AiModelHashes.Add(new AiModelHash { UniqueHash = Cache.CurrentModelId });
+        await db.SaveChangesAsync(ct);
     }
 }
