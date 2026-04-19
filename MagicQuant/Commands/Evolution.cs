@@ -108,7 +108,19 @@ public class Evolution : ICommand
                 forceRediscovery: Cache.ForceRefreshHardwareProbe);
         }
 
-        await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
+        bool nativeTruthAlreadyLearned = !Cache.ForceRelearnBaselineTensorMappings &&
+                                         await quantizationService.HasNativeSourceLearnedTruthAsync();
+
+        if (!nativeTruthAlreadyLearned || !loadedPlanFromCache)
+        {
+            await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                "[grey]Skipping base-model ngl clamp because native-source truth already exists and execution plan cache was loaded.[/]");
+        }
+
         await quantizationService.CleanupPureQ8ModelAsync();
 
         var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
@@ -117,15 +129,23 @@ public class Evolution : ICommand
 
         var baseModelQuant = HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant());
 
-        await benchmarkService.RunAllBenchmarksAsync(
-            quantConfig: baseModelQuant,
-            modelPath: bf16ModelGgufPath,
-            benchDir: baseBenchDir,
-            klLogitsDir: baseLogitsDir,
-            saveLogits: true,
-            domainsOverride: new[] { "general", "code", "math" });
+        if (!nativeTruthAlreadyLearned)
+        {
+            await benchmarkService.RunAllBenchmarksAsync(
+                quantConfig: baseModelQuant,
+                modelPath: bf16ModelGgufPath,
+                benchDir: baseBenchDir,
+                klLogitsDir: baseLogitsDir,
+                saveLogits: true,
+                domainsOverride: new[] { "general", "code", "math" });
 
-        await quantizationService.LearnNativeSourceTruthAsync(bf16ModelGgufPath);
+            await quantizationService.LearnNativeSourceTruthAsync(bf16ModelGgufPath);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                "[grey]Skipping native BF16 baseline benchmark + relearn because learned native-source truth already exists. Use --relearn-baseline-mappings to force rebuild.[/]");
+        }
 
         var compatibilityService = new ModelCompatibilityService(pyManager);
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
