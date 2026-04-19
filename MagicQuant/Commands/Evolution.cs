@@ -114,9 +114,10 @@ public class Evolution : ICommand
         var imatrixEnsureResult = await imatrixService.EnsureImatrixAsync(imatrixRequest, ct: default);
         if (imatrixEnsureResult.Enabled)
         {
+            string canonicalPath = imatrixEnsureResult.CanonicalImatrixPath ?? "n/a";
+            string rebuiltText = imatrixEnsureResult.Rebuilt ? "yes" : "no";
             AnsiConsole.MarkupLine(
-                $"[green]Imatrix active:[/] {Markup.Escape(imatrixEnsureResult.CanonicalImatrixPath ?? \"n/a\")} " +
-                $"(rebuilt={(imatrixEnsureResult.Rebuilt ? "yes" : "no")})");
+                $"[green]Imatrix active:[/] {Markup.Escape(canonicalPath)} (rebuilt={rebuiltText})");
         }
         else
         {
