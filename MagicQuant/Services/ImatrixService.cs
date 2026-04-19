@@ -81,13 +81,11 @@ public sealed class ImatrixService
         if (quant.BaseQuant.UniqueId == BaselineQuants.NativeSourceUniqueId)
             return false;
 
-        string baseName = quant.BaseQuant.Names.IsDefaultOrEmpty
-            ? string.Empty
-            : quant.BaseQuant.Names[0];
+        var baseScheme = quant.BaseQuant.DefaultTensorScheme;
+        if (baseScheme != null && TensorWeightScheme.IsNativePrecisionScheme(baseScheme))
+            return false;
 
-        return !baseName.Equals("BF16", StringComparison.OrdinalIgnoreCase) &&
-               !baseName.Equals("F16", StringComparison.OrdinalIgnoreCase) &&
-               !baseName.Equals("F32", StringComparison.OrdinalIgnoreCase);
+        return true;
     }
 
     public string GetCanonicalImatrixPath()
