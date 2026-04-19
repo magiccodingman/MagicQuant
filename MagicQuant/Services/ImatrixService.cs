@@ -556,7 +556,8 @@ with open(args.out, 'w', encoding='utf-8') as f:
                 if (looksStructured)
                     structuredRows++;
 
-                foreach (string text in ExtractCorpusTextFromJsonPayload(line, splitPropertyPath, out bool rowMissingRequestedSplit))
+                bool rowMissingRequestedSplit;
+                foreach (string text in ExtractCorpusTextFromJsonPayload(line, splitPropertyPath, out rowMissingRequestedSplit))
                 {
                     await writer.WriteLineAsync(text);
                     await writer.WriteLineAsync();
@@ -580,7 +581,8 @@ with open(args.out, 'w', encoding='utf-8') as f:
                 foreach (var row in doc.RootElement.EnumerateArray())
                 {
                     totalRows++;
-                    foreach (string text in ExtractCorpusTextFromElement(row, splitPropertyPath, out bool rowMissingRequestedSplit))
+                    bool rowMissingRequestedSplit;
+                    foreach (string text in ExtractCorpusTextFromElement(row, splitPropertyPath, out rowMissingRequestedSplit))
                     {
                         await writer.WriteLineAsync(text);
                         await writer.WriteLineAsync();
@@ -594,7 +596,8 @@ with open(args.out, 'w', encoding='utf-8') as f:
             else
             {
                 totalRows = 1;
-                foreach (string text in ExtractCorpusTextFromElement(doc.RootElement, splitPropertyPath, out bool rowMissingRequestedSplit))
+                bool rowMissingRequestedSplit;
+                foreach (string text in ExtractCorpusTextFromElement(doc.RootElement, splitPropertyPath, out rowMissingRequestedSplit))
                 {
                     await writer.WriteLineAsync(text);
                     await writer.WriteLineAsync();
