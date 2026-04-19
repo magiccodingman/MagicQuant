@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
@@ -325,7 +326,23 @@ public sealed class ImatrixService
             throw new FileNotFoundException($"Local dataset file not found: {datasetPath}");
 
         AnsiConsole.MarkupLine($"[grey]Imatrix: building from local dataset file:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
-        await BuildImatrixFromDatasetTextAsync(datasetPath, datPath, buildLogPath, ct);
+        string exportedCorpusPath = Path.Combine(Path.GetDirectoryName(datPath)!, "local-dataset.export.txt");
+        var exportSummary = await ExportLocalDatasetToCorpusAsync(datasetPath, exportedCorpusPath, buildLogPath, ct);
+
+        if (exportSummary.StructuredRows > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Imatrix warning:[/] input appears to be structured JSON rows " +
+                $"([cyan]{exportSummary.StructuredRows}[/]/[cyan]{exportSummary.TotalRows}[/]). " +
+                "Flattening extracted text into temporary corpus before llama-imatrix.");
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[grey]Imatrix: local dataset export complete.[/] rows=[cyan]{exportSummary.TotalRows}[/], " +
+            $"structured=[cyan]{exportSummary.StructuredRows}[/], extracted_text_blocks=[cyan]{exportSummary.ExtractedTextBlocks}[/], " +
+            $"corpus=[cyan]{Markup.Escape(exportedCorpusPath)}[/]");
+
+        await BuildImatrixFromDatasetTextAsync(exportedCorpusPath, datPath, buildLogPath, ct);
     }
 
     private async Task BuildFromHfDatasetAsync(ImatrixRequest request, string datPath, string buildLogPath, CancellationToken ct)
@@ -417,20 +434,28 @@ with open(args.out, 'w', encoding='utf-8') as f:
             UseShellExecute = false
         };
 
+        string launchedCommand = $"\"{imatrixBin}\" {psi.Arguments}";
+        AnsiConsole.MarkupLine($"[grey]Imatrix: launching command:[/] [cyan]{Markup.Escape(launchedCommand)}[/]");
+
         using var p = System.Diagnostics.Process.Start(psi)
                       ?? throw new InvalidOperationException("Failed to start llama-imatrix process.");
 
         await using var buildLog = new StreamWriter(buildLogPath, append: true, Encoding.UTF8);
+        await buildLog.WriteLineAsync($"[{DateTime.UtcNow:O}] Launch: {launchedCommand}");
+        await buildLog.FlushAsync();
+
+        using var writeLock = new SemaphoreSlim(1, 1);
         var startedUtc = DateTime.UtcNow;
+        var maxRuntime = TimeSpan.FromHours(2);
         int outputLineCount = 0;
 
-        Task stdoutTask = PumpProcessStreamAsync(p.StandardOutput, "stdout", buildLog, line =>
+        Task stdoutTask = PumpProcessStreamAsync(p.StandardOutput, "stdout", buildLog, writeLock, line =>
         {
             outputLineCount++;
             AnsiConsole.MarkupLine($"[grey]Imatrix[{Markup.Escape("stdout")}]:[/] {Markup.Escape(line)}");
         }, ct);
 
-        Task stderrTask = PumpProcessStreamAsync(p.StandardError, "stderr", buildLog, line =>
+        Task stderrTask = PumpProcessStreamAsync(p.StandardError, "stderr", buildLog, writeLock, line =>
         {
             outputLineCount++;
             AnsiConsole.MarkupLine($"[grey]Imatrix[{Markup.Escape("stderr")}]:[/] {Markup.Escape(line)}");
@@ -440,6 +465,16 @@ with open(args.out, 'w', encoding='utf-8') as f:
         {
             await Task.Delay(TimeSpan.FromSeconds(30), ct);
             var elapsed = DateTime.UtcNow - startedUtc;
+
+            if (elapsed > maxRuntime)
+            {
+                await buildLog.WriteLineAsync($"[{DateTime.UtcNow:O}] Timeout after {elapsed}. Killing llama-imatrix.");
+                await buildLog.FlushAsync();
+                p.Kill(entireProcessTree: true);
+                throw new TimeoutException(
+                    $"llama-imatrix exceeded safeguard runtime of {maxRuntime}. Process was terminated. See imatrix.build.log.");
+            }
+
             AnsiConsole.MarkupLine(
                 $"[grey]Imatrix: llama-imatrix still running... elapsed[/] [cyan]{elapsed:hh\\:mm\\:ss}[/][grey], output lines[/] [cyan]{outputLineCount}[/]");
         }
@@ -454,10 +489,178 @@ with open(args.out, 'w', encoding='utf-8') as f:
         AnsiConsole.MarkupLine($"[green]Imatrix: llama-imatrix completed successfully.[/] [grey]exit={p.ExitCode}[/]");
     }
 
+    private static async Task<LocalDatasetExportSummary> ExportLocalDatasetToCorpusAsync(
+        string datasetPath,
+        string exportedCorpusPath,
+        string buildLogPath,
+        CancellationToken ct)
+    {
+        string ext = Path.GetExtension(datasetPath).ToLowerInvariant();
+        if (ext is not ".json" and not ".jsonl")
+            throw new InvalidOperationException($"Unsupported local dataset extension '{ext}'.");
+
+        int totalRows = 0;
+        int structuredRows = 0;
+        int extractedTextBlocks = 0;
+
+        await using var writer = new StreamWriter(exportedCorpusPath, false, Encoding.UTF8);
+
+        if (ext == ".jsonl")
+        {
+            using var reader = new StreamReader(datasetPath, Encoding.UTF8);
+            while (!reader.EndOfStream)
+            {
+                ct.ThrowIfCancellationRequested();
+                string? line = await reader.ReadLineAsync();
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                totalRows++;
+                string trimmed = line.TrimStart();
+                bool looksStructured = trimmed.StartsWith("{", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal);
+                if (looksStructured)
+                    structuredRows++;
+
+                foreach (string text in ExtractCorpusTextFromJsonPayload(line))
+                {
+                    await writer.WriteLineAsync(text);
+                    await writer.WriteLineAsync();
+                    extractedTextBlocks++;
+                }
+            }
+        }
+        else
+        {
+            string json = await File.ReadAllTextAsync(datasetPath, ct);
+            using var doc = JsonDocument.Parse(json);
+
+            if (doc.RootElement.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                structuredRows = 1;
+
+            foreach (string text in ExtractCorpusTextFromElement(doc.RootElement))
+            {
+                await writer.WriteLineAsync(text);
+                await writer.WriteLineAsync();
+                extractedTextBlocks++;
+            }
+
+            totalRows = doc.RootElement.ValueKind == JsonValueKind.Array
+                ? doc.RootElement.GetArrayLength()
+                : 1;
+        }
+
+        await writer.FlushAsync();
+
+        if (extractedTextBlocks == 0)
+            throw new InvalidOperationException(
+                $"No usable text content was extracted from local dataset file '{datasetPath}'.");
+
+        await File.AppendAllTextAsync(
+            buildLogPath,
+            $"[{DateTime.UtcNow:O}] Local dataset export: src={datasetPath}, out={exportedCorpusPath}, " +
+            $"rows={totalRows}, structured_rows={structuredRows}, extracted_text_blocks={extractedTextBlocks}{Environment.NewLine}",
+            ct);
+
+        return new LocalDatasetExportSummary(totalRows, structuredRows, extractedTextBlocks);
+    }
+
+    private static IEnumerable<string> ExtractCorpusTextFromJsonPayload(string payload)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            return ExtractCorpusTextFromElement(doc.RootElement).ToList();
+        }
+        catch (JsonException)
+        {
+            if (LooksLikeUsefulText(payload))
+                return new[] { payload.Trim() };
+
+            return Array.Empty<string>();
+        }
+    }
+
+    private static IEnumerable<string> ExtractCorpusTextFromElement(JsonElement element)
+    {
+        var texts = new List<string>();
+        CollectText(element, texts);
+
+        // de-dup while preserving order
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var text in texts)
+        {
+            string normalized = Regex.Replace(text.Trim(), "\\s+", " ");
+            if (normalized.Length == 0)
+                continue;
+
+            if (seen.Add(normalized))
+                yield return normalized;
+        }
+    }
+
+    private static void CollectText(JsonElement element, List<string> sink)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.String:
+                string value = element.GetString() ?? string.Empty;
+                if (LooksLikeUsefulText(value))
+                    sink.Add(value);
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    CollectText(item, sink);
+                break;
+            case JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String)
+                    {
+                        string text = prop.Value.GetString() ?? string.Empty;
+                        if (IsLikelyTextFieldName(prop.Name) || LooksLikeUsefulText(text))
+                            sink.Add(text);
+                    }
+                    else
+                    {
+                        CollectText(prop.Value, sink);
+                    }
+                }
+                break;
+        }
+    }
+
+    private static bool LooksLikeUsefulText(string value)
+    {
+        string trimmed = value.Trim();
+        if (trimmed.Length < 4)
+            return false;
+
+        bool hasLetter = trimmed.Any(char.IsLetter);
+        bool hasWordBreak = trimmed.Contains(' ') || trimmed.Contains('\t') || trimmed.Contains('\n');
+        return hasLetter && (hasWordBreak || trimmed.Length >= 20);
+    }
+
+    private static bool IsLikelyTextFieldName(string fieldName) =>
+        fieldName.Equals("text", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("content", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("prompt", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("completion", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("response", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("instruction", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("input", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("output", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("question", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("answer", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("value", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("body", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("message", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("messages", StringComparison.OrdinalIgnoreCase);
+
     private static async Task PumpProcessStreamAsync(
         StreamReader reader,
         string label,
         StreamWriter buildLog,
+        SemaphoreSlim writeLock,
         Action<string> onLine,
         CancellationToken ct)
     {
@@ -469,10 +672,20 @@ with open(args.out, 'w', encoding='utf-8') as f:
                 break;
 
             onLine(line);
-            await buildLog.WriteLineAsync($"[{label}] {line}");
-            await buildLog.FlushAsync();
+            await writeLock.WaitAsync(ct);
+            try
+            {
+                await buildLog.WriteLineAsync($"[{label}] {line}");
+                await buildLog.FlushAsync();
+            }
+            finally
+            {
+                writeLock.Release();
+            }
         }
     }
+
+    private sealed record LocalDatasetExportSummary(int TotalRows, int StructuredRows, int ExtractedTextBlocks);
 
     private static string ResolvePythonExecutableOrThrow()
     {
