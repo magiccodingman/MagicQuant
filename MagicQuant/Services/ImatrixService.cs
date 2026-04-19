@@ -196,16 +196,18 @@ public sealed class ImatrixService
         if (!string.Equals(metadata.SourceKind, ToSidecarSourceKind(sourceKind), StringComparison.OrdinalIgnoreCase))
             return false;
 
+        string effectiveSplit = GetEffectiveSplitForMetadata(request, sourceKind);
+
         return sourceKind switch
         {
             ImatrixSourceKind.Https => string.Equals(metadata.OriginalUrl, request.ImatrixUrl, StringComparison.Ordinal),
             ImatrixSourceKind.HfDataset =>
                 string.Equals(metadata.DatasetRepo, request.DatasetRepo, StringComparison.Ordinal) &&
                 string.Equals(metadata.DatasetConfig, request.DatasetConfig, StringComparison.Ordinal) &&
-                string.Equals(metadata.DatasetSplit, request.DatasetSplit, StringComparison.Ordinal),
+                string.Equals(metadata.DatasetSplit, effectiveSplit, StringComparison.Ordinal),
             ImatrixSourceKind.LocalDatasetFile =>
                 string.Equals(metadata.LocalDatasetFile, Path.GetFullPath(request.LocalDatasetFile!), StringComparison.Ordinal) &&
-                string.Equals(metadata.DatasetSplit, request.DatasetSplit, StringComparison.Ordinal),
+                string.Equals(metadata.DatasetSplit, effectiveSplit, StringComparison.Ordinal),
             _ => false
         };
     }
@@ -222,6 +224,7 @@ public sealed class ImatrixService
     {
         AnsiConsole.MarkupLine(
             $"[grey]Imatrix: acquiring from source:[/] [cyan]{Markup.Escape(ToSidecarSourceKind(sourceKind))}[/]");
+        string effectiveSplit = GetEffectiveSplitForMetadata(request, sourceKind);
 
         switch (sourceKind)
         {
@@ -245,7 +248,7 @@ public sealed class ImatrixService
             OriginalDownloadName = request.ImatrixUrl == null ? null : Path.GetFileName(new Uri(request.ImatrixUrl).AbsolutePath),
             DatasetRepo = request.DatasetRepo,
             DatasetConfig = request.DatasetConfig,
-            DatasetSplit = request.DatasetSplit,
+            DatasetSplit = effectiveSplit,
             LocalDatasetFile = string.IsNullOrWhiteSpace(request.LocalDatasetFile) ? null : Path.GetFullPath(request.LocalDatasetFile)
         };
 
@@ -261,7 +264,7 @@ public sealed class ImatrixService
             CanonicalPath = datPath,
             SourceKind = ToSidecarSourceKind(sourceKind),
             SourceIdentity = sourceIdentity,
-            Split = request.DatasetSplit,
+            Split = effectiveSplit,
             Config = request.DatasetConfig,
             Sha256 = await ComputeSha256Async(datPath, ct),
             FileSizeBytes = fileInfo.Length
@@ -286,6 +289,14 @@ public sealed class ImatrixService
         ImatrixSourceKind.LocalDatasetFile => "local_dataset_file",
         _ => "unknown"
     };
+
+    private static string GetEffectiveSplitForMetadata(ImatrixRequest request, ImatrixSourceKind sourceKind)
+    {
+        if (sourceKind == ImatrixSourceKind.LocalDatasetFile)
+            return string.IsNullOrWhiteSpace(request.DatasetSplit) ? "<fallback-recursive>" : request.DatasetSplit.Trim();
+
+        return request.DatasetSplit ?? string.Empty;
+    }
 
     private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
     {
@@ -327,7 +338,27 @@ public sealed class ImatrixService
 
         AnsiConsole.MarkupLine($"[grey]Imatrix: building from local dataset file:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
         string exportedCorpusPath = Path.Combine(Path.GetDirectoryName(datPath)!, "local-dataset.export.txt");
-        var exportSummary = await ExportLocalDatasetToCorpusAsync(datasetPath, exportedCorpusPath, buildLogPath, ct);
+        string? splitPropertyPath = string.IsNullOrWhiteSpace(request.DatasetSplit) ? null : request.DatasetSplit!.Trim();
+
+        if (splitPropertyPath != null)
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: local dataset split/property =[/] [cyan]{Markup.Escape(splitPropertyPath)}[/]");
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: extracting property/path[/] [cyan]{Markup.Escape(splitPropertyPath)}[/] [grey]from local JSON rows.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]Imatrix warning:[/] no local split/property provided; using explicit fallback recursive text extraction mode.");
+        }
+
+        var exportSummary = await ExportLocalDatasetToCorpusAsync(
+            datasetPath,
+            exportedCorpusPath,
+            splitPropertyPath,
+            buildLogPath,
+            ct);
 
         if (exportSummary.StructuredRows > 0)
         {
@@ -339,7 +370,8 @@ public sealed class ImatrixService
 
         AnsiConsole.MarkupLine(
             $"[grey]Imatrix: local dataset export complete.[/] rows=[cyan]{exportSummary.TotalRows}[/], " +
-            $"structured=[cyan]{exportSummary.StructuredRows}[/], extracted_text_blocks=[cyan]{exportSummary.ExtractedTextBlocks}[/], " +
+            $"structured=[cyan]{exportSummary.StructuredRows}[/], missing_split=[cyan]{exportSummary.RowsMissingSplitProperty}[/], " +
+            $"extracted_text_blocks=[cyan]{exportSummary.ExtractedTextBlocks}[/], " +
             $"corpus=[cyan]{Markup.Escape(exportedCorpusPath)}[/]");
 
         await BuildImatrixFromDatasetTextAsync(exportedCorpusPath, datPath, buildLogPath, ct);
@@ -492,6 +524,7 @@ with open(args.out, 'w', encoding='utf-8') as f:
     private static async Task<LocalDatasetExportSummary> ExportLocalDatasetToCorpusAsync(
         string datasetPath,
         string exportedCorpusPath,
+        string? splitPropertyPath,
         string buildLogPath,
         CancellationToken ct)
     {
@@ -502,6 +535,8 @@ with open(args.out, 'w', encoding='utf-8') as f:
         int totalRows = 0;
         int structuredRows = 0;
         int extractedTextBlocks = 0;
+        int rowsWithMissingSplitProperty = 0;
+        bool usingSplitProperty = !string.IsNullOrWhiteSpace(splitPropertyPath);
 
         await using var writer = new StreamWriter(exportedCorpusPath, false, Encoding.UTF8);
 
@@ -521,12 +556,15 @@ with open(args.out, 'w', encoding='utf-8') as f:
                 if (looksStructured)
                     structuredRows++;
 
-                foreach (string text in ExtractCorpusTextFromJsonPayload(line))
+                foreach (string text in ExtractCorpusTextFromJsonPayload(line, splitPropertyPath, out bool rowMissingRequestedSplit))
                 {
                     await writer.WriteLineAsync(text);
                     await writer.WriteLineAsync();
                     extractedTextBlocks++;
                 }
+
+                if (rowMissingRequestedSplit)
+                    rowsWithMissingSplitProperty++;
             }
         }
         else
@@ -537,19 +575,45 @@ with open(args.out, 'w', encoding='utf-8') as f:
             if (doc.RootElement.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
                 structuredRows = 1;
 
-            foreach (string text in ExtractCorpusTextFromElement(doc.RootElement))
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
             {
-                await writer.WriteLineAsync(text);
-                await writer.WriteLineAsync();
-                extractedTextBlocks++;
-            }
+                foreach (var row in doc.RootElement.EnumerateArray())
+                {
+                    totalRows++;
+                    foreach (string text in ExtractCorpusTextFromElement(row, splitPropertyPath, out bool rowMissingRequestedSplit))
+                    {
+                        await writer.WriteLineAsync(text);
+                        await writer.WriteLineAsync();
+                        extractedTextBlocks++;
+                    }
 
-            totalRows = doc.RootElement.ValueKind == JsonValueKind.Array
-                ? doc.RootElement.GetArrayLength()
-                : 1;
+                    if (rowMissingRequestedSplit)
+                        rowsWithMissingSplitProperty++;
+                }
+            }
+            else
+            {
+                totalRows = 1;
+                foreach (string text in ExtractCorpusTextFromElement(doc.RootElement, splitPropertyPath, out bool rowMissingRequestedSplit))
+                {
+                    await writer.WriteLineAsync(text);
+                    await writer.WriteLineAsync();
+                    extractedTextBlocks++;
+                }
+
+                if (rowMissingRequestedSplit)
+                    rowsWithMissingSplitProperty++;
+            }
         }
 
         await writer.FlushAsync();
+
+        if (usingSplitProperty && extractedTextBlocks == 0)
+        {
+            throw new InvalidOperationException(
+                $"Local dataset split/property '{splitPropertyPath}' was requested but no text could be extracted from '{datasetPath}'. " +
+                "Verify the property/path exists in your JSON rows.");
+        }
 
         if (extractedTextBlocks == 0)
             throw new InvalidOperationException(
@@ -558,33 +622,57 @@ with open(args.out, 'w', encoding='utf-8') as f:
         await File.AppendAllTextAsync(
             buildLogPath,
             $"[{DateTime.UtcNow:O}] Local dataset export: src={datasetPath}, out={exportedCorpusPath}, " +
-            $"rows={totalRows}, structured_rows={structuredRows}, extracted_text_blocks={extractedTextBlocks}{Environment.NewLine}",
+            $"split_property={(splitPropertyPath ?? "<fallback-recursive>")}, rows={totalRows}, structured_rows={structuredRows}, " +
+            $"rows_missing_split={rowsWithMissingSplitProperty}, extracted_text_blocks={extractedTextBlocks}{Environment.NewLine}",
             ct);
 
-        return new LocalDatasetExportSummary(totalRows, structuredRows, extractedTextBlocks);
+        return new LocalDatasetExportSummary(totalRows, structuredRows, extractedTextBlocks, rowsWithMissingSplitProperty);
     }
 
-    private static IEnumerable<string> ExtractCorpusTextFromJsonPayload(string payload)
+    private static IEnumerable<string> ExtractCorpusTextFromJsonPayload(string payload, string? splitPropertyPath, out bool missingRequestedSplit)
     {
+        missingRequestedSplit = false;
         try
         {
             using var doc = JsonDocument.Parse(payload);
-            return ExtractCorpusTextFromElement(doc.RootElement).ToList();
+            return ExtractCorpusTextFromElement(doc.RootElement, splitPropertyPath, out missingRequestedSplit).ToList();
         }
         catch (JsonException)
         {
-            if (LooksLikeUsefulText(payload))
+            if (splitPropertyPath == null && LooksLikeUsefulText(payload))
                 return new[] { payload.Trim() };
+
+            if (splitPropertyPath != null)
+                missingRequestedSplit = true;
 
             return Array.Empty<string>();
         }
     }
 
-    private static IEnumerable<string> ExtractCorpusTextFromElement(JsonElement element)
+    private static IEnumerable<string> ExtractCorpusTextFromElement(JsonElement element, string? splitPropertyPath, out bool missingRequestedSplit)
     {
+        missingRequestedSplit = false;
+
+        if (!string.IsNullOrWhiteSpace(splitPropertyPath))
+        {
+            if (!TryResolveJsonPath(element, splitPropertyPath!, out JsonElement resolved))
+            {
+                missingRequestedSplit = true;
+                return Array.Empty<string>();
+            }
+
+            var pathTexts = new List<string>();
+            CollectText(resolved, pathTexts);
+            return NormalizeDistinct(pathTexts);
+        }
+
         var texts = new List<string>();
         CollectText(element, texts);
+        return NormalizeDistinct(texts);
+    }
 
+    private static IEnumerable<string> NormalizeDistinct(List<string> texts)
+    {
         // de-dup while preserving order
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var text in texts)
@@ -596,6 +684,66 @@ with open(args.out, 'w', encoding='utf-8') as f:
             if (seen.Add(normalized))
                 yield return normalized;
         }
+    }
+
+    private static bool TryResolveJsonPath(JsonElement row, string splitPropertyPath, out JsonElement resolved)
+    {
+        resolved = row;
+        foreach (string rawSegment in splitPropertyPath.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (resolved.ValueKind == JsonValueKind.Object)
+            {
+                if (!TryGetPropertyCaseInsensitive(resolved, rawSegment, out resolved))
+                    return false;
+                continue;
+            }
+
+            if (resolved.ValueKind == JsonValueKind.Array)
+            {
+                if (int.TryParse(rawSegment, out int index))
+                {
+                    if (index < 0 || index >= resolved.GetArrayLength())
+                        return false;
+
+                    resolved = resolved[index];
+                    continue;
+                }
+
+                // if segment points to a property on each array element, gather all hits
+                var hits = new List<JsonElement>();
+                foreach (var item in resolved.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object && TryGetPropertyCaseInsensitive(item, rawSegment, out JsonElement value))
+                        hits.Add(value);
+                }
+
+                if (hits.Count == 0)
+                    return false;
+
+                using var hitsDoc = JsonDocument.Parse(JsonSerializer.Serialize(hits));
+                resolved = hitsDoc.RootElement.Clone();
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetPropertyCaseInsensitive(JsonElement obj, string name, out JsonElement value)
+    {
+        foreach (var prop in obj.EnumerateObject())
+        {
+            if (string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = prop.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static void CollectText(JsonElement element, List<string> sink)
@@ -685,7 +833,7 @@ with open(args.out, 'w', encoding='utf-8') as f:
         }
     }
 
-    private sealed record LocalDatasetExportSummary(int TotalRows, int StructuredRows, int ExtractedTextBlocks);
+    private sealed record LocalDatasetExportSummary(int TotalRows, int StructuredRows, int ExtractedTextBlocks, int RowsMissingSplitProperty);
 
     private static string ResolvePythonExecutableOrThrow()
     {
