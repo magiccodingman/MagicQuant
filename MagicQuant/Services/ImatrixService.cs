@@ -17,8 +17,11 @@ public sealed class ImatrixService
 
     public async Task<ImatrixEnsureResult> EnsureImatrixAsync(ImatrixRequest request, CancellationToken ct = default)
     {
+        AnsiConsole.MarkupLine("[grey]Imatrix: starting ensure flow...[/]");
+
         if (!request.UseImatrix)
         {
+            AnsiConsole.MarkupLine("[grey]Imatrix: disabled by --use-imatrix flag (false).[/]");
             Cache.IsImatrixAvailable = false;
             Cache.ActiveImatrixPath = null;
             RuntimeSearchSpace.SetImatrixAvailability(false);
@@ -26,9 +29,12 @@ public sealed class ImatrixService
         }
 
         ValidateRequest(request, out var sourceKind, out var sourceIdentity);
+        AnsiConsole.MarkupLine(
+            $"[grey]Imatrix: validated source mode:[/] [cyan]{Markup.Escape(ToSidecarSourceKind(sourceKind))}[/]");
 
         string imatrixDir = Path.Combine(request.MagicQuantDirectory, "imatrix");
         Directory.CreateDirectory(imatrixDir);
+        AnsiConsole.MarkupLine($"[grey]Imatrix: using directory:[/] [cyan]{Markup.Escape(imatrixDir)}[/]");
 
         string datPath = Path.Combine(imatrixDir, "imatrix.dat");
         string successPath = Path.Combine(imatrixDir, "imatrix.success.json");
@@ -36,18 +42,23 @@ public sealed class ImatrixService
         string buildLogPath = Path.Combine(imatrixDir, "imatrix.build.log");
 
         if (request.ForceRebuild)
+        {
+            AnsiConsole.MarkupLine("[yellow]Imatrix: force rebuild enabled, cleaning prior canonical artifacts...[/]");
             await CleanupArtifactsAsync(datPath, successPath, metadataPath, buildLogPath);
+        }
 
         bool shouldRebuild = await ShouldRebuildAsync(request, sourceKind, datPath, successPath, metadataPath);
 
         if (shouldRebuild)
         {
+            AnsiConsole.MarkupLine("[grey]Imatrix: canonical artifacts missing/stale/mismatched; rebuilding now...[/]");
             await CleanupArtifactsAsync(datPath, successPath, metadataPath, buildLogPath);
             await AcquireImatrixAsync(request, sourceKind, sourceIdentity, datPath, metadataPath, successPath, buildLogPath, ct);
 
             Cache.IsImatrixAvailable = true;
             Cache.ActiveImatrixPath = datPath;
             RuntimeSearchSpace.SetImatrixAvailability(true);
+            AnsiConsole.MarkupLine($"[green]Imatrix: ready (rebuilt).[/] [grey]{Markup.Escape(datPath)}[/]");
 
             return new ImatrixEnsureResult
             {
@@ -62,6 +73,7 @@ public sealed class ImatrixService
         Cache.IsImatrixAvailable = true;
         Cache.ActiveImatrixPath = datPath;
         RuntimeSearchSpace.SetImatrixAvailability(true);
+        AnsiConsole.MarkupLine($"[green]Imatrix: ready (reused existing trusted artifact).[/] [grey]{Markup.Escape(datPath)}[/]");
 
         return new ImatrixEnsureResult
         {
@@ -206,6 +218,9 @@ public sealed class ImatrixService
         string buildLogPath,
         CancellationToken ct)
     {
+        AnsiConsole.MarkupLine(
+            $"[grey]Imatrix: acquiring from source:[/] [cyan]{Markup.Escape(ToSidecarSourceKind(sourceKind))}[/]");
+
         switch (sourceKind)
         {
             case ImatrixSourceKind.Https:
@@ -280,6 +295,7 @@ public sealed class ImatrixService
     private static async Task AcquireFromHttpsAsync(ImatrixRequest request, string datPath, string buildLogPath, CancellationToken ct)
     {
         string tempPath = datPath + ".source.tmp";
+        AnsiConsole.MarkupLine($"[grey]Imatrix: downloading from URL:[/] [cyan]{Markup.Escape(request.ImatrixUrl ?? string.Empty)}[/]");
 
         using var client = new HttpClient();
         await using (var sourceStream = await client.GetStreamAsync(request.ImatrixUrl!, ct))
@@ -307,6 +323,7 @@ public sealed class ImatrixService
         if (!File.Exists(datasetPath))
             throw new FileNotFoundException($"Local dataset file not found: {datasetPath}");
 
+        AnsiConsole.MarkupLine($"[grey]Imatrix: building from local dataset file:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
         await BuildImatrixFromDatasetTextAsync(datasetPath, datPath, buildLogPath, ct);
     }
 
@@ -315,6 +332,9 @@ public sealed class ImatrixService
         string tempJsonl = Path.Combine(Path.GetDirectoryName(datPath)!, "hf-dataset.export.jsonl");
         string python = ResolvePythonExecutableOrThrow();
         string scriptPath = Path.Combine(Path.GetDirectoryName(datPath)!, "build_hf_imatrix_dataset.py");
+        AnsiConsole.MarkupLine(
+            $"[grey]Imatrix: exporting Hugging Face dataset[/] [cyan]{Markup.Escape(request.DatasetRepo ?? string.Empty)}[/]" +
+            $"[grey] split=[/][cyan]{Markup.Escape(request.DatasetSplit ?? string.Empty)}[/]");
 
         string script = """
 import json
@@ -369,6 +389,9 @@ with open(args.out, 'w', encoding='utf-8') as f:
 
     private static async Task BuildImatrixFromDatasetTextAsync(string datasetPath, string datPath, string buildLogPath, CancellationToken ct)
     {
+        AnsiConsole.MarkupLine(
+            $"[grey]Imatrix: invoking llama-imatrix build from dataset:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
+
         string llamaBin = Cache.LlamaBin ?? throw new InvalidOperationException("Cache.LlamaBin not set.");
         string binaryName = OperatingSystem.IsWindows() ? "llama-imatrix.exe" : "llama-imatrix";
         string imatrixBin = Path.Combine(llamaBin, binaryName);
