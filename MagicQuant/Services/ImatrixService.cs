@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
@@ -391,6 +392,7 @@ with open(args.out, 'w', encoding='utf-8') as f:
     {
         AnsiConsole.MarkupLine(
             $"[grey]Imatrix: invoking llama-imatrix build from dataset:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
+        AnsiConsole.MarkupLine($"[grey]Imatrix: streaming llama-imatrix output to:[/] [cyan]{Markup.Escape(buildLogPath)}[/]");
 
         string llamaBin = Cache.LlamaBin ?? throw new InvalidOperationException("Cache.LlamaBin not set.");
         string binaryName = OperatingSystem.IsWindows() ? "llama-imatrix.exe" : "llama-imatrix";
@@ -418,14 +420,58 @@ with open(args.out, 'w', encoding='utf-8') as f:
         using var p = System.Diagnostics.Process.Start(psi)
                       ?? throw new InvalidOperationException("Failed to start llama-imatrix process.");
 
-        string stdout = await p.StandardOutput.ReadToEndAsync();
-        string stderr = await p.StandardError.ReadToEndAsync();
-        await p.WaitForExitAsync(ct);
+        await using var buildLog = new StreamWriter(buildLogPath, append: true, Encoding.UTF8);
+        var startedUtc = DateTime.UtcNow;
+        int outputLineCount = 0;
 
-        await File.AppendAllTextAsync(buildLogPath, stdout + Environment.NewLine + stderr, ct);
+        Task stdoutTask = PumpProcessStreamAsync(p.StandardOutput, "stdout", buildLog, line =>
+        {
+            outputLineCount++;
+            AnsiConsole.MarkupLine($"[grey]Imatrix[{Markup.Escape("stdout")}]:[/] {Markup.Escape(line)}");
+        }, ct);
+
+        Task stderrTask = PumpProcessStreamAsync(p.StandardError, "stderr", buildLog, line =>
+        {
+            outputLineCount++;
+            AnsiConsole.MarkupLine($"[grey]Imatrix[{Markup.Escape("stderr")}]:[/] {Markup.Escape(line)}");
+        }, ct);
+
+        while (!p.HasExited)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), ct);
+            var elapsed = DateTime.UtcNow - startedUtc;
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: llama-imatrix still running... elapsed[/] [cyan]{elapsed:hh\\:mm\\:ss}[/][grey], output lines[/] [cyan]{outputLineCount}[/]");
+        }
+
+        await Task.WhenAll(stdoutTask, stderrTask);
+        await p.WaitForExitAsync(ct);
+        await buildLog.FlushAsync();
 
         if (p.ExitCode != 0)
             throw new InvalidOperationException("llama-imatrix failed. See imatrix.build.log.");
+
+        AnsiConsole.MarkupLine($"[green]Imatrix: llama-imatrix completed successfully.[/] [grey]exit={p.ExitCode}[/]");
+    }
+
+    private static async Task PumpProcessStreamAsync(
+        StreamReader reader,
+        string label,
+        StreamWriter buildLog,
+        Action<string> onLine,
+        CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            string? line = await reader.ReadLineAsync(ct);
+            if (line == null)
+                break;
+
+            onLine(line);
+            await buildLog.WriteLineAsync($"[{label}] {line}");
+            await buildLog.FlushAsync();
+        }
     }
 
     private static string ResolvePythonExecutableOrThrow()
