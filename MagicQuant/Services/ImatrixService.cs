@@ -81,8 +81,13 @@ public sealed class ImatrixService
         if (quant.BaseQuant.UniqueId == BaselineQuants.NativeSourceUniqueId)
             return false;
 
-        var torchType = Cache.TorchType ?? Cache.MainTorchType.BF16;
-        return torchType != Cache.MainTorchType.F16 && torchType != Cache.MainTorchType.F32;
+        string baseName = quant.BaseQuant.Names.IsDefaultOrEmpty
+            ? string.Empty
+            : quant.BaseQuant.Names[0];
+
+        return !baseName.Equals("BF16", StringComparison.OrdinalIgnoreCase) &&
+               !baseName.Equals("F16", StringComparison.OrdinalIgnoreCase) &&
+               !baseName.Equals("F32", StringComparison.OrdinalIgnoreCase);
     }
 
     public string GetCanonicalImatrixPath()

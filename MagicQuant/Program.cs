@@ -21,7 +21,7 @@ if (args.Length == 0)
 string manualFlags =
     @"--model-dir ""/mnt/world8/AI/Models/Qwen3-4B-Instruct-2507-unsloth/""
       --use-imatrix
-      --imatrix-dataset-local-file ""/home/slurp/Documents/Output_Files/Dataset/artifacts/imatrix-general-v1.yaml""
+      --imatrix-dataset-local-file ""/home/slurp/Documents/Output_Files/Dataset/artifacts/imatrix-general-v1.jsonl""
       --imatrix-dataset-split ""train""";
 args = args.Concat(manualFlags.Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToArray();
 #endif
