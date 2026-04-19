@@ -103,6 +103,7 @@ public sealed class LearnedBaselinePruningService
         var explicitSchemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
             .OrderBy(x => x.UniqueId)
             .ToList();
 

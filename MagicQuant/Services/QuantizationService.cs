@@ -48,6 +48,7 @@ public class QuantizationService
     private readonly PythonManager _python;
     private readonly SemaphoreSlim _cpuQuantLock;
     private readonly int _maxConcurrentQuantizations;
+    private readonly ImatrixService _imatrixService;
 
     private static readonly SemaphoreSlim BaseModelLock = new(1, 1);
     private const byte UnknownTensorGroupId = 255;
@@ -72,6 +73,7 @@ public class QuantizationService
 
         _ggufDir = Path.Combine(Cache.ModelMagicQuantDirectory, "GGUF");
         _benchDir = Path.Combine(Cache.ModelMagicQuantDirectory, "Benchmarks");
+        _imatrixService = new ImatrixService();
 
         Directory.CreateDirectory(_ggufDir);
         Directory.CreateDirectory(_benchDir);
@@ -797,6 +799,15 @@ public class QuantizationService
             args.Add($"--tensor-type \"{overrideItem.TensorName}={overrideItem.SchemeName}\"");
         }
 
+        if (ShouldApplyImatrix(quant))
+        {
+            string imatrixPath = _imatrixService.GetCanonicalImatrixPath();
+            if (!File.Exists(imatrixPath))
+                throw new InvalidOperationException($"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
+
+            args.Add($"--imatrix \"{imatrixPath}\"");
+        }
+
         args.Add($"\"{inputFile}\"");
         args.Add($"\"{outputFile}\"");
         args.Add(ResolveQuantizeBaseArgument(quant, concreteOverrides));
@@ -857,6 +868,11 @@ public class QuantizationService
         }
 
         return ResolveBaseName(quant.BaseQuant);
+    }
+
+    private bool ShouldApplyImatrix(HybridQuant quant)
+    {
+        return _imatrixService.ShouldUseImatrixForQuant(quant);
     }
 
     public async Task ClearLearnedBaselineTensorMappingsAsync(CancellationToken ct = default)

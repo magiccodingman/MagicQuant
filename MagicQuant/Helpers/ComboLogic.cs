@@ -12,13 +12,13 @@ public static class ComboLogic
 
     public static ImmutableArray<byte[]> GetAllowedSchemeIdsPerGroup(BaselineQuants baseQuant)
     {
-        bool baseRequiresImatrix = baseQuant.RequiresImatrix;
+        bool imatrixAvailable = RuntimeSearchSpace.HasUsableImatrix();
 
-        var schemesForBase = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(s => baseRequiresImatrix || !s.RequiresImatrix)
+        var schemesForRun = TensorWeightScheme.All_Allowed_Hybrid_Quants
+            .Where(s => imatrixAvailable || !s.RequiresImatrix)
             .ToImmutableArray();
 
-        if (schemesForBase.IsEmpty)
+        if (schemesForRun.IsEmpty)
             throw new InvalidOperationException("No tensor schemes available for this base.");
 
         var builder = ImmutableArray.CreateBuilder<byte[]>();
@@ -37,7 +37,7 @@ public static class ComboLogic
             if (!RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
                 ids.Add(TensorWeightScheme.BF16_F16.UniqueId);
 
-            foreach (var scheme in schemesForBase)
+            foreach (var scheme in schemesForRun)
             {
                 if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId || scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
                     continue;

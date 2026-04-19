@@ -63,4 +63,12 @@ public class Cache
     public static bool ForceRelearnBaselineTensorMappings { get; set; }
 
     public static bool ForceRefreshHardwareProbe { get; set; }
+
+    public static bool UseImatrix { get; set; }
+
+    public static bool ForceImatrixRebuild { get; set; }
+
+    public static bool IsImatrixAvailable { get; set; }
+
+    public static string? ActiveImatrixPath { get; set; }
 }

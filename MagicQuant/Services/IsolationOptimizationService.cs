@@ -209,9 +209,6 @@ public class IsolationOptimizationService
                 if (candidate.Scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
                     continue;
 
-                if (candidate.Scheme.RequiresImatrix)
-                    continue;
-
                 bool hardFail =
                     candidate.PplDeltaPercent >= IsolationPruningConfig.MaximumIsolationPplDeltaPercent ||
                     candidate.Kld >= IsolationPruningConfig.MaximumIsolationKld;
@@ -421,7 +418,6 @@ public class IsolationOptimizationService
     {
         return candidates
             .Where(x => x.Scheme.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => !x.Scheme.RequiresImatrix)
             .Where(x => !RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, x.Scheme))
             .ToList();
     }

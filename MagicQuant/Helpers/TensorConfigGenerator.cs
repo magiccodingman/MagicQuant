@@ -20,7 +20,9 @@ public static class TensorConfigGenerator
 
         var result = new RequiredSampleGenerationResult();
 
-        foreach (var baseline in BaselineQuants.All.OrderBy(x => x.UniqueId))
+        foreach (var baseline in BaselineQuants.All
+                     .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
+                     .OrderBy(x => x.UniqueId))
         {
             result.Plans.Add(new RequiredSamplePlan
             {
@@ -126,6 +128,7 @@ public static class TensorConfigGenerator
         var schemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
             .OrderBy(x => x.UniqueId)
             .ToList();
 
@@ -295,6 +298,7 @@ public static class TensorConfigGenerator
     private static TensorWeightScheme? GetSmallestAllowedProbeSchemeForGroup(TensorGroup group)
     {
         var allowedIds = TensorWeightScheme.All_Allowed_Hybrid_Quants
+            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
             .Select(x => x.UniqueId)
             .ToHashSet();
 
