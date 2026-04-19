@@ -442,6 +442,12 @@ with open(args.out, 'w', encoding='utf-8') as f:
         AnsiConsole.MarkupLine(
             $"[grey]Imatrix: invoking llama-imatrix build from dataset:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
         AnsiConsole.MarkupLine($"[grey]Imatrix: streaming llama-imatrix output to:[/] [cyan]{Markup.Escape(buildLogPath)}[/]");
+        if (File.Exists(datasetPath))
+        {
+            long corpusSizeBytes = new FileInfo(datasetPath).Length;
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: exported corpus ready.[/] [cyan]size={Markup.Escape(FormatBytes(corpusSizeBytes))}[/]");
+        }
 
         string llamaBin = Cache.LlamaBin ?? throw new InvalidOperationException("Cache.LlamaBin not set.");
         string binaryName = OperatingSystem.IsWindows() ? "llama-imatrix.exe" : "llama-imatrix";
@@ -480,23 +486,47 @@ with open(args.out, 'w', encoding='utf-8') as f:
         var startedUtc = DateTime.UtcNow;
         var maxRuntime = TimeSpan.FromHours(2);
         int outputLineCount = 0;
+        bool datDetected = false;
+        long lastDatSize = -1;
 
         Task stdoutTask = PumpProcessStreamAsync(p.StandardOutput, "stdout", buildLog, writeLock, line =>
         {
             outputLineCount++;
-            AnsiConsole.MarkupLine($"[grey]Imatrix[{Markup.Escape("stdout")}]:[/] {Markup.Escape(line)}");
+            AnsiConsole.MarkupLine($"[grey]llama-imatrix stdout:[/] {Markup.Escape(line)}");
         }, ct);
 
         Task stderrTask = PumpProcessStreamAsync(p.StandardError, "stderr", buildLog, writeLock, line =>
         {
             outputLineCount++;
-            AnsiConsole.MarkupLine($"[grey]Imatrix[{Markup.Escape("stderr")}]:[/] {Markup.Escape(line)}");
+            AnsiConsole.MarkupLine($"[grey]llama-imatrix stderr:[/] {Markup.Escape(line)}");
         }, ct);
 
         while (!p.HasExited)
         {
             await Task.Delay(TimeSpan.FromSeconds(30), ct);
             var elapsed = DateTime.UtcNow - startedUtc;
+            bool datExists = File.Exists(datPath);
+            string datSizeText = "n/a";
+            if (datExists)
+            {
+                long datSize = new FileInfo(datPath).Length;
+                datSizeText = FormatBytes(datSize);
+
+                if (!datDetected)
+                {
+                    datDetected = true;
+                    lastDatSize = datSize;
+                    AnsiConsole.MarkupLine($"[green]Imatrix: output file detected:[/] [cyan]{Markup.Escape(datPath)}[/]");
+                    AnsiConsole.MarkupLine($"[green]Imatrix: output file size now[/] [cyan]{Markup.Escape(datSizeText)}[/]");
+                }
+                else if (datSize != lastDatSize)
+                {
+                    lastDatSize = datSize;
+                    AnsiConsole.MarkupLine($"[grey]Imatrix: output file size now[/] [cyan]{Markup.Escape(datSizeText)}[/]");
+                }
+            }
+
+            string corpusSizeText = File.Exists(datasetPath) ? FormatBytes(new FileInfo(datasetPath).Length) : "n/a";
 
             if (elapsed > maxRuntime)
             {
@@ -508,7 +538,12 @@ with open(args.out, 'w', encoding='utf-8') as f:
             }
 
             AnsiConsole.MarkupLine(
-                $"[grey]Imatrix: llama-imatrix still running... elapsed[/] [cyan]{elapsed:hh\\:mm\\:ss}[/][grey], output lines[/] [cyan]{outputLineCount}[/]");
+                $"[grey]Imatrix: llama-imatrix still running... elapsed[/] [cyan]{elapsed:hh\\:mm\\:ss}[/]" +
+                $"[grey], output lines[/] [cyan]{outputLineCount}[/]" +
+                $"[grey], dat_exists[/] [cyan]{datExists}[/]" +
+                $"[grey], dat_size[/] [cyan]{Markup.Escape(datSizeText)}[/]" +
+                $"[grey], corpus_size[/] [cyan]{Markup.Escape(corpusSizeText)}[/]" +
+                $"[grey], log[/] [cyan]{Markup.Escape(buildLogPath)}[/]");
         }
 
         await Task.WhenAll(stdoutTask, stderrTask);
@@ -826,7 +861,7 @@ with open(args.out, 'w', encoding='utf-8') as f:
             await writeLock.WaitAsync(ct);
             try
             {
-                await buildLog.WriteLineAsync($"[{label}] {line}");
+                await buildLog.WriteLineAsync($"[llama-imatrix {label}] {line}");
                 await buildLog.FlushAsync();
             }
             finally
@@ -834,6 +869,20 @@ with open(args.out, 'w', encoding='utf-8') as f:
                 writeLock.Release();
             }
         }
+    }
+
+    private static string FormatBytes(long sizeBytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double size = sizeBytes;
+        int unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return $"{size:0.0} {units[unit]}";
     }
 
     private sealed record LocalDatasetExportSummary(int TotalRows, int StructuredRows, int ExtractedTextBlocks, int RowsMissingSplitProperty);
