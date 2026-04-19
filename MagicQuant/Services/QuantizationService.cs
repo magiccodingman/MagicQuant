@@ -921,12 +921,62 @@ public class QuantizationService
         AnsiConsole.MarkupLine("[yellow]Relearn requested:[/] baseline artifacts, benchmark caches, and learning diagnostics were invalidated.");
     }
 
+    public async Task<bool> HasNativeSourceLearnedTruthAsync(CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            return false;
+
+        var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
+        await using var db = new MagicQuantContext();
+        var model = await db.AiModelHashes
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+        if (model == null)
+            return false;
+
+        return await db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == model.Id &&
+                        x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                        x.TensorWeightSchemeId == nativeScheme.UniqueId)
+            .AnyAsync(ct);
+    }
+
     public async Task LearnNativeSourceTruthAsync(
         string nativeGgufPath,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(nativeGgufPath) || !File.Exists(nativeGgufPath))
             throw new FileNotFoundException($"Native GGUF path not found for learning: {nativeGgufPath}");
+
+        var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
+        if (!Cache.ForceRelearnBaselineTensorMappings)
+        {
+            await using var precheckDb = new MagicQuantContext();
+            var existingModel = await precheckDb.AiModelHashes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
+
+            if (existingModel != null)
+            {
+                int existingRows = await precheckDb.LearnedBaselineTensorQuants
+                    .AsNoTracking()
+                    .Where(x => x.AiModelHashId == existingModel.Id &&
+                                x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                                x.TensorWeightSchemeId == nativeScheme.UniqueId)
+                    .CountAsync(ct);
+
+                if (existingRows > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[grey]Native-source learned truth already exists:[/] [cyan]{existingRows:N0}[/] row(s) for [yellow]{Markup.Escape(nativeScheme.Names[0])}[/]. Skipping relearn. Use [green]--relearn-baseline-mappings[/] to regenerate.");
+                    return;
+                }
+            }
+        }
 
         var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, nativeGgufPath);
         var ggufTruth = metadata.TensorTypes
@@ -963,8 +1013,6 @@ public class QuantizationService
 
         if (!benchmarkId.HasValue)
             throw new InvalidOperationException("Native-source benchmark row is missing; benchmark base model before native-source learning.");
-
-        var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
 
         await db.LearnedBaselineTensorQuants
             .Where(x => x.AiModelHashId == model.Id &&
