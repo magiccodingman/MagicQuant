@@ -1461,12 +1461,15 @@ public class QuantizationService
             if (hybrid.CandidateBaseline != null && hybrid.CandidateBaseline.UniqueId == quant.BaseQuant.UniqueId)
                 continue;
 
-            var sourceScheme = hybrid.CandidateBaseline?.DefaultTensorScheme ?? hybrid.TensorType;
-            var learned = TryLoadLearnedTensorMapping(sourceScheme, hybrid.TGroup, hybrid.CandidateBaseline);
+            var sourceBaseline = hybrid.CandidateBaseline ?? BaselineQuants.FromTensorSchemeId(hybrid.TensorType.UniqueId);
+            var learned = TryLoadLearnedTensorMapping(
+                sourceBaselineId: sourceBaseline.UniqueId,
+                targetGroup: hybrid.TGroup,
+                preferredSourceScheme: hybrid.CandidateBaseline?.DefaultTensorScheme ?? hybrid.TensorType);
             if (learned.Count == 0)
             {
                 throw new InvalidOperationException(
-                    $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + scheme '{hybrid.CandidateBaseline?.Names[0] ?? ResolveSchemeName(hybrid.TensorType)}'. " +
+                    $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. " +
                     "Run with --relearn-baseline-mappings to regenerate.");
             }
 
@@ -1484,7 +1487,7 @@ public class QuantizationService
                 var unexpectedText = unexpectedLearned.Count == 0 ? "none" : string.Join(", ", unexpectedLearned.Take(15));
 
                 throw new InvalidOperationException(
-                    $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + scheme '{hybrid.CandidateBaseline?.Names[0] ?? ResolveSchemeName(hybrid.TensorType)}'. " +
+                    $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. " +
                     $"Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
             }
 
@@ -1502,7 +1505,10 @@ public class QuantizationService
         return result;
     }
 
-    private Dictionary<string, string> TryLoadLearnedTensorMapping(TensorWeightScheme sourceScheme, TensorGroup targetGroup, BaselineQuants? sourceBaseline = null)
+    private Dictionary<string, string> TryLoadLearnedTensorMapping(
+        byte sourceBaselineId,
+        TensorGroup targetGroup,
+        TensorWeightScheme? preferredSourceScheme = null)
     {
         using var db = new MagicQuantContext();
 
@@ -1513,33 +1519,40 @@ public class QuantizationService
         if (model == null)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
-        byte baselineId;
-        if (TensorWeightScheme.IsNativePrecisionScheme(sourceScheme))
-        {
-            baselineId = BaselineQuants.NativeSourceUniqueId;
-        }
-        else
-        {
-            var baseline = sourceBaseline ?? BaselineQuants.All.FirstOrDefault(x =>
-                x.TensorWeightSchemes.Any(s => s.UniqueId == sourceScheme.UniqueId));
-
-            if (baseline == null)
-                return new Dictionary<string, string>(StringComparer.Ordinal);
-
-            baselineId = baseline.UniqueId;
-        }
-
-        var rows = db.LearnedBaselineTensorQuants
+        var allRows = db.LearnedBaselineTensorQuants
             .AsNoTracking()
             .Where(x => x.AiModelHashId == model.Id)
-            .Where(x => x.BaselineQuantId == baselineId)
-            .Where(x => x.TensorWeightSchemeId == sourceScheme.UniqueId)
+            .Where(x => x.BaselineQuantId == sourceBaselineId)
             .Where(x => x.TensorGroupId == targetGroup.UniqueId)
             .OrderBy(x => x.TensorName)
             .ToList();
 
+        if (allRows.Count == 0)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var rows = allRows;
+        if (preferredSourceScheme != null)
+        {
+            var preferred = allRows.Where(x => x.TensorWeightSchemeId == preferredSourceScheme.UniqueId).ToList();
+            if (preferred.Count > 0)
+                rows = preferred;
+        }
+
         if (rows.Count == 0)
             return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // If rows contain mixed source schemes, use the dominant scheme for stable coverage semantics.
+        if (rows.Select(x => x.TensorWeightSchemeId).Distinct().Count() > 1)
+        {
+            var dominantSchemeId = rows
+                .GroupBy(x => x.TensorWeightSchemeId)
+                .OrderByDescending(g => g.Count())
+                .ThenBy(g => g.Key)
+                .Select(g => g.Key)
+                .First();
+
+            rows = rows.Where(x => x.TensorWeightSchemeId == dominantSchemeId).ToList();
+        }
 
         return rows.ToDictionary(x => x.TensorName, x => x.FinalQuantType, StringComparer.Ordinal);
     }

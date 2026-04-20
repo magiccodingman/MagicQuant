@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using MQ.DB;
 
 namespace MQ.DB.Models;
 
@@ -6,7 +7,9 @@ public record BaselineQuants(
     byte UniqueId,
     bool RequiresImatrix,
     ImmutableArray<string> Names,
-    ImmutableArray<TensorWeightScheme> TensorWeightSchemes,
+    TensorWeightScheme PrimaryTensorWeightScheme,
+    ImmutableArray<TensorWeightScheme> LearnedMatchTensorWeightSchemes,
+    ImmutableArray<byte> BannedGroupIds,
     bool IsPureBaselineCandidate,
     bool IsCombinationCarrierCandidate,
     bool IsExplicitGroupCombinationCandidate,
@@ -14,109 +17,104 @@ public record BaselineQuants(
 {
     public const byte NativeSourceUniqueId = 250;
 
-    public TensorWeightScheme? DefaultTensorScheme =>
-        TensorWeightSchemes.IsDefaultOrEmpty ? null : TensorWeightSchemes[0];
+    public TensorWeightScheme? DefaultTensorScheme => PrimaryTensorWeightScheme;
 
-    public IReadOnlyList<byte> BannedGroupIds =>
-        TensorWeightSchemes
-            .SelectMany(x => x.BannedGroups.Select(g => g.UniqueId))
-            .Distinct()
-            .OrderBy(x => x)
-            .ToList();
+    // Legacy alias retained for compatibility with existing call sites.
+    public ImmutableArray<TensorWeightScheme> TensorWeightSchemes => LearnedMatchTensorWeightSchemes;
 
     public static readonly BaselineQuants Q8_0 =
-        new(0, false, ["Q8_0"], [TensorWeightScheme.Q8_0],
+        new(0, false, ["Q8_0"], TensorWeightScheme.Q8_0, [TensorWeightScheme.Q8_0], [],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: true,
             IsExplicitGroupCombinationCandidate: true,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants Q6_K =
-        new(1, false, ["Q6_K"], [TensorWeightScheme.Q6_K],
+        new(1, false, ["Q6_K"], TensorWeightScheme.Q6_K, [TensorWeightScheme.Q6_K], [],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: true,
             IsExplicitGroupCombinationCandidate: true,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants Q5_K =
-        new(2, false, ["Q5_K"], [TensorWeightScheme.Q5_K],
+        new(2, false, ["Q5_K"], TensorWeightScheme.Q5_K, [TensorWeightScheme.Q5_K], [TReg.MoeRouter.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: true,
             IsExplicitGroupCombinationCandidate: true,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants Q4_K_M =
-        new(3, false, ["Q4_K_M"], [TensorWeightScheme.Q4_K],
+        new(3, false, ["Q4_K_M"], TensorWeightScheme.Q4_K, [TensorWeightScheme.Q4_K], [TReg.MoeRouter.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: true,
             IsExplicitGroupCombinationCandidate: true,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ4_NL =
-        new(5, false, ["IQ4_NL"], [TensorWeightScheme.IQ4_NL],
+        new(5, false, ["IQ4_NL"], TensorWeightScheme.IQ4_NL, [TensorWeightScheme.IQ4_NL], [TReg.MoeRouter.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: true,
             IsExplicitGroupCombinationCandidate: true,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ4_XS =
-        new(6, false, ["IQ4_XS"], [TensorWeightScheme.IQ4_XS],
+        new(6, false, ["IQ4_XS"], TensorWeightScheme.IQ4_XS, [TensorWeightScheme.IQ4_XS], [TReg.MoeRouter.UniqueId],
             IsPureBaselineCandidate: true,
             IsCombinationCarrierCandidate: true,
             IsExplicitGroupCombinationCandidate: true,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ3_S =
-        new(7, true, ["IQ3_S"], [TensorWeightScheme.IQ3_S],
+        new(7, true, ["IQ3_S"], TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ3_XS =
-        new(8, true, ["IQ3_XS"], [TensorWeightScheme.IQ3_XS],
+        new(8, true, ["IQ3_XS"], TensorWeightScheme.IQ3_XS, [TensorWeightScheme.IQ3_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ3_XXS =
-        new(9, true, ["IQ3_XXS"], [TensorWeightScheme.IQ3_XXS],
+        new(9, true, ["IQ3_XXS"], TensorWeightScheme.IQ3_XXS, [TensorWeightScheme.IQ3_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ2_S =
-        new(10, true, ["IQ2_S"], [TensorWeightScheme.IQ2_S],
+        new(10, true, ["IQ2_S"], TensorWeightScheme.IQ2_S, [TensorWeightScheme.IQ2_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ2_XS =
-        new(11, true, ["IQ2_XS"], [TensorWeightScheme.IQ2_XS],
+        new(11, true, ["IQ2_XS"], TensorWeightScheme.IQ2_XS, [TensorWeightScheme.IQ2_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ2_XXS =
-        new(12, true, ["IQ2_XXS"], [TensorWeightScheme.IQ2_XXS],
+        new(12, true, ["IQ2_XXS"], TensorWeightScheme.IQ2_XXS, [TensorWeightScheme.IQ2_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId, TReg.AttnKV.UniqueId],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants BF16_Hybrid =
-        new(201, false, ["BF16"], [TensorWeightScheme.BF16],
+        new(201, false, ["BF16"], TensorWeightScheme.BF16, [TensorWeightScheme.BF16], [],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: true);
 
     public static readonly BaselineQuants F16_Hybrid =
-        new(202, false, ["F16"], [TensorWeightScheme.F16],
+        new(202, false, ["F16"], TensorWeightScheme.F16, [TensorWeightScheme.F16], [],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
@@ -148,7 +146,9 @@ public record BaselineQuants(
             NativeSourceUniqueId,
             false,
             [nativeScheme.Names[0]],
+            nativeScheme,
             [nativeScheme],
+            [],
             IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
@@ -185,7 +185,7 @@ public record BaselineQuants(
     public static void ValidateIntegrityOrThrow()
     {
         var invalidBaselines = All
-            .Where(x => x.TensorWeightSchemes.IsDefaultOrEmpty)
+            .Where(x => x.LearnedMatchTensorWeightSchemes.IsDefaultOrEmpty)
             .Select(x => x.Names.IsDefaultOrEmpty ? $"id:{x.UniqueId}" : x.Names[0])
             .ToList();
 
@@ -197,7 +197,7 @@ public record BaselineQuants(
         }
 
         var duplicateSchemeIds = All
-            .SelectMany(x => x.TensorWeightSchemes.Select(s => new { Baseline = x, Scheme = s }))
+            .SelectMany(x => x.LearnedMatchTensorWeightSchemes.Select(s => new { Baseline = x, Scheme = s }))
             .GroupBy(x => x.Scheme.UniqueId)
             .Where(g => g.Count() > 1)
             .Where(g => g.Key != TensorWeightScheme.BF16.UniqueId && g.Key != TensorWeightScheme.F16.UniqueId)
@@ -229,7 +229,9 @@ public record BaselineQuants(
 
     public static BaselineQuants FromTensorSchemeId(byte schemeId)
     {
-        var found = All.FirstOrDefault(x => x.TensorWeightSchemes.Any(s => s.UniqueId == schemeId));
+        var found = All.FirstOrDefault(x =>
+            x.PrimaryTensorWeightScheme.UniqueId == schemeId ||
+            x.LearnedMatchTensorWeightSchemes.Any(s => s.UniqueId == schemeId));
         if (found == null)
             throw new InvalidOperationException($"Unknown tensor scheme id '{schemeId}' for baseline conversion.");
 

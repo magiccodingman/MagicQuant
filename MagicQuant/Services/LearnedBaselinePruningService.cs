@@ -106,7 +106,7 @@ public sealed class LearnedBaselinePruningService
 
                 var key = (candidate.UniqueId, group.UniqueId);
                 bool hasEffectiveSet = effectiveSchemesByCandidateAndGroup.TryGetValue(key, out var effectiveForGroup);
-                var expectedIds = candidate.TensorWeightSchemes.Select(x => x.UniqueId).Distinct().OrderBy(x => x).ToList();
+                var expectedIds = candidate.LearnedMatchTensorWeightSchemes.Select(x => x.UniqueId).Distinct().OrderBy(x => x).ToList();
                 var effectiveIdsSet = hasEffectiveSet ? effectiveForGroup! : new HashSet<byte>();
                 var matchedIds = expectedIds.Where(effectiveIdsSet.Contains).OrderBy(x => x).ToList();
                 bool allow = matchedIds.Count > 0;

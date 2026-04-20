@@ -10,6 +10,7 @@ public sealed class TensorWeightScheme
     public byte UniqueId { get; }
     public bool RequiresImatrix { get; }
     public ImmutableArray<string> Names { get; }
+    // Legacy/runtime-compat list. Baseline candidate policy must use BaselineQuants.BannedGroupIds.
     public List<TensorGroup> BannedGroups { get; }
     public ushort? BlockNeo { get; }
     public bool IsEligibleForBaseline { get; }
@@ -44,6 +45,7 @@ public sealed class TensorWeightScheme
             BannedGroups.Add(group);
     }
 
+    // Legacy helper; candidate/search policy should query BaselineQuants.BannedGroupIds instead.
     public bool IsBannedFor(TensorGroup group) => BannedGroups.Any(x => x.UniqueId == group.UniqueId);
 
     public static void ResetAllRuntimeBans()
