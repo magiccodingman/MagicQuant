@@ -7,10 +7,10 @@ public record BaselineQuants(
     bool RequiresImatrix,
     ImmutableArray<string> Names,
     ImmutableArray<TensorWeightScheme> TensorWeightSchemes,
-    bool IsPureBaselineCandidate = true,
-    bool IsCombinationCarrierCandidate = true,
-    bool IsExplicitGroupCombinationCandidate = true,
-    bool IsHighPrecisionExplicitCandidate = false)
+    bool IsPureBaselineCandidate,
+    bool IsCombinationCarrierCandidate,
+    bool IsExplicitGroupCombinationCandidate,
+    bool IsHighPrecisionExplicitCandidate)
 {
     public const byte NativeSourceUniqueId = 250;
 
@@ -18,49 +18,101 @@ public record BaselineQuants(
         TensorWeightSchemes.IsDefaultOrEmpty ? null : TensorWeightSchemes[0];
 
     public static readonly BaselineQuants Q8_0 =
-        new(0, false, ["Q8_0"], [TensorWeightScheme.Q8_0], IsCombinationCarrierCandidate: true);
+        new(0, false, ["Q8_0"], [TensorWeightScheme.Q8_0],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: true,
+            IsExplicitGroupCombinationCandidate: true,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants Q6_K =
-        new(1, false, ["Q6_K"], [TensorWeightScheme.Q6_K]);
+        new(1, false, ["Q6_K"], [TensorWeightScheme.Q6_K],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: true,
+            IsExplicitGroupCombinationCandidate: true,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants Q5_K =
-        new(2, false, ["Q5_K"], [TensorWeightScheme.Q5_K]);
+        new(2, false, ["Q5_K"], [TensorWeightScheme.Q5_K],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: true,
+            IsExplicitGroupCombinationCandidate: true,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants Q4_K_M =
-        new(3, false, ["Q4_K_M"], [TensorWeightScheme.Q4_K]);
+        new(3, false, ["Q4_K_M"], [TensorWeightScheme.Q4_K],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: true,
+            IsExplicitGroupCombinationCandidate: true,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ4_NL =
-        new(5, false, ["IQ4_NL"], [TensorWeightScheme.IQ4_NL]);
+        new(5, false, ["IQ4_NL"], [TensorWeightScheme.IQ4_NL],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: true,
+            IsExplicitGroupCombinationCandidate: true,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ4_XS =
-        new(6, false, ["IQ4_XS"], [TensorWeightScheme.IQ4_XS]);
+        new(6, false, ["IQ4_XS"], [TensorWeightScheme.IQ4_XS],
+            IsPureBaselineCandidate: true,
+            IsCombinationCarrierCandidate: true,
+            IsExplicitGroupCombinationCandidate: true,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ3_S =
-        new(7, true, ["IQ3_S"], [TensorWeightScheme.IQ3_S]);
+        new(7, true, ["IQ3_S"], [TensorWeightScheme.IQ3_S],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ3_XS =
-        new(8, true, ["IQ3_XS"], [TensorWeightScheme.IQ3_XS]);
+        new(8, true, ["IQ3_XS"], [TensorWeightScheme.IQ3_XS],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ3_XXS =
-        new(9, true, ["IQ3_XXS"], [TensorWeightScheme.IQ3_XXS]);
+        new(9, true, ["IQ3_XXS"], [TensorWeightScheme.IQ3_XXS],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ2_S =
-        new(10, true, ["IQ2_S"], [TensorWeightScheme.IQ2_S]);
+        new(10, true, ["IQ2_S"], [TensorWeightScheme.IQ2_S],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ2_XS =
-        new(11, true, ["IQ2_XS"], [TensorWeightScheme.IQ2_XS]);
+        new(11, true, ["IQ2_XS"], [TensorWeightScheme.IQ2_XS],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants IQ2_XXS =
-        new(12, true, ["IQ2_XXS"], [TensorWeightScheme.IQ2_XXS]);
+        new(12, true, ["IQ2_XXS"], [TensorWeightScheme.IQ2_XXS],
+            IsPureBaselineCandidate: false,
+            IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
+            IsHighPrecisionExplicitCandidate: false);
 
     public static readonly BaselineQuants BF16_Hybrid =
         new(201, false, ["BF16"], [TensorWeightScheme.BF16],
+            IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: true);
 
     public static readonly BaselineQuants F16_Hybrid =
         new(202, false, ["F16"], [TensorWeightScheme.F16],
+            IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
+            IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: true);
 
     public static readonly ImmutableArray<BaselineQuants> All =
@@ -90,6 +142,7 @@ public record BaselineQuants(
             false,
             [nativeScheme.Names[0]],
             [nativeScheme],
+            IsPureBaselineCandidate: false,
             IsCombinationCarrierCandidate: false,
             IsExplicitGroupCombinationCandidate: false,
             IsHighPrecisionExplicitCandidate: true);

@@ -13,7 +13,7 @@ public static class ComboLogic
     public static ImmutableArray<byte[]> GetAllowedCandidateIdsPerGroup(BaselineQuants baseQuant)
     {
         bool imatrixAvailable = RuntimeSearchSpace.HasUsableImatrix();
-        var candidatesForRun = BaselineQuants.GetGroupCombinationCandidates(imatrixAvailable, allowHighPrecisionHybrids: true)
+        var candidatesForRun = BaselineQuants.GetGroupCombinationCandidates(imatrixAvailable, allowHighPrecisionHybrids: false)
             .ToImmutableArray();
 
         var builder = ImmutableArray.CreateBuilder<byte[]>();
@@ -29,8 +29,14 @@ public static class ComboLogic
 
             var ids = new List<byte>();
 
-            if (!RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
+            // Strict policy (Option A):
+            // - normal explicit hybrid families come only from GetGroupCombinationCandidates(..., false)
+            // - BF16/F16 are injected only here and only when AllowHighPrecisionHybrids is enabled
+            if (RuntimeSearchSpace.AllowHighPrecisionHybrids && !RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
+            {
                 ids.Add(BaselineQuants.BF16_Hybrid.UniqueId);
+                ids.Add(BaselineQuants.F16_Hybrid.UniqueId);
+            }
 
             foreach (var candidate in candidatesForRun)
             {

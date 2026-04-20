@@ -7,24 +7,79 @@ namespace MagicQuant.Tests;
 public class BaselineCandidatePolicyTests
 {
     [Fact]
-    public void NoImatrix_GroupCandidates_ExcludeRequiresImatrix()
+    public void GetPureBaselineCandidates_NoImatrix_ReturnsExactlyIq4Xs()
     {
-        var candidates = BaselineQuants.GetGroupCombinationCandidates(hasUsableImatrix: false, allowHighPrecisionHybrids: true);
-        Assert.DoesNotContain(candidates, x => x.RequiresImatrix);
+        var ids = BaselineQuants.GetPureBaselineCandidates(hasUsableImatrix: false)
+            .Select(x => x.UniqueId)
+            .ToArray();
+
+        Assert.Equal([BaselineQuants.IQ4_XS.UniqueId], ids);
     }
 
     [Fact]
-    public void ImatrixEnabled_GroupCandidates_IncludeI3XXS()
+    public void GetCombinationCarrierBaselines_NoImatrix_ReturnsExactlySixExpectedBaselines()
     {
-        var candidates = BaselineQuants.GetGroupCombinationCandidates(hasUsableImatrix: true, allowHighPrecisionHybrids: true);
-        Assert.Contains(candidates, x => x.UniqueId == BaselineQuants.IQ3_XXS.UniqueId);
+        var ids = BaselineQuants.GetCombinationCarrierBaselines(hasUsableImatrix: false)
+            .Select(x => x.UniqueId)
+            .ToArray();
+
+        Assert.Equal(
+        [
+            BaselineQuants.Q8_0.UniqueId,
+            BaselineQuants.Q6_K.UniqueId,
+            BaselineQuants.Q5_K.UniqueId,
+            BaselineQuants.Q4_K_M.UniqueId,
+            BaselineQuants.IQ4_NL.UniqueId,
+            BaselineQuants.IQ4_XS.UniqueId
+        ], ids);
     }
 
     [Fact]
-    public void ImatrixEnabled_PureBaselines_IncludeIq2Xxs()
+    public void GetGroupCombinationCandidates_NoImatrixNoHighPrecision_ReturnsExactlySixExpectedBaselines()
     {
-        var baselines = BaselineQuants.GetPureBaselineCandidates(hasUsableImatrix: true);
-        Assert.Contains(baselines, x => x.UniqueId == BaselineQuants.IQ2_XXS.UniqueId);
+        var ids = BaselineQuants.GetGroupCombinationCandidates(hasUsableImatrix: false, allowHighPrecisionHybrids: false)
+            .Select(x => x.UniqueId)
+            .ToArray();
+
+        Assert.Equal(
+        [
+            BaselineQuants.Q8_0.UniqueId,
+            BaselineQuants.Q6_K.UniqueId,
+            BaselineQuants.Q5_K.UniqueId,
+            BaselineQuants.Q4_K_M.UniqueId,
+            BaselineQuants.IQ4_NL.UniqueId,
+            BaselineQuants.IQ4_XS.UniqueId
+        ], ids);
+
+        Assert.DoesNotContain(BaselineQuants.IQ3_S.UniqueId, ids);
+        Assert.DoesNotContain(BaselineQuants.IQ3_XS.UniqueId, ids);
+        Assert.DoesNotContain(BaselineQuants.IQ3_XXS.UniqueId, ids);
+        Assert.DoesNotContain(BaselineQuants.IQ2_S.UniqueId, ids);
+        Assert.DoesNotContain(BaselineQuants.IQ2_XS.UniqueId, ids);
+        Assert.DoesNotContain(BaselineQuants.IQ2_XXS.UniqueId, ids);
+        Assert.DoesNotContain(BaselineQuants.BF16_Hybrid.UniqueId, ids);
+        Assert.DoesNotContain(BaselineQuants.F16_Hybrid.UniqueId, ids);
+    }
+
+    [Fact]
+    public void RuntimeSearchSpace_GetActiveCombinationBaselines_ReturnsExactlySixExpectedBaselines()
+    {
+        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.SetImatrixAvailability(false);
+
+        var ids = RuntimeSearchSpace.GetActiveCombinationBaselines()
+            .Select(x => x.UniqueId)
+            .ToArray();
+
+        Assert.Equal(
+        [
+            BaselineQuants.Q8_0.UniqueId,
+            BaselineQuants.Q6_K.UniqueId,
+            BaselineQuants.Q5_K.UniqueId,
+            BaselineQuants.Q4_K_M.UniqueId,
+            BaselineQuants.IQ4_NL.UniqueId,
+            BaselineQuants.IQ4_XS.UniqueId
+        ], ids);
     }
 
     [Fact]
@@ -40,18 +95,6 @@ public class BaselineCandidatePolicyTests
     }
 
     [Fact]
-    public void HighPrecisionCandidatesRemainInReasoningUniverse_UntilLatePruneStage()
-    {
-        RuntimeSearchSpace.ResetForNewModel();
-        RuntimeSearchSpace.SetImatrixAvailability(true);
-
-        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
-        var attnQIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.AttnQ.UniqueId);
-
-        Assert.Contains(BaselineQuants.BF16_Hybrid.UniqueId, allowed[attnQIndex]);
-    }
-
-    [Fact]
     public void CandidateBanAuthority_DrivesAllowedCandidateSet()
     {
         RuntimeSearchSpace.ResetForNewModel();
@@ -62,5 +105,19 @@ public class BaselineCandidatePolicyTests
         var attnQIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.AttnQ.UniqueId);
 
         Assert.DoesNotContain(BaselineQuants.Q6_K.UniqueId, allowed[attnQIndex]);
+    }
+
+    [Fact]
+    public void ComboLogic_WhenHighPrecisionDisabled_DoesNotInjectBf16OrF16()
+    {
+        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.SetImatrixAvailability(true);
+        RuntimeSearchSpace.AllowHighPrecisionHybrids = false;
+
+        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
+        var attnQIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.AttnQ.UniqueId);
+
+        Assert.DoesNotContain(BaselineQuants.BF16_Hybrid.UniqueId, allowed[attnQIndex]);
+        Assert.DoesNotContain(BaselineQuants.F16_Hybrid.UniqueId, allowed[attnQIndex]);
     }
 }

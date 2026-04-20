@@ -71,7 +71,7 @@ public static class RuntimeSearchSpace
 
     public static void BanAllExplicitCombinationCandidatesForGroup(TensorGroup group)
     {
-        foreach (var candidate in BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: true))
+        foreach (var candidate in BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: false))
             BanCombinationCandidateForGroup(group, candidate);
     }
 
@@ -91,7 +91,7 @@ public static class RuntimeSearchSpace
 
     public static bool HasAnyExplicitCombinationCandidateAllowed(TensorGroup group)
     {
-        return BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: true)
+        return BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: false)
             .Any(x => !IsCombinationCandidateRuntimeBannedForGroup(group, x));
     }
 
