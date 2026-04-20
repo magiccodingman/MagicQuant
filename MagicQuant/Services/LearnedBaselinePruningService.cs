@@ -120,7 +120,7 @@ public sealed class LearnedBaselinePruningService
                     : "<none>";
 
                 result.Notes.Add(
-                    $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Names[0]}, " +
+                    $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Name}, " +
                     $"scheme={scheme.Names[0]}, owner={owningBaseline.Names[0]}, effective=[{effectiveIds}], decision={(allow ? "ALLOW" : "BAN")}");
 
                 if (!allow)
