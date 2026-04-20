@@ -41,6 +41,9 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
 
     public AiModelHash AiModelHash { get; set; } = default!;
 
+    public int? ImatrixDefinitionId { get; set; }
+    public ImatrixDefinition? ImatrixDefinition { get; set; }
+
     public List<CategoryBenchmark> CategorBenchmarks { get; set; } = new();
 
     public void Configure(EntityTypeBuilder<AiBenchmark> builder)
@@ -50,7 +53,7 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
         builder.Property(x => x.Id)
             .ValueGeneratedNever();
 
-        builder.HasIndex(x => new { x.AiModelHashId, x.TensorComboId })
+        builder.HasIndex(x => new { x.AiModelHashId, x.ImatrixDefinitionId, x.TensorComboId })
             .IsUnique();
 
         builder.HasOne(x => x.TensorCombo)
@@ -62,6 +65,11 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
             .WithMany()
             .HasForeignKey(x => x.AiModelHashId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(x => x.ImatrixDefinition)
+            .WithMany()
+            .HasForeignKey(x => x.ImatrixDefinitionId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasMany(x => x.CategorBenchmarks)
             .WithOne(x => x.AiBenchmark)

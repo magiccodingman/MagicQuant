@@ -22,17 +22,18 @@ public class HybridQuant
         AddIfNotNull(TReg.MoeRouter, c.MoeRouter);
     }
 
-    private void AddIfNotNull(TensorGroup group, byte schemeId)
+    private void AddIfNotNull(TensorGroup group, byte candidateId)
     {
-        if (schemeId == TensorWeightScheme.NULL.UniqueId)
+        if (candidateId == TensorWeightScheme.NULL.UniqueId)
             return;
 
-        var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.First(g => g.UniqueId == schemeId);
+        var candidate = BaselineQuants.FromId(candidateId);
 
         Tensors.Add(new HybridTensor
         {
             TGroup = group,
-            TensorType = scheme
+            CandidateBaseline = candidate,
+            TensorType = candidate.DefaultTensorScheme ?? TensorWeightScheme.GetCurrentNativePrecisionScheme()
         });
     }
 
@@ -45,6 +46,7 @@ public class HybridQuant
                 .Select(t => new HybridTensor
                 {
                     TGroup = t.TGroup,
+                    CandidateBaseline = t.CandidateBaseline,
                     TensorType = t.TensorType
                 })
                 .ToList()
@@ -63,7 +65,7 @@ public class HybridQuant
     public static HybridQuant CreateBlanket(
         BaselineQuants baseQuant,
         IEnumerable<TensorGroup> groups,
-        TensorWeightScheme blanketScheme)
+        BaselineQuants blanketCandidate)
     {
         return new HybridQuant
         {
@@ -72,7 +74,8 @@ public class HybridQuant
                 .Select(g => new HybridTensor
                 {
                     TGroup = g,
-                    TensorType = blanketScheme
+                    CandidateBaseline = blanketCandidate,
+                    TensorType = blanketCandidate.DefaultTensorScheme ?? TensorWeightScheme.GetCurrentNativePrecisionScheme()
                 })
                 .ToList()
         };
@@ -84,5 +87,6 @@ public class HybridQuant
 public class HybridTensor
 {
     public TensorGroup TGroup { get; set; } = null!;
+    public BaselineQuants CandidateBaseline { get; set; } = default!;
     public TensorWeightScheme TensorType { get; set; } = default!;
 }

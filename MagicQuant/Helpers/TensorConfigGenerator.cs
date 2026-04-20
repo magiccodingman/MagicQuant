@@ -20,9 +20,7 @@ public static class TensorConfigGenerator
 
         var result = new RequiredSampleGenerationResult();
 
-        foreach (var baseline in BaselineQuants.All
-                     .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
-                     .OrderBy(x => x.UniqueId))
+        foreach (var baseline in BaselineQuants.GetPureBaselineCandidates(RuntimeSearchSpace.HasUsableImatrix()))
         {
             result.Plans.Add(new RequiredSamplePlan
             {
@@ -46,7 +44,7 @@ public static class TensorConfigGenerator
                 Quant = HybridQuant.CreateBlanket(
                     baseQuant: baseline,
                     groups: activeGroups,
-                    blanketScheme: TensorWeightScheme.BF16_F16),
+                    blanketCandidate: BaselineQuants.BF16_Hybrid),
                 TestedBaselineId = baseline.UniqueId
             });
 
@@ -63,7 +61,7 @@ public static class TensorConfigGenerator
             Quant = HybridQuant.CreateBlanket(
                 baseQuant: carrier,
                 groups: activeGroups,
-                blanketScheme: TensorWeightScheme.BF16_F16),
+                blanketCandidate: BaselineQuants.BF16_Hybrid),
             TestedBaselineId = carrier.UniqueId
         });
 
@@ -71,17 +69,18 @@ public static class TensorConfigGenerator
 
         foreach (var group in activeGroups)
         {
-            var smallest = GetSmallestAllowedProbeSchemeForGroup(group);
+            var smallest = GetSmallestAllowedProbeCandidateForGroup(group);
             if (smallest == null)
                 continue;
 
             var quant = HybridQuant.CreateBlanket(
                 baseQuant: carrier,
                 groups: activeGroups,
-                blanketScheme: TensorWeightScheme.BF16_F16);
+                blanketCandidate: BaselineQuants.BF16_Hybrid);
 
             var target = quant.Tensors.First(x => x.TGroup.UniqueId == group.UniqueId);
-            target.TensorType = smallest;
+            target.CandidateBaseline = smallest;
+            target.TensorType = smallest.DefaultTensorScheme!;
 
             result.Plans.Add(new RequiredSamplePlan
             {
@@ -125,41 +124,40 @@ public static class TensorConfigGenerator
         var result = new RequiredSampleGenerationResult();
         var carrier = BaselineQuants.Q8_0;
 
-        var schemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
+        var candidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+            .Where(x => x.UniqueId != BaselineQuants.BF16_Hybrid.UniqueId)
             .OrderBy(x => x.UniqueId)
             .ToList();
 
         foreach (var group in activeGroups)
         {
-            var smallest = GetSmallestAllowedProbeSchemeForGroup(group);
+            var smallest = GetSmallestAllowedProbeCandidateForGroup(group);
 
-            foreach (var scheme in schemes)
+            foreach (var candidate in candidates)
             {
-                if (smallest != null && scheme.UniqueId == smallest.UniqueId)
+                if (smallest != null && candidate.UniqueId == smallest.UniqueId)
                     continue;
 
-                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
                 var quant = HybridQuant.CreateBlanket(
                     baseQuant: carrier,
                     groups: TReg.All.Where(x => !missingIds.Contains(x.UniqueId)),
-                    blanketScheme: TensorWeightScheme.BF16_F16);
+                    blanketCandidate: BaselineQuants.BF16_Hybrid);
 
                 var target = quant.Tensors.First(x => x.TGroup.UniqueId == group.UniqueId);
-                target.TensorType = scheme;
+                target.CandidateBaseline = candidate;
+                target.TensorType = candidate.DefaultTensorScheme!;
 
                 result.Plans.Add(new RequiredSamplePlan
                 {
                     Kind = RequiredSampleKind.GroupIsolationContinuation,
-                    Key = $"cont:{carrier.UniqueId}:{group.UniqueId}:{scheme.UniqueId}",
-                    Description = $"Continuation isolation for group '{group.Name}' using '{scheme.Names[0]}'.",
+                    Key = $"cont:{carrier.UniqueId}:{group.UniqueId}:{candidate.UniqueId}",
+                    Description = $"Continuation isolation for group '{group.Name}' using '{candidate.Names[0]}'.",
                     Quant = quant,
                     TargetGroupId = group.UniqueId,
-                    TestedSchemeId = scheme.UniqueId,
+                    TestedSchemeId = candidate.UniqueId,
                     TestedBaselineId = carrier.UniqueId
                 });
 
@@ -295,26 +293,24 @@ public static class TensorConfigGenerator
         producer.GetAwaiter().GetResult();
     }
 
-    private static TensorWeightScheme? GetSmallestAllowedProbeSchemeForGroup(TensorGroup group)
+    private static BaselineQuants? GetSmallestAllowedProbeCandidateForGroup(TensorGroup group)
     {
-        var allowedIds = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
-            .Select(x => x.UniqueId)
-            .ToHashSet();
+        var orderedCandidates = TensorWeightScheme.GetSmallestInOrder()
+            .Select(x => BaselineQuants.FromTensorSchemeId(x.UniqueId))
+            .DistinctBy(x => x.UniqueId);
 
-        foreach (var scheme in TensorWeightScheme.GetSmallestInOrder())
+        foreach (var candidate in orderedCandidates)
         {
-            if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId ||
-                scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+            if (candidate.UniqueId == BaselineQuants.BF16_Hybrid.UniqueId || candidate.UniqueId == BaselineQuants.F16_Hybrid.UniqueId)
                 continue;
 
-            if (!allowedIds.Contains(scheme.UniqueId))
+            if (candidate.RequiresImatrix && !RuntimeSearchSpace.HasUsableImatrix())
                 continue;
 
-            if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
+            if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                 continue;
 
-            return scheme;
+            return candidate;
         }
 
         return null;

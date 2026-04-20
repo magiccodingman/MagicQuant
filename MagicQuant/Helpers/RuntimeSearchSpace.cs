@@ -1,31 +1,31 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using MQ.DB.Models;
 
 namespace MagicQuant.Helpers;
 
 public sealed class RuntimeLearnedBaselineBanInfo
 {
-    public TensorWeightScheme Scheme { get; init; } = default!;
+    public BaselineQuants Candidate { get; init; } = default!;
     public IReadOnlyList<BaselineQuants> MissingBaselines { get; init; } = Array.Empty<BaselineQuants>();
 }
 
 public static class RuntimeSearchSpace
 {
-    private static readonly Dictionary<byte, HashSet<byte>> ExplicitSchemeBansByGroup = new();
-    private static readonly Dictionary<byte, Dictionary<byte, HashSet<byte>>> LearnedBaselineMissingByGroupAndScheme = new();
+    private static readonly Dictionary<byte, HashSet<byte>> ExplicitCandidateBansByGroup = new();
+    private static readonly Dictionary<byte, Dictionary<byte, HashSet<byte>>> LearnedBaselineMissingByGroupAndCandidate = new();
     private static readonly HashSet<byte> DisabledCombinationBaselineIds = new();
     private static readonly HashSet<byte> Bf16SuppressedTensorChoiceGroupIds = new();
     private static bool _imatrixAvailable;
 
+    public static bool AllowHighPrecisionHybrids { get; set; }
+
     public static void ResetForNewModel()
     {
-        ExplicitSchemeBansByGroup.Clear();
-        LearnedBaselineMissingByGroupAndScheme.Clear();
+        ExplicitCandidateBansByGroup.Clear();
+        LearnedBaselineMissingByGroupAndCandidate.Clear();
         DisabledCombinationBaselineIds.Clear();
         Bf16SuppressedTensorChoiceGroupIds.Clear();
         _imatrixAvailable = false;
+        AllowHighPrecisionHybrids = false;
         TensorWeightScheme.ResetAllRuntimeBans();
     }
 
@@ -33,175 +33,113 @@ public static class RuntimeSearchSpace
 
     public static bool HasUsableImatrix() => _imatrixAvailable;
 
-    public static void BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
+    public static void BanCombinationCandidateForGroup(TensorGroup group, BaselineQuants candidate)
     {
-        if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId ||
-            scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+        if (candidate.UniqueId == BaselineQuants.GetDefaultExplicitFallbackBaseline().UniqueId)
             return;
 
-        if (!ExplicitSchemeBansByGroup.TryGetValue(group.UniqueId, out var set))
+        if (!ExplicitCandidateBansByGroup.TryGetValue(group.UniqueId, out var set))
         {
             set = new HashSet<byte>();
-            ExplicitSchemeBansByGroup[group.UniqueId] = set;
+            ExplicitCandidateBansByGroup[group.UniqueId] = set;
         }
 
-        set.Add(scheme.UniqueId);
-
-        if (!scheme.IsBannedFor(group))
-            scheme.BannedGroups.Add(group);
+        set.Add(candidate.UniqueId);
     }
 
-    public static void BanSchemeForGroupByLearnedBaselineAbsence(
+    public static void BanCombinationCandidateForGroupByLearnedBaselineAbsence(
         TensorGroup group,
-        TensorWeightScheme scheme,
+        BaselineQuants candidate,
         BaselineQuants sourceBaseline)
     {
-        if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId ||
-            scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
-            return;
+        BanCombinationCandidateForGroup(group, candidate);
 
-        BanSchemeForGroup(group, scheme);
-
-        if (!LearnedBaselineMissingByGroupAndScheme.TryGetValue(group.UniqueId, out var byScheme))
+        if (!LearnedBaselineMissingByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
         {
-            byScheme = new Dictionary<byte, HashSet<byte>>();
-            LearnedBaselineMissingByGroupAndScheme[group.UniqueId] = byScheme;
+            byCandidate = new Dictionary<byte, HashSet<byte>>();
+            LearnedBaselineMissingByGroupAndCandidate[group.UniqueId] = byCandidate;
         }
 
-        if (!byScheme.TryGetValue(scheme.UniqueId, out var baselineIds))
+        if (!byCandidate.TryGetValue(candidate.UniqueId, out var baselineIds))
         {
             baselineIds = new HashSet<byte>();
-            byScheme[scheme.UniqueId] = baselineIds;
+            byCandidate[candidate.UniqueId] = baselineIds;
         }
 
         baselineIds.Add(sourceBaseline.UniqueId);
     }
 
-    public static void BanAllExplicitTensorSchemesForGroup(TensorGroup group)
+    public static void BanAllExplicitCombinationCandidatesForGroup(TensorGroup group)
     {
-        foreach (var scheme in TensorWeightScheme.All_Allowed_Hybrid_Quants
-                     .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId &&
-                                 x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId))
-        {
-            BanSchemeForGroup(group, scheme);
-        }
+        foreach (var candidate in BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: true))
+            BanCombinationCandidateForGroup(group, candidate);
     }
 
-    public static IReadOnlyList<TensorWeightScheme> GetRuntimeExplicitBansForGroup(TensorGroup group)
+    public static IReadOnlyList<BaselineQuants> GetRuntimeExplicitCandidateBansForGroup(TensorGroup group)
     {
-        if (!ExplicitSchemeBansByGroup.TryGetValue(group.UniqueId, out var set))
-            return Array.Empty<TensorWeightScheme>();
+        if (!ExplicitCandidateBansByGroup.TryGetValue(group.UniqueId, out var set))
+            return Array.Empty<BaselineQuants>();
 
-        return TensorWeightScheme.All_Allowed_Hybrid_Quants
+        return BaselineQuants.GetAllRecognizedBaselines()
             .Where(x => set.Contains(x.UniqueId))
             .OrderBy(x => x.UniqueId)
             .ToList();
     }
 
-    public static bool IsSchemeRuntimeBannedForGroup(TensorGroup group, TensorWeightScheme scheme)
+    public static bool IsCombinationCandidateRuntimeBannedForGroup(TensorGroup group, BaselineQuants candidate)
+        => ExplicitCandidateBansByGroup.TryGetValue(group.UniqueId, out var set) && set.Contains(candidate.UniqueId);
+
+    public static bool HasAnyExplicitCombinationCandidateAllowed(TensorGroup group)
     {
-        return ExplicitSchemeBansByGroup.TryGetValue(group.UniqueId, out var set) &&
-               set.Contains(scheme.UniqueId);
+        return BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: true)
+            .Any(x => !IsCombinationCandidateRuntimeBannedForGroup(group, x));
     }
 
-    public static bool IsGroupExplicitQuantBanned(TensorGroup group)
-    {
-        return !HasAnyExplicitSchemeAllowed(group);
-    }
+    public static bool IsGroupExplicitCandidateBanned(TensorGroup group) => !HasAnyExplicitCombinationCandidateAllowed(group);
 
     public static IReadOnlyList<TensorGroup> GetGroupsWithExplicitQuantBanned()
-    {
-        return TReg.All
-            .Where(IsGroupExplicitQuantBanned)
-            .OrderBy(x => x.UniqueId)
-            .ToList();
-    }
+        => TReg.All.Where(IsGroupExplicitCandidateBanned).OrderBy(x => x.UniqueId).ToList();
 
     public static bool HasLearnedBaselineMissingPrunesForGroup(TensorGroup group)
-    {
-        return LearnedBaselineMissingByGroupAndScheme.TryGetValue(group.UniqueId, out var byScheme) &&
-               byScheme.Count > 0;
-    }
+        => LearnedBaselineMissingByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate) && byCandidate.Count > 0;
 
     public static IReadOnlyList<TensorGroup> GetGroupsWithLearnedBaselineMissingPrunes()
-    {
-        return TReg.All
-            .Where(HasLearnedBaselineMissingPrunesForGroup)
-            .OrderBy(x => x.UniqueId)
-            .ToList();
-    }
+        => TReg.All.Where(HasLearnedBaselineMissingPrunesForGroup).OrderBy(x => x.UniqueId).ToList();
 
-    public static IReadOnlyList<RuntimeLearnedBaselineBanInfo> GetLearnedBaselineMissingPrunedSchemesForGroup(
-        TensorGroup group)
+    public static IReadOnlyList<RuntimeLearnedBaselineBanInfo> GetLearnedBaselineMissingPrunedSchemesForGroup(TensorGroup group)
     {
-        if (!LearnedBaselineMissingByGroupAndScheme.TryGetValue(group.UniqueId, out var byScheme))
+        if (!LearnedBaselineMissingByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
             return Array.Empty<RuntimeLearnedBaselineBanInfo>();
 
         var result = new List<RuntimeLearnedBaselineBanInfo>();
-
-        foreach (var kvp in byScheme.OrderBy(x => x.Key))
+        foreach (var kvp in byCandidate.OrderBy(x => x.Key))
         {
-            var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants
-                .FirstOrDefault(x => x.UniqueId == kvp.Key);
-
-            if (scheme == null)
-                continue;
-
-            var baselines = kvp.Value
-                .OrderBy(x => x)
-                .Select(BaselineQuants.FromId)
-                .ToList();
-
-            result.Add(new RuntimeLearnedBaselineBanInfo
-            {
-                Scheme = scheme,
-                MissingBaselines = baselines
-            });
+            var candidate = BaselineQuants.FromId(kvp.Key);
+            var baselines = kvp.Value.OrderBy(x => x).Select(BaselineQuants.FromId).ToList();
+            result.Add(new RuntimeLearnedBaselineBanInfo { Candidate = candidate, MissingBaselines = baselines });
         }
 
         return result;
     }
 
-    public static void SuppressBf16TensorChoice(TensorGroup group)
-        => Bf16SuppressedTensorChoiceGroupIds.Add(group.UniqueId);
+    public static void SuppressBf16TensorChoice(TensorGroup group) => Bf16SuppressedTensorChoiceGroupIds.Add(group.UniqueId);
 
     public static bool IsBf16TensorChoiceSuppressed(TensorGroup group)
-    {
-        // BF16 suppression is only meaningful while at least one explicit tensor scheme remains.
-        // If explicit schemes are all banned, BF16 becomes the only viable tensor choice.
-        return Bf16SuppressedTensorChoiceGroupIds.Contains(group.UniqueId) &&
-               HasAnyExplicitSchemeAllowed(group);
-    }
+        => Bf16SuppressedTensorChoiceGroupIds.Contains(group.UniqueId) && HasAnyExplicitCombinationCandidateAllowed(group);
 
     public static IReadOnlyList<TensorGroup> GetBf16SuppressedGroups()
-    {
-        return TReg.All
-            .Where(IsBf16TensorChoiceSuppressed)
-            .OrderBy(x => x.UniqueId)
-            .ToList();
-    }
+        => TReg.All.Where(IsBf16TensorChoiceSuppressed).OrderBy(x => x.UniqueId).ToList();
 
     public static (bool ExplicitAllowed, bool Bf16Allowed) GetFinalAllowedQuantFamiliesForGroup(TensorGroup group)
     {
-        bool explicitAllowed = HasAnyExplicitSchemeAllowed(group);
-        bool bf16Allowed = !IsBf16TensorChoiceSuppressed(group);
+        bool explicitAllowed = HasAnyExplicitCombinationCandidateAllowed(group);
+        bool bf16Allowed = !IsBf16TensorChoiceSuppressed(group) || !explicitAllowed;
         return (explicitAllowed, bf16Allowed);
-    }
-
-    private static bool HasAnyExplicitSchemeAllowed(TensorGroup group)
-    {
-        return TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => _imatrixAvailable || !x.RequiresImatrix)
-            .Any(x => !IsSchemeRuntimeBannedForGroup(group, x));
     }
 
     public static IReadOnlyList<BaselineQuants> GetActiveCombinationBaselines()
     {
-        return BaselineQuants.All
-            .Where(x => x.BaseConversionBase != null)
-            .Where(x => _imatrixAvailable || !x.RequiresImatrix)
+        return BaselineQuants.GetCombinationCarrierBaselines(_imatrixAvailable)
             .Where(x => !DisabledCombinationBaselineIds.Contains(x.UniqueId))
             .OrderBy(x => x.UniqueId)
             .ToList();
@@ -209,7 +147,7 @@ public static class RuntimeSearchSpace
 
     public static bool DisableCombinationBaseline(BaselineQuants baseline, bool allowDisablingLast = false)
     {
-        if (baseline.BaseConversionBase == null || DisabledCombinationBaselineIds.Contains(baseline.UniqueId))
+        if (!baseline.IsCombinationCarrierCandidate || DisabledCombinationBaselineIds.Contains(baseline.UniqueId))
             return false;
 
         int currentlyActive = GetActiveCombinationBaselines().Count;
@@ -222,4 +160,20 @@ public static class RuntimeSearchSpace
 
     public static bool IsCombinationBaselineDisabled(BaselineQuants baseline)
         => DisabledCombinationBaselineIds.Contains(baseline.UniqueId);
+
+    // Legacy compatibility wrappers (scheme-driven callers)
+    public static void BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
+        => BanCombinationCandidateForGroup(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId));
+
+    public static void BanSchemeForGroupByLearnedBaselineAbsence(TensorGroup group, TensorWeightScheme scheme, BaselineQuants sourceBaseline)
+        => BanCombinationCandidateForGroupByLearnedBaselineAbsence(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId), sourceBaseline);
+
+    public static void BanAllExplicitTensorSchemesForGroup(TensorGroup group)
+        => BanAllExplicitCombinationCandidatesForGroup(group);
+
+    public static bool IsSchemeRuntimeBannedForGroup(TensorGroup group, TensorWeightScheme scheme)
+        => IsCombinationCandidateRuntimeBannedForGroup(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId));
+
+    public static bool IsGroupExplicitQuantBanned(TensorGroup group)
+        => IsGroupExplicitCandidateBanned(group);
 }

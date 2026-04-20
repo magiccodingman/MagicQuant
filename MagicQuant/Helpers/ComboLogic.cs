@@ -13,13 +13,8 @@ public static class ComboLogic
     public static ImmutableArray<byte[]> GetAllowedSchemeIdsPerGroup(BaselineQuants baseQuant)
     {
         bool imatrixAvailable = RuntimeSearchSpace.HasUsableImatrix();
-
-        var schemesForRun = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(s => imatrixAvailable || !s.RequiresImatrix)
+        var candidatesForRun = BaselineQuants.GetGroupCombinationCandidates(imatrixAvailable, allowHighPrecisionHybrids: true)
             .ToImmutableArray();
-
-        if (schemesForRun.IsEmpty)
-            throw new InvalidOperationException("No tensor schemes available for this base.");
 
         var builder = ImmutableArray.CreateBuilder<byte[]>();
         var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
@@ -35,23 +30,22 @@ public static class ComboLogic
             var ids = new List<byte>();
 
             if (!RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
-                ids.Add(TensorWeightScheme.BF16_F16.UniqueId);
+                ids.Add(BaselineQuants.BF16_Hybrid.UniqueId);
 
-            foreach (var scheme in schemesForRun)
+            foreach (var candidate in candidatesForRun)
             {
-                if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId || scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
-                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
-                    continue;
-
-                ids.Add(scheme.UniqueId);
+                ids.Add(candidate.UniqueId);
             }
 
             ids = ids.Distinct().OrderBy(x => x).ToList();
 
             if (ids.Count == 0)
-                throw new InvalidOperationException($"Group '{group.Name}' has no valid tensor schemes for base '{string.Join("/", baseQuant.Names)}'.");
+            {
+                ids.Add(BaselineQuants.GetDefaultExplicitFallbackBaseline().UniqueId);
+            }
 
             builder.Add(ids.ToArray());
         }

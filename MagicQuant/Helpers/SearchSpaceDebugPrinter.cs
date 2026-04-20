@@ -15,7 +15,7 @@ public static class SearchSpaceDebugPrinter
 
         var activeBaselines = RuntimeSearchSpace.GetActiveCombinationBaselines().ToList();
         var disabledBaselines = BaselineQuants.All
-            .Where(x => x.BaseConversionBase != null)
+             .Where(x => x.IsCombinationCarrierCandidate)
             .Where(x => RuntimeSearchSpace.IsCombinationBaselineDisabled(x))
             .OrderBy(x => x.UniqueId)
             .ToList();
@@ -57,7 +57,7 @@ public static class SearchSpaceDebugPrinter
                 var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedSchemesForGroup(group);
 
                 var parts = learned.Select(x =>
-                    $"{x.Scheme.Names[0]} <= {string.Join("/", x.MissingBaselines.Select(b => b.Names[0]))}");
+                    $"{x.Candidate.Names[0]} <= {string.Join("/", x.MissingBaselines.Select(b => b.Names[0]))}");
 
                 AnsiConsole.MarkupLine(
                     $"  [yellow]- {Markup.Escape(group.Name)}[/] :: [grey]{Markup.Escape(string.Join(", ", parts))}[/]");
@@ -87,13 +87,13 @@ public static class SearchSpaceDebugPrinter
                     if (id == TensorWeightScheme.NULL.UniqueId)
                         return "NULL";
 
-                    var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(x => x.UniqueId == id);
-                    return scheme?.Names[0] ?? $"Unknown({id})";
+                    var candidate = BaselineQuants.All.FirstOrDefault(x => x.UniqueId == id);
+                    return candidate?.Names[0] ?? $"Unknown({id})";
                 }).ToList();
 
                 string state =
                     unusedIds.Contains(group.UniqueId) ? "unused->NULL" :
-                    RuntimeSearchSpace.IsGroupExplicitQuantBanned(group) ? "BF16-only" :
+                    RuntimeSearchSpace.IsGroupExplicitCandidateBanned(group) ? "BF16-only" :
                     RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group) ? "BF16-suppressed" :
                     RuntimeSearchSpace.HasLearnedBaselineMissingPrunesForGroup(group) ? "learned-pruned" :
                     "variable";

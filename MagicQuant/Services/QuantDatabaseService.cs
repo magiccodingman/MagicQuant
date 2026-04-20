@@ -12,7 +12,7 @@ namespace MagicQuant.Services;
 
 public class QuantDatabaseService
 {
-    private const string DbFileName = "MagicQuant_Combinations.duckdb";
+    private const string DbFileNamePrefix = "MagicQuant_Combinations";
     private const string TableName = "tensor_configs";
 
     public async Task<long> GetRemainingCombinationCountAsync(CancellationToken ct = default)
@@ -91,7 +91,15 @@ public class QuantDatabaseService
             "Neither Cache.ModelMagicQuantDirectory nor Cache.MagicQuantDirectory is set.");
     }
 
-    private string ConnectionString => $"Data Source={Path.Combine(GetDuckDbDirectory(), DbFileName)}";
+    private static string BuildContextAwareDuckDbFileName()
+    {
+        string model = string.IsNullOrWhiteSpace(Cache.CurrentModelId) ? "unknown-model" : Cache.CurrentModelId;
+        string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixPath?.GetHashCode().ToString("X") ?? "imatrix") : "no-imatrix";
+        string hp = RuntimeSearchSpace.AllowHighPrecisionHybrids ? "hp-on" : "hp-off";
+        return $"{DbFileNamePrefix}_{model}_{imatrix}_{hp}.duckdb";
+    }
+
+    private string ConnectionString => $"Data Source={Path.Combine(GetDuckDbDirectory(), BuildContextAwareDuckDbFileName())}";
 
     public async Task InitializeAsync(bool forceRebuild = false, CancellationToken ct = default)
     {
@@ -201,6 +209,43 @@ public class QuantDatabaseService
         await BulkInsertAsync(connection, kept, ct);
 
         AnsiConsole.MarkupLine($"[yellow]Predicted-size pruning removed:[/] [red]{removed:N0}[/] combo(s) larger than pure Q8.");
+        return removed;
+    }
+
+
+    public async Task<long> PruneHighPrecisionHybridCandidatesAsync(CancellationToken ct = default)
+    {
+        if (RuntimeSearchSpace.AllowHighPrecisionHybrids)
+            return 0;
+
+        using var connection = new DuckDBConnection(ConnectionString);
+        await connection.OpenAsync(ct);
+
+        var rows = await GetRemainingTensorConfigsAsync(ct);
+        var kept = rows.Where(x =>
+            x.Embeddings != BaselineQuants.BF16_Hybrid.UniqueId && x.Embeddings != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.LmHead != BaselineQuants.BF16_Hybrid.UniqueId && x.LmHead != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.AttnQ != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnQ != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.AttnKV != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnKV != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.AttnOutput != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnOutput != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.FfnUpGate != BaselineQuants.BF16_Hybrid.UniqueId && x.FfnUpGate != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.FfnDown != BaselineQuants.BF16_Hybrid.UniqueId && x.FfnDown != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.MoeExperts != BaselineQuants.BF16_Hybrid.UniqueId && x.MoeExperts != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.MoeRouter != BaselineQuants.BF16_Hybrid.UniqueId && x.MoeRouter != BaselineQuants.F16_Hybrid.UniqueId).ToList();
+
+        long removed = rows.Count - kept.Count;
+        if (removed <= 0)
+            return 0;
+
+        var createCmd = connection.CreateCommand();
+        createCmd.CommandText = $@"
+            DROP TABLE IF EXISTS {TableName};
+            CREATE TABLE {TableName} (
+                BaseQuant TINYINT, Embeddings TINYINT, LmHead TINYINT, AttnQ TINYINT, AttnKV TINYINT,
+                AttnOutput TINYINT, FfnUpGate TINYINT, FfnDown TINYINT, MoeExperts TINYINT, MoeRouter TINYINT
+            );";
+        await createCmd.ExecuteNonQueryAsync(ct);
+        await BulkInsertAsync(connection, kept, ct);
         return removed;
     }
 
@@ -430,7 +475,7 @@ public class QuantDatabaseService
 
         private void AddDelta(byte groupId, byte schemeId, ref long total)
         {
-            if (schemeId == TensorWeightScheme.BF16_F16.UniqueId)
+            if (schemeId == BaselineQuants.BF16_Hybrid.UniqueId || schemeId == BaselineQuants.F16_Hybrid.UniqueId)
                 return;
 
             if (_deltas.TryGetValue((groupId, schemeId), out long delta))

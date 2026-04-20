@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace MQ.DB.Models;
@@ -30,39 +29,39 @@ public readonly struct TensorConfig
         byte moeExperts,
         byte moeRouter)
     {
-        BaseQuant   = baseQuant;
-        Embeddings  = embeddings;
-        LmHead      = lmHead;
-        AttnQ       = attnQ;
-        AttnKV      = attnKV;
-        AttnOutput  = attnOutput;
-        FfnUpGate   = ffnUpGate;
-        FfnDown     = ffnDown;
-        MoeExperts  = moeExperts;
-        MoeRouter   = moeRouter;
+        BaseQuant = baseQuant;
+        Embeddings = embeddings;
+        LmHead = lmHead;
+        AttnQ = attnQ;
+        AttnKV = attnKV;
+        AttnOutput = attnOutput;
+        FfnUpGate = ffnUpGate;
+        FfnDown = ffnDown;
+        MoeExperts = moeExperts;
+        MoeRouter = moeRouter;
     }
 
     // Converting constructor: HybridQuant -> TensorConfig
     public TensorConfig(HybridQuant h)
         : this(
-            baseQuant:  checked((byte)h.BaseQuant.UniqueId),
-            embeddings: GetSchemeIdOrDefault(h, TReg.Embeddings),
-            lmHead:     GetSchemeIdOrDefault(h, TReg.LmHead),
-            attnQ:      GetSchemeIdOrDefault(h, TReg.AttnQ),
-            attnKV:     GetSchemeIdOrDefault(h, TReg.AttnKV),
-            attnOutput: GetSchemeIdOrDefault(h, TReg.AttnOutput),
-            ffnUpGate:  GetSchemeIdOrDefault(h, TReg.FfnUpGate),
-            ffnDown:    GetSchemeIdOrDefault(h, TReg.FfnDown),
-            moeExperts: GetSchemeIdOrDefault(h, TReg.MoeExperts),
-            moeRouter:  GetSchemeIdOrDefault(h, TReg.MoeRouter))
+            baseQuant: checked((byte)h.BaseQuant.UniqueId),
+            embeddings: GetCandidateIdOrDefault(h, TReg.Embeddings),
+            lmHead: GetCandidateIdOrDefault(h, TReg.LmHead),
+            attnQ: GetCandidateIdOrDefault(h, TReg.AttnQ),
+            attnKV: GetCandidateIdOrDefault(h, TReg.AttnKV),
+            attnOutput: GetCandidateIdOrDefault(h, TReg.AttnOutput),
+            ffnUpGate: GetCandidateIdOrDefault(h, TReg.FfnUpGate),
+            ffnDown: GetCandidateIdOrDefault(h, TReg.FfnDown),
+            moeExperts: GetCandidateIdOrDefault(h, TReg.MoeExperts),
+            moeRouter: GetCandidateIdOrDefault(h, TReg.MoeRouter))
     { }
 
-    private static byte GetSchemeIdOrDefault(HybridQuant h, TensorGroup group)
+    private static byte GetCandidateIdOrDefault(HybridQuant h, TensorGroup group)
     {
         if (h.Tensors == null || h.Tensors.Count == 0)
             return TensorWeightScheme.NULL.UniqueId;
 
-        TensorWeightScheme? found = null;
+        BaselineQuants? found = null;
 
         for (int i = 0; i < h.Tensors.Count; i++)
         {
@@ -74,17 +73,12 @@ public readonly struct TensorConfig
                 continue;
 
             if (found != null)
-            {
-                throw new InvalidOperationException(
-                    $"HybridQuant contains duplicate entries for group '{group.Name}' (UniqueId={group.UniqueId}).");
-            }
+                throw new InvalidOperationException($"HybridQuant contains duplicate entries for group '{group.Name}' (UniqueId={group.UniqueId}).");
 
-            found = t.TensorType;
+            found = t.CandidateBaseline ?? BaselineQuants.FromTensorSchemeId(t.TensorType.UniqueId);
         }
 
-        return found == null
-            ? TensorWeightScheme.NULL.UniqueId
-            : checked((byte)found.UniqueId);
+        return found == null ? TensorWeightScheme.NULL.UniqueId : checked((byte)found.UniqueId);
     }
 
     public static explicit operator TensorConfig(HybridQuant h) => new TensorConfig(h);

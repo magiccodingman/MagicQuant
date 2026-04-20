@@ -26,6 +26,7 @@ public sealed class ImatrixService
             AnsiConsole.MarkupLine("[grey]Imatrix: disabled by --use-imatrix flag (false).[/]");
             Cache.IsImatrixAvailable = false;
             Cache.ActiveImatrixPath = null;
+            Cache.ActiveImatrixIdentityHash = null;
             RuntimeSearchSpace.SetImatrixAvailability(false);
             return new ImatrixEnsureResult { Enabled = false, Available = false };
         }
@@ -59,6 +60,7 @@ public sealed class ImatrixService
 
             Cache.IsImatrixAvailable = true;
             Cache.ActiveImatrixPath = datPath;
+            Cache.ActiveImatrixIdentityHash = await ComputeSha256Async(datPath, ct);
             RuntimeSearchSpace.SetImatrixAvailability(true);
             AnsiConsole.MarkupLine($"[green]Imatrix: ready (rebuilt).[/] [grey]{Markup.Escape(datPath)}[/]");
 
@@ -74,6 +76,7 @@ public sealed class ImatrixService
 
         Cache.IsImatrixAvailable = true;
         Cache.ActiveImatrixPath = datPath;
+        Cache.ActiveImatrixIdentityHash = await ComputeSha256Async(datPath, ct);
         RuntimeSearchSpace.SetImatrixAvailability(true);
         AnsiConsole.MarkupLine($"[green]Imatrix: ready (reused existing trusted artifact).[/] [grey]{Markup.Escape(datPath)}[/]");
 

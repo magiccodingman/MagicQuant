@@ -97,14 +97,7 @@ public class ModelCompatibilityService
                 unusedCount++;
                 Cache.UnusedTensorGroups.Add(group);
 
-                foreach (var scheme in TensorWeightScheme.All_Allowed_Hybrid_Quants)
-                {
-                    if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
-                        continue;
-
-                    if (!scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
-                        scheme.BannedGroups.Add(group);
-                }
+                RuntimeSearchSpace.BanAllExplicitCombinationCandidatesForGroup(group);
             }
 
             foreach (var failure in result.Incompatible)
@@ -116,10 +109,11 @@ public class ModelCompatibilityService
                 if (group == null || scheme == null)
                     continue;
 
-                if (scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
+                var candidate = BaselineQuants.FromTensorSchemeId(scheme.UniqueId);
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
-                scheme.BannedGroups.Add(group);
+                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate);
                 shapeBanCount++;
                 shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{scheme.Names[0]}[/]",
                     "[grey]Block Alignment[/]");
@@ -127,7 +121,7 @@ public class ModelCompatibilityService
 
             foreach (var group in TReg.All.Except(Cache.UnusedTensorGroups))
             {
-                if (RuntimeSearchSpace.IsGroupExplicitQuantBanned(group))
+                if (RuntimeSearchSpace.IsGroupExplicitCandidateBanned(group))
                     explicitQuantBannedCount++;
             }
 

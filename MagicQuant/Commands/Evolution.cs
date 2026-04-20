@@ -63,6 +63,7 @@ public class Evolution : ICommand
         Cache.UseImatrix = args.Any(a => string.Equals(a.Name, "use-imatrix", StringComparison.OrdinalIgnoreCase));
         Cache.ForceImatrixRebuild = args.Any(a => string.Equals(a.Name, "imatrix-force-rebuild", StringComparison.OrdinalIgnoreCase));
         RuntimeSearchSpace.SetImatrixAvailability(false);
+        RuntimeSearchSpace.AllowHighPrecisionHybrids = args.Any(a => string.Equals(a.Name, "allow-high-precision-hybrids", StringComparison.OrdinalIgnoreCase));
 
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
@@ -200,7 +201,8 @@ public class Evolution : ICommand
 
         AnsiConsole.Write(new Rule("[yellow]Initial Isolation Startup Samples[/]") { Justification = Justify.Left });
 
-        var initialPlan = TensorConfigGenerator.GenerateInitialIsolationSamplePlan(Cache.UnusedTensorGroups);
+        var isolationPlanner = new IsolationPlanningService();
+        var initialPlan = isolationPlanner.BuildInitialPlan(Cache.UnusedTensorGroups);
         AnsiConsole.MarkupLine($"[grey]Queued initial startup samples:[/] [cyan]{initialPlan.TotalCount:N0}[/]");
 
         var initialSummary = await quantizationService.ProcessHybridBatchAsync(initialPlan.Plans);
@@ -222,7 +224,7 @@ public class Evolution : ICommand
 
         AnsiConsole.Write(new Rule("[yellow]Continuation Isolation Samples[/]") { Justification = Justify.Left });
 
-        var continuationPlan = TensorConfigGenerator.GenerateContinuationIsolationSamplePlan(
+        var continuationPlan = isolationPlanner.BuildContinuationPlan(
             initialAnalysis.GroupsToContinue,
             Cache.UnusedTensorGroups);
 
@@ -260,7 +262,7 @@ public class Evolution : ICommand
                 });
 
             AnsiConsole.MarkupLine($"[green]Best savings:[/] {gd.BestReductionRatio:P2}");
-            AnsiConsole.MarkupLine($"[green]Winning scheme:[/] {Markup.Escape(gd.WinningScheme ?? "n/a")}");
+            AnsiConsole.MarkupLine($"[green]Winning candidate:[/] {Markup.Escape(gd.WinningCandidate ?? "n/a")}");
             AnsiConsole.MarkupLine($"[green]Explicit quant banned:[/] {(gd.ExplicitQuantBanned ? "[red]yes[/]" : "[green]no[/]")}");
             AnsiConsole.MarkupLine($"[green]BF16 suppressed:[/] {(gd.Bf16Suppressed ? "[yellow]yes[/]" : "[green]no[/]")}");
 
@@ -273,8 +275,9 @@ public class Evolution : ICommand
         await dbService.InitializeAsync(forceRebuild: true);
 
         long predictedSizePruned = await dbService.PrunePredictedLargerThanQ8Async(mergedPlan);
+        long highPrecisionPruned = await dbService.PruneHighPrecisionHybridCandidatesAsync();
 
-        AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {learnedPruningResult.GroupSchemeEliminations:N0}");
+        AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {learnedPruningResult.GroupCandidateEliminations:N0}");
         AnsiConsole.MarkupLine($"[green]Baselines skipped without learned rows:[/] {learnedPruningResult.BaselinesSkippedWithoutLearnedRows:N0}");
         AnsiConsole.MarkupLine($"[green]Groups reduced to BF16-only:[/] {isolationResult.ExplicitQuantBannedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]BF16-suppressed groups:[/] {isolationResult.Bf16SuppressedGroups:N0}");
@@ -285,6 +288,7 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine($"[green]Combination count before pruning:[/] {comboCountBefore:N0}");
         AnsiConsole.MarkupLine($"[green]Combination count after rule pruning:[/] {comboCountAfterRulePruning:N0}");
         AnsiConsole.MarkupLine($"[green]Predicted-size combo removals:[/] {predictedSizePruned:N0}");
+        AnsiConsole.MarkupLine($"[green]Late-stage high-precision combo removals:[/] {highPrecisionPruned:N0}");
 
         foreach (var note in isolationResult.Notes)
             AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
@@ -338,6 +342,8 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine("  [green]--relearn-baseline-mappings[/]    Delete and relearn baseline tensor mappings (Optional)");
         AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
         AnsiConsole.MarkupLine("  [green]--use-imatrix[/]    Enable imatrix acquisition/build and allow imatrix-required search candidates (Optional)");
+        AnsiConsole.MarkupLine("  [green]--allow-high-precision-hybrids[/]    Keep BF16/F16 explicit group candidates in final surviving combos (Optional, default false)");
+
         AnsiConsole.MarkupLine("  [green]--imatrix-force-rebuild[/]    Delete/rebuild canonical imatrix artifacts before run (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-url[/]    HTTPS URL for direct imatrix artifact download (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-repo[/]    Hugging Face dataset repo ID for imatrix generation (Optional)");

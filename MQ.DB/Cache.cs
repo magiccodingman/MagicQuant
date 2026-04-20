@@ -71,4 +71,6 @@ public class Cache
     public static bool IsImatrixAvailable { get; set; }
 
     public static string? ActiveImatrixPath { get; set; }
+
+    public static string? ActiveImatrixIdentityHash { get; set; }
 }

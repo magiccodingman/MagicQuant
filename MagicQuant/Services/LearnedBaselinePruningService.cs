@@ -13,7 +13,7 @@ namespace MagicQuant.Services;
 
 public sealed class LearnedBaselinePruningResult
 {
-    public int GroupSchemeEliminations { get; set; }
+    public int GroupCandidateEliminations { get; set; }
     public int BaselinesSkippedWithoutLearnedRows { get; set; }
     public List<string> Notes { get; } = new();
 }
@@ -84,18 +84,9 @@ public sealed class LearnedBaselinePruningService
         var aliasToSchemeIds = BuildAliasToSchemeIds();
         var effectiveSchemesByBaselineAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
 
-        var schemeOwnerById = BaselineQuants.All
-            .SelectMany(b => b.TensorWeightSchemes.Select(s => new
-            {
-                SchemeId = s.UniqueId,
-                Baseline = b
-            }))
-            .ToDictionary(x => x.SchemeId, x => x.Baseline);
-
-        var explicitSchemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
+        var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+            .Where(x => x.UniqueId != BaselineQuants.BF16_Hybrid.UniqueId)
+            .Where(x => x.UniqueId != BaselineQuants.F16_Hybrid.UniqueId)
             .OrderBy(x => x.UniqueId)
             .ToList();
 
@@ -104,29 +95,28 @@ public sealed class LearnedBaselinePruningService
             if (unusedGroupIds.Contains(group.UniqueId))
                 continue;
 
-            foreach (var scheme in explicitSchemes)
+            foreach (var candidate in explicitCandidates)
             {
-                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
-                if (!schemeOwnerById.TryGetValue(scheme.UniqueId, out var owningBaseline))
-                    continue;
-
+                var owningBaseline = candidate;
                 var key = (owningBaseline.UniqueId, group.UniqueId);
                 bool hasEffectiveSet = effectiveSchemesByBaselineAndGroup.TryGetValue(key, out var effectiveForGroup);
-                bool allow = hasEffectiveSet && effectiveForGroup!.Contains(scheme.UniqueId);
+                var candidateSchemeId = candidate.DefaultTensorScheme?.UniqueId;
+                bool allow = hasEffectiveSet && candidateSchemeId.HasValue && effectiveForGroup!.Contains(candidateSchemeId.Value);
                 string effectiveIds = hasEffectiveSet
                     ? string.Join(",", effectiveForGroup!.OrderBy(x => x))
                     : "<none>";
 
                 result.Notes.Add(
                     $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Name}, " +
-                    $"scheme={scheme.Names[0]}, owner={owningBaseline.Names[0]}, effective=[{effectiveIds}], decision={(allow ? "ALLOW" : "BAN")}");
+                    $"candidate={candidate.Names[0]}, owner={owningBaseline.Names[0]}, effective=[{effectiveIds}], decision={(allow ? "ALLOW" : "BAN")}");
 
                 if (!allow)
                 {
-                    RuntimeSearchSpace.BanSchemeForGroupByLearnedBaselineAbsence(group, scheme, owningBaseline);
-                    result.GroupSchemeEliminations++;
+                    RuntimeSearchSpace.BanCombinationCandidateForGroupByLearnedBaselineAbsence(group, candidate, owningBaseline);
+                    result.GroupCandidateEliminations++;
                 }
             }
         }

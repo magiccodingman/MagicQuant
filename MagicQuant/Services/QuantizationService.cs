@@ -1444,14 +1444,15 @@ public class QuantizationService
             if (hybrid.TensorType.UniqueId == TensorWeightScheme.NULL.UniqueId)
                 continue;
 
-            if (baseScheme != null && hybrid.TensorType.UniqueId == baseScheme.UniqueId)
+            if (hybrid.CandidateBaseline != null && hybrid.CandidateBaseline.UniqueId == quant.BaseQuant.UniqueId)
                 continue;
 
-            var learned = TryLoadLearnedTensorMapping(hybrid.TensorType, hybrid.TGroup);
+            var sourceScheme = hybrid.CandidateBaseline?.DefaultTensorScheme ?? hybrid.TensorType;
+            var learned = TryLoadLearnedTensorMapping(sourceScheme, hybrid.TGroup, hybrid.CandidateBaseline);
             if (learned.Count == 0)
             {
                 throw new InvalidOperationException(
-                    $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + scheme '{ResolveSchemeName(hybrid.TensorType)}'. " +
+                    $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + scheme '{hybrid.CandidateBaseline?.Names[0] ?? ResolveSchemeName(hybrid.TensorType)}'. " +
                     "Run with --relearn-baseline-mappings to regenerate.");
             }
 
@@ -1469,7 +1470,7 @@ public class QuantizationService
                 var unexpectedText = unexpectedLearned.Count == 0 ? "none" : string.Join(", ", unexpectedLearned.Take(15));
 
                 throw new InvalidOperationException(
-                    $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + scheme '{ResolveSchemeName(hybrid.TensorType)}'. " +
+                    $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + scheme '{hybrid.CandidateBaseline?.Names[0] ?? ResolveSchemeName(hybrid.TensorType)}'. " +
                     $"Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
             }
 
@@ -1487,7 +1488,7 @@ public class QuantizationService
         return result;
     }
 
-    private Dictionary<string, string> TryLoadLearnedTensorMapping(TensorWeightScheme sourceScheme, TensorGroup targetGroup)
+    private Dictionary<string, string> TryLoadLearnedTensorMapping(TensorWeightScheme sourceScheme, TensorGroup targetGroup, BaselineQuants? sourceBaseline = null)
     {
         using var db = new MagicQuantContext();
 
@@ -1505,7 +1506,7 @@ public class QuantizationService
         }
         else
         {
-            var baseline = BaselineQuants.All.FirstOrDefault(x =>
+            var baseline = sourceBaseline ?? BaselineQuants.All.FirstOrDefault(x =>
                 x.TensorWeightSchemes.Any(s => s.UniqueId == sourceScheme.UniqueId));
 
             if (baseline == null)
@@ -1772,14 +1773,14 @@ public class QuantizationService
         string baseName = ResolveBaseName(quant.BaseQuant);
 
         var effectiveTensors = quant.Tensors?
-            .Where(t => t?.TGroup != null && t.TensorType.UniqueId != TensorWeightScheme.NULL.UniqueId)
+             .Where(t => t?.TGroup != null && t.CandidateBaseline != null)
             .ToList();
 
         if (effectiveTensors == null || effectiveTensors.Count == 0)
             return $"{modelName}-{baseName}";
 
         var grouped = effectiveTensors
-            .GroupBy(t => ResolveSchemeName(t.TensorType))
+            .GroupBy(t => t.CandidateBaseline.Names[0])
             .Select(g => new
             {
                 Type = g.Key,

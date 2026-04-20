@@ -121,6 +121,7 @@ public class MagicQuantContext : DbContext
     public DbSet<LearnedBaselineTensorQuant> LearnedBaselineTensorQuants { get; set; }
     public DbSet<BaselineQuantDefinition> BaselineQuantDefinitions { get; set; }
     public DbSet<ExecutionPlanProbeCache> ExecutionPlanProbeCaches { get; set; }
+    public DbSet<ImatrixDefinition> ImatrixDefinitions { get; set; }
 
     // --------------------------------------------------------
     // Configuration
