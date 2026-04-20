@@ -41,7 +41,7 @@ public sealed class InitialIsolationAnalysisResult
 public sealed class IsolationOptimizationResult
 {
     public int ExplicitQuantBannedGroups { get; set; }
-    public int DominatedGroupSchemesBanned { get; set; }
+    public int DominatedGroupCandidatesBanned { get; set; }
     public int HardDamageEliminations { get; set; }
     public int BadTradeEliminations { get; set; }
     public int DisabledBaselines { get; set; }
@@ -86,13 +86,13 @@ public class IsolationOptimizationService
         foreach (var groupSet in groupPlans)
         {
             var group = TReg.All.First(x => x.UniqueId == groupSet.Key);
+            var probe = groupSet.Single();
 
-            var item = groupSet.Single();
-            var snap = await LoadSnapshotAsync(item.Quant, ct);
+            var snap = await LoadSnapshotAsync(probe.Quant, ct);
             if (snap == null)
                 continue;
 
-            var candidate = BaselineQuants.FromId(item.TestedSchemeId!.Value);
+            var candidate = BaselineQuants.FromId(probe.TestedSchemeId!.Value);
             var reduction = ComputeReductionRatio(carrierBaseOnly.SizeBytes, snap.SizeBytes);
             var kld = GetAggregateKld(snap);
             var pplDelta = GetAggregatePplDeltaPercent(snap, nativeBaseline);
@@ -108,7 +108,7 @@ public class IsolationOptimizationService
             };
 
             decision.Candidates.Add(
-                $"{scheme.Names[0]} | size={(snap.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={reduction:P2} | kld={kld:G6} | pplΔ={pplDelta:F4}%");
+                $"{candidate.Names[0]} | size={(snap.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={reduction:P2} | kld={kld:G6} | pplΔ={pplDelta:F4}%");
 
             if (reduction < options.MinMeaningfulGroupReductionRatio)
             {
@@ -116,7 +116,7 @@ public class IsolationOptimizationService
                 decision.ExplicitQuantBanned = true;
 
                 result.Notes.Add(
-                    $"Early stop for '{group.Name}': smallest non-imatrix '{scheme.Names[0]}' only saved {reduction:P2}, below {options.MinMeaningfulGroupReductionRatio:P2}. Explicit tensor quant exploration removed for this group.");
+                    $"Early stop for '{group.Name}': smallest baseline-candidate probe '{candidate.Names[0]}' only saved {reduction:P2}, below {options.MinMeaningfulGroupReductionRatio:P2}. Explicit baseline-candidate exploration removed for this group.");
 
                 result.GroupDetails.Add(decision);
                 continue;
@@ -130,7 +130,7 @@ public class IsolationOptimizationService
                 decision.Bf16Suppressed = true;
 
                 result.Notes.Add(
-                    $"Suppressed BF16 tensor-choice for '{group.Name}' because smallest probe already saved {reduction:P2}.");
+                    $"Suppressed BF16 explicit candidate for '{group.Name}' because smallest baseline-candidate probe already saved {reduction:P2}.");
             }
 
             result.GroupDetails.Add(decision);
@@ -173,8 +173,7 @@ public class IsolationOptimizationService
         foreach (var groupSet in groupPlans)
         {
             var group = TReg.All.First(x => x.UniqueId == groupSet.Key);
-
-            var candidates = new List<GroupCandidate>();
+            var candidates = new List<GroupCandidateEvaluation>();
 
             foreach (var item in groupSet)
             {
@@ -182,12 +181,12 @@ public class IsolationOptimizationService
                 if (snap == null)
                     continue;
 
-                var candidate = BaselineQuants.FromId(item.TestedSchemeId!.Value);
+                var candidateBaseline = BaselineQuants.FromId(item.TestedSchemeId!.Value);
 
-                candidates.Add(new GroupCandidate
+                candidates.Add(new GroupCandidateEvaluation
                 {
                     Group = group,
-                    Candidate = candidate,
+                    CandidateBaseline = candidateBaseline,
                     SizeBytes = snap.SizeBytes,
                     SavingsRatio = ComputeReductionRatio(carrierBaseOnly.SizeBytes, snap.SizeBytes),
                     Kld = GetAggregateKld(snap),
@@ -206,7 +205,7 @@ public class IsolationOptimizationService
 
             foreach (var candidate in candidates.ToList())
             {
-                if (candidate.Candidate.UniqueId == BaselineQuants.BF16_Hybrid.UniqueId || candidate.Candidate.UniqueId == BaselineQuants.F16_Hybrid.UniqueId)
+                if (IsHighPrecisionCandidate(candidate.CandidateBaseline))
                     continue;
 
                 bool hardFail =
@@ -216,20 +215,17 @@ public class IsolationOptimizationService
                 if (!hardFail)
                     continue;
 
-                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.Candidate);
+                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.CandidateBaseline);
                 result.HardDamageEliminations++;
 
                 result.Notes.Add(
-                    $"Hard damage elimination: '{candidate.Candidate.Names[0]}' removed for '{group.Name}' " +
+                    $"Hard damage elimination: '{candidate.CandidateBaseline.Names[0]}' removed for '{group.Name}' " +
                     $"(savings={candidate.SavingsRatio:P2}, KLD={candidate.Kld:G6}, PPLΔ={candidate.PplDeltaPercent:F4}%).");
             }
 
             candidates = FilterSurvivors(group, candidates);
-
             ApplyDominanceElimination(group, candidates, result);
-
             candidates = FilterSurvivors(group, candidates);
-
             ApplyBadTradeElimination(group, candidates, result);
 
             candidates = FilterSurvivors(group, candidates)
@@ -246,8 +242,7 @@ public class IsolationOptimizationService
             }
 
             var winner = candidates.First();
-
-            decision.WinningCandidate = winner.Candidate.Names[0];
+            decision.WinningCandidate = winner.CandidateBaseline.Names[0];
             decision.WinningSizeBytes = winner.SizeBytes;
             decision.WinningKld = winner.Kld;
             decision.WinningPplDelta = winner.PplDeltaPercent;
@@ -256,17 +251,14 @@ public class IsolationOptimizationService
             foreach (var candidate in candidates.OrderBy(x => x.SizeBytes))
             {
                 decision.Candidates.Add(
-                    $"{candidate.Candidate.Names[0]} | size={(candidate.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={candidate.SavingsRatio:P2} | kld={candidate.Kld:G6} | pplΔ={candidate.PplDeltaPercent:F4}%");
+                    $"{candidate.CandidateBaseline.Names[0]} | size={(candidate.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={candidate.SavingsRatio:P2} | kld={candidate.Kld:G6} | pplΔ={candidate.PplDeltaPercent:F4}%");
             }
 
             foreach (var banInfo in RuntimeSearchSpace.GetLearnedBaselineMissingPrunedSchemesForGroup(group))
             {
-                var sourceBaselines = string.Join(
-                    ", ",
-                    banInfo.MissingBaselines.Select(x => x.Names[0]));
-
+                var sourceBaselines = string.Join(", ", banInfo.MissingBaselines.Select(x => x.Names[0]));
                 decision.Candidates.Add(
-                    $"[pruned-early] {banInfo.Candidate.Names[0]} removed by learned-baseline mapping for this group (no matching tensor weights in baseline(s): {sourceBaselines}).");
+                    $"[pruned-early] {banInfo.Candidate.Names[0]} removed by learned baseline-family mapping for this group (missing baseline source(s): {sourceBaselines}).");
             }
 
             result.GroupDetails.Add(decision);
@@ -284,11 +276,9 @@ public class IsolationOptimizationService
                 continue;
 
             double reduction = ComputeReductionRatio(nativeBaseline.SizeBytes, snap.SizeBytes);
-
             if (reduction < options.MinMeaningfulBaseOnlyReductionRatio)
             {
                 var baseline = BaselineQuants.FromId(item.TestedBaselineId!.Value);
-
                 if (RuntimeSearchSpace.DisableCombinationBaseline(baseline))
                 {
                     result.DisabledBaselines++;
@@ -304,10 +294,10 @@ public class IsolationOptimizationService
         return result;
     }
 
-    private static void PopulateFinalGroupFlags(
-        TensorGroup group,
-        IsolationGroupDecision decision,
-        IsolationOptimizationResult result)
+    private static bool IsHighPrecisionCandidate(BaselineQuants candidate)
+        => candidate.UniqueId == BaselineQuants.BF16_Hybrid.UniqueId || candidate.UniqueId == BaselineQuants.F16_Hybrid.UniqueId;
+
+    private static void PopulateFinalGroupFlags(TensorGroup group, IsolationGroupDecision decision, IsolationOptimizationResult result)
     {
         var (explicitAllowed, bf16Allowed) = RuntimeSearchSpace.GetFinalAllowedQuantFamiliesForGroup(group);
 
@@ -317,23 +307,19 @@ public class IsolationOptimizationService
         if (!explicitAllowed && !bf16Allowed)
         {
             result.Notes.Add(
-                $"[invariant-warning] Invalid final quant-family state for '{group.Name}': neither explicit nor BF16 is allowed.");
+                $"[invariant-warning] Invalid final quant-family state for '{group.Name}': neither explicit candidate nor BF16 is allowed.");
         }
     }
 
-    private static List<GroupCandidate> FilterSurvivors(TensorGroup group, List<GroupCandidate> candidates)
+    private static List<GroupCandidateEvaluation> FilterSurvivors(TensorGroup group, List<GroupCandidateEvaluation> candidates)
     {
         return candidates
-            .Where(x => x.Candidate.UniqueId == BaselineQuants.BF16_Hybrid.UniqueId ||
-                        x.Candidate.UniqueId == BaselineQuants.F16_Hybrid.UniqueId ||
-                        !RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x.Candidate))
+            .Where(x => IsHighPrecisionCandidate(x.CandidateBaseline) ||
+                        !RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x.CandidateBaseline))
             .ToList();
     }
 
-    private static void ApplyDominanceElimination(
-        TensorGroup group,
-        List<GroupCandidate> candidates,
-        IsolationOptimizationResult result)
+    private static void ApplyDominanceElimination(TensorGroup group, List<GroupCandidateEvaluation> candidates, IsolationOptimizationResult result)
     {
         var explicitCandidates = GetActiveExplicitCandidates(group, candidates);
 
@@ -358,23 +344,20 @@ public class IsolationOptimizationService
 
                 if (sameOrSmaller && kldNoWorse && pplNoWorse && strictlyBetter)
                 {
-                    if (!RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, b.Candidate))
+                    if (!RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, b.CandidateBaseline))
                     {
-                        RuntimeSearchSpace.BanCombinationCandidateForGroup(group, b.Candidate);
-                        result.DominatedGroupSchemesBanned++;
+                        RuntimeSearchSpace.BanCombinationCandidateForGroup(group, b.CandidateBaseline);
+                        result.DominatedGroupCandidatesBanned++;
 
                         result.Notes.Add(
-                            $"Dominance elimination: '{b.Candidate.Names[0]}' removed for '{group.Name}' because '{a.Candidate.Names[0]}' was same-size-or-smaller and no worse on KLD/PPL.");
+                            $"Dominance elimination: '{b.CandidateBaseline.Names[0]}' removed for '{group.Name}' because '{a.CandidateBaseline.Names[0]}' was same-size-or-smaller and no worse on KLD/PPL.");
                     }
                 }
             }
         }
     }
 
-    private static void ApplyBadTradeElimination(
-        TensorGroup group,
-        List<GroupCandidate> candidates,
-        IsolationOptimizationResult result)
+    private static void ApplyBadTradeElimination(TensorGroup group, List<GroupCandidateEvaluation> candidates, IsolationOptimizationResult result)
     {
         var activeCandidates = GetActiveExplicitCandidates(group, candidates);
         if (activeCandidates.Count <= 1)
@@ -390,19 +373,19 @@ public class IsolationOptimizationService
 
         for (int i = 1; i < sizeBuckets.Count; i++)
         {
-            var bucketSurvivors = new List<GroupCandidate>();
+            var bucketSurvivors = new List<GroupCandidateEvaluation>();
 
             foreach (var candidate in sizeBuckets[i])
             {
-                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate.Candidate))
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate.CandidateBaseline))
                     continue;
 
                 if (ShouldEliminateAsBadTrade(acceptedAnchor, candidate, out var reason))
                 {
-                    RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.Candidate);
+                    RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.CandidateBaseline);
                     result.BadTradeEliminations++;
                     result.Notes.Add(
-                        $"Bad trade elimination: '{candidate.Candidate.Names[0]}' removed vs accepted anchor '{acceptedAnchor.Candidate.Names[0]}' for '{group.Name}'. {reason}");
+                        $"Bad trade elimination: '{candidate.CandidateBaseline.Names[0]}' removed vs accepted anchor '{acceptedAnchor.CandidateBaseline.Names[0]}' for '{group.Name}'. {reason}");
                     continue;
                 }
 
@@ -415,15 +398,15 @@ public class IsolationOptimizationService
         }
     }
 
-    private static List<GroupCandidate> GetActiveExplicitCandidates(TensorGroup group, List<GroupCandidate> candidates)
+    private static List<GroupCandidateEvaluation> GetActiveExplicitCandidates(TensorGroup group, List<GroupCandidateEvaluation> candidates)
     {
         return candidates
-            .Where(x => x.Candidate.UniqueId != BaselineQuants.BF16_Hybrid.UniqueId && x.Candidate.UniqueId != BaselineQuants.F16_Hybrid.UniqueId)
-            .Where(x => !RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x.Candidate))
+            .Where(x => !IsHighPrecisionCandidate(x.CandidateBaseline))
+            .Where(x => !RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x.CandidateBaseline))
             .ToList();
     }
 
-    private static List<List<GroupCandidate>> BuildSizeBuckets(List<GroupCandidate> candidates)
+    private static List<List<GroupCandidateEvaluation>> BuildSizeBuckets(List<GroupCandidateEvaluation> candidates)
     {
         return candidates
             .GroupBy(x => x.SizeBytes)
@@ -431,44 +414,31 @@ public class IsolationOptimizationService
             .Select(x => x
                 .OrderBy(c => c.Kld)
                 .ThenBy(c => Math.Abs(c.PplDeltaPercent))
-                .ThenByDescending(c => GetCandidateSafetyScore(c.Candidate))
-                .ThenBy(c => c.Candidate.Names[0], StringComparer.Ordinal)
+                .ThenByDescending(c => GetCandidateSafetyScore(c.CandidateBaseline))
+                .ThenBy(c => c.CandidateBaseline.Names[0], StringComparer.Ordinal)
                 .ToList())
             .ToList();
     }
 
-    private static bool ShouldEliminateAsBadTrade(
-        GroupCandidate anchor,
-        GroupCandidate candidate,
-        out string reason)
+    private static bool ShouldEliminateAsBadTrade(GroupCandidateEvaluation anchor, GroupCandidateEvaluation candidate, out string reason)
     {
         reason = string.Empty;
 
         if (anchor.SizeBytes <= candidate.SizeBytes)
             return false;
 
-        double sizeDeltaPercent =
-            ((double)anchor.SizeBytes - candidate.SizeBytes) / anchor.SizeBytes * 100.0;
-
+        double sizeDeltaPercent = ((double)anchor.SizeBytes - candidate.SizeBytes) / anchor.SizeBytes * 100.0;
         if (sizeDeltaPercent > IsolationPruningConfig.BadTradeMaxSizeDeltaPercent)
             return false;
 
         double anchorPplAbs = Math.Abs(anchor.PplDeltaPercent);
         double candidatePplAbs = Math.Abs(candidate.PplDeltaPercent);
 
-        double kldRatio = anchor.Kld <= IsolationPruningConfig.FloatingPointEpsilon
-            ? double.PositiveInfinity
-            : candidate.Kld / anchor.Kld;
+        double kldRatio = anchor.Kld <= IsolationPruningConfig.FloatingPointEpsilon ? double.PositiveInfinity : candidate.Kld / anchor.Kld;
+        double pplRatio = anchorPplAbs <= IsolationPruningConfig.FloatingPointEpsilon ? double.PositiveInfinity : candidatePplAbs / anchorPplAbs;
 
-        double pplRatio = anchorPplAbs <= IsolationPruningConfig.FloatingPointEpsilon
-            ? double.PositiveInfinity
-            : candidatePplAbs / anchorPplAbs;
-
-        bool kldBadTrade =
-            candidate.Kld > anchor.Kld * IsolationPruningConfig.BadTradeKldMultiplier;
-
-        bool pplBadTrade =
-            candidatePplAbs > anchorPplAbs * IsolationPruningConfig.BadTradePplMultiplier;
+        bool kldBadTrade = candidate.Kld > anchor.Kld * IsolationPruningConfig.BadTradeKldMultiplier;
+        bool pplBadTrade = candidatePplAbs > anchorPplAbs * IsolationPruningConfig.BadTradePplMultiplier;
 
         bool candidateMeaningfullyBetterKld =
             candidate.Kld + IsolationPruningConfig.FloatingPointEpsilon < anchor.Kld * 0.90;
@@ -480,10 +450,7 @@ public class IsolationOptimizationService
             (kldBadTrade && candidateMeaningfullyBetterPpl) ||
             (pplBadTrade && candidateMeaningfullyBetterKld);
 
-        if (mixedTradeoff)
-            return false;
-
-        if (!kldBadTrade && !pplBadTrade)
+        if (mixedTradeoff || (!kldBadTrade && !pplBadTrade))
             return false;
 
         reason =
@@ -492,13 +459,13 @@ public class IsolationOptimizationService
         return true;
     }
 
-    private static GroupCandidate? SelectBestBucketSurvivor(List<GroupCandidate> survivors)
+    private static GroupCandidateEvaluation? SelectBestBucketSurvivor(List<GroupCandidateEvaluation> survivors)
     {
         return survivors
             .OrderBy(x => x.Kld)
             .ThenBy(x => Math.Abs(x.PplDeltaPercent))
-            .ThenByDescending(x => GetCandidateSafetyScore(x.Candidate))
-            .ThenBy(x => x.Candidate.Names[0], StringComparer.Ordinal)
+            .ThenByDescending(x => GetCandidateSafetyScore(x.CandidateBaseline))
+            .ThenBy(x => x.CandidateBaseline.Names[0], StringComparer.Ordinal)
             .FirstOrDefault();
     }
 
@@ -509,9 +476,7 @@ public class IsolationOptimizationService
         for (int i = 0; i < canonical.Length - 1; i++)
         {
             if ((canonical[i] == 'q' || canonical[i] == 'Q') && char.IsDigit(canonical[i + 1]))
-            {
                 return canonical[i + 1] - '0';
-            }
         }
 
         return 0;
@@ -521,12 +486,11 @@ public class IsolationOptimizationService
     {
         await using var db = new MagicQuantContext();
 
-        var model = await db.AiModelHashes
-            .FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
-
+        var model = await db.AiModelHashes.FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
         if (model == null)
             return null;
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
         var lookup = (TensorConfig)quant;
 
         var row = await db.AiBenchmarks
@@ -537,6 +501,7 @@ public class IsolationOptimizationService
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
                     x.b.AiModelHashId == model.Id &&
+                    x.b.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.c.BaseQuant == lookup.BaseQuant &&
                     x.c.Embeddings == lookup.Embeddings &&
                     x.c.LmHead == lookup.LmHead &&
@@ -605,10 +570,10 @@ public class IsolationOptimizationService
         return deltas.Count == 0 ? double.PositiveInfinity : deltas.Average();
     }
 
-    private sealed class GroupCandidate
+    private sealed class GroupCandidateEvaluation
     {
         public TensorGroup Group { get; set; } = default!;
-        public BaselineQuants Candidate { get; set; } = default!;
+        public BaselineQuants CandidateBaseline { get; set; } = default!;
         public ulong SizeBytes { get; set; }
         public double SavingsRatio { get; set; }
         public double Kld { get; set; }

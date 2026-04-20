@@ -10,7 +10,7 @@ public static class ComboLogic
     private static readonly ImmutableArray<TensorGroup> GroupsOrdered =
         TReg.All.OrderBy(g => g.UniqueId).ToImmutableArray();
 
-    public static ImmutableArray<byte[]> GetAllowedSchemeIdsPerGroup(BaselineQuants baseQuant)
+    public static ImmutableArray<byte[]> GetAllowedCandidateIdsPerGroup(BaselineQuants baseQuant)
     {
         bool imatrixAvailable = RuntimeSearchSpace.HasUsableImatrix();
         var candidatesForRun = BaselineQuants.GetGroupCombinationCandidates(imatrixAvailable, allowHighPrecisionHybrids: true)
@@ -55,7 +55,7 @@ public static class ComboLogic
 
     public static BigInteger CountCombinations(in BaselineQuants baseQuant)
     {
-        var allowed = GetAllowedSchemeIdsPerGroup(baseQuant);
+        var allowed = GetAllowedCandidateIdsPerGroup(baseQuant);
 
         BigInteger total = BigInteger.One;
         for (int i = 0; i < allowed.Length; i++)
@@ -69,7 +69,7 @@ public static class ComboCounter
 {
     public static BigInteger CountForBase(BaselineQuants baseQuant)
     {
-        var allowed = ComboLogic.GetAllowedSchemeIdsPerGroup(baseQuant);
+        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseQuant);
 
         BigInteger total = BigInteger.One;
         for (int i = 0; i < allowed.Length; i++)

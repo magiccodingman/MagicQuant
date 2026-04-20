@@ -94,7 +94,7 @@ public class QuantDatabaseService
     private static string BuildContextAwareDuckDbFileName()
     {
         string model = string.IsNullOrWhiteSpace(Cache.CurrentModelId) ? "unknown-model" : Cache.CurrentModelId;
-        string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixPath?.GetHashCode().ToString("X") ?? "imatrix") : "no-imatrix";
+        string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixIdentityHash ?? "imatrix-unknown") : "no-imatrix";
         string hp = RuntimeSearchSpace.AllowHighPrecisionHybrids ? "hp-on" : "hp-off";
         return $"{DbFileNamePrefix}_{model}_{imatrix}_{hp}.duckdb";
     }
@@ -354,9 +354,12 @@ public class QuantDatabaseService
         if (model == null)
             return null;
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var pureQ8 = await LoadSnapshotByQuantAsync(
             db,
             model.Id,
+            imatrixDefinitionId,
             HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0),
             ct);
 
@@ -368,7 +371,7 @@ public class QuantDatabaseService
         if (pureQ8 == null || carrierBaseOnlyPlan == null)
             return null;
 
-        var carrier = await LoadSnapshotByQuantAsync(db, model.Id, carrierBaseOnlyPlan.Quant, ct);
+        var carrier = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, carrierBaseOnlyPlan.Quant, ct);
         if (carrier == null)
             return null;
 
@@ -384,7 +387,7 @@ public class QuantDatabaseService
             if (!plan.TargetGroupId.HasValue || !plan.TestedSchemeId.HasValue)
                 continue;
 
-            var snap = await LoadSnapshotByQuantAsync(db, model.Id, plan.Quant, ct);
+            var snap = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, plan.Quant, ct);
             if (snap == null)
                 continue;
 
@@ -401,6 +404,7 @@ public class QuantDatabaseService
     private static async Task<BenchmarkRow?> LoadSnapshotByQuantAsync(
         MagicQuantContext db,
         uint modelId,
+        int? imatrixDefinitionId,
         HybridQuant quant,
         CancellationToken ct)
     {
@@ -413,6 +417,7 @@ public class QuantDatabaseService
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
                 x.b.AiModelHashId == modelId &&
+                x.b.ImatrixDefinitionId == imatrixDefinitionId &&
                 x.c.BaseQuant == lookup.BaseQuant &&
                 x.c.Embeddings == lookup.Embeddings &&
                 x.c.LmHead == lookup.LmHead &&

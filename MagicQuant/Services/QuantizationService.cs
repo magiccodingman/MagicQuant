@@ -276,6 +276,8 @@ public class QuantizationService
         if (model == null)
             return (null, null);
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var comboId = await db.TensorCombos
             .AsNoTracking()
             .Where(x =>
@@ -297,7 +299,7 @@ public class QuantizationService
 
         var benchmarkId = await db.AiBenchmarks
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == comboId)
+             .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == comboId)
             .Select(x => x.Id)
             .FirstOrDefaultAsync(ct);
 
@@ -383,6 +385,7 @@ public class QuantizationService
 
             await PersistQuantizationRunAsync(
                 quant: quant,
+                imatrixDefinitionId: null,
                 startedUtc: startedUtc,
                 completedUtc: DateTime.UtcNow,
                 succeeded: true,
@@ -405,6 +408,7 @@ public class QuantizationService
             {
                 await PersistQuantizationRunAsync(
                     quant: quant,
+                    imatrixDefinitionId: null,
                     startedUtc: startedUtc,
                     completedUtc: DateTime.UtcNow,
                     succeeded: false,
@@ -454,9 +458,11 @@ public class QuantizationService
         if (model == null)
             return false;
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var bench = await db.AiBenchmarks
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == model.Id)
+            .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId)
             .Join(
                 db.TensorCombos.AsNoTracking(),
                 benchmark => benchmark.TensorComboId,
@@ -493,6 +499,7 @@ public class QuantizationService
 
     private async Task PersistQuantizationRunAsync(
         HybridQuant quant,
+        int? imatrixDefinitionId,
         DateTime startedUtc,
         DateTime completedUtc,
         bool succeeded,
@@ -540,8 +547,10 @@ public class QuantizationService
             await db.SaveChangesAsync(ct);
         }
 
+        imatrixDefinitionId ??= await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, aiModelHash.Id, createIfMissing: true, ct);
+
         Guid? aiBenchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == aiModelHash.Id && x.TensorComboId == tensorCombo.Id)
+            .Where(x => x.AiModelHashId == aiModelHash.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == tensorCombo.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
@@ -549,6 +558,7 @@ public class QuantizationService
         {
             Id = Guid.NewGuid(),
             AiModelHashId = aiModelHash.Id,
+            ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = tensorCombo.Id,
             AiBenchmarkId = aiBenchmarkId,
             StartedUtc = startedUtc,
@@ -1005,8 +1015,10 @@ public class QuantizationService
         if (combo == null)
             throw new InvalidOperationException("Native-source benchmark TensorCombo is missing; benchmark base model first.");
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
+            .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
@@ -1127,8 +1139,10 @@ public class QuantizationService
                              x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
                              x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 && x.MoeRouter == 0, ct);
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
+            .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);

@@ -37,16 +37,16 @@ public class ModelCompatibilityService
         {
             var groupDefinitions = TReg.All.ToDictionary(g => g.Name, g => g.Tensors);
 
-            var blockRequirements = TensorWeightScheme.All_Allowed_Hybrid_Quants
-                .Where(s => s.BlockNeo.HasValue)
-                .ToDictionary(s => s.Names[0], s => s.BlockNeo!.Value);
+            var candidateBlockRequirements = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+                .Where(c => c.DefaultTensorScheme?.BlockNeo.HasValue == true)
+                .ToDictionary(c => c.Names[0], c => c.DefaultTensorScheme!.BlockNeo!.Value);
 
             var payload = new
             {
                 gguf_path = ggufPath,
                 output_path = resultPath,
                 groups = groupDefinitions,
-                schemes = blockRequirements
+                schemes = candidateBlockRequirements
             };
 
             string pyCode = GeneratePythonScript(JsonSerializer.Serialize(payload));
@@ -103,19 +103,17 @@ public class ModelCompatibilityService
             foreach (var failure in result.Incompatible)
             {
                 var group = TReg.GetByName(failure.Group);
-                var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(s =>
-                    s.Names.Any(n => n.Equals(failure.Scheme, StringComparison.OrdinalIgnoreCase)));
+                var candidate = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+                    .FirstOrDefault(c => c.Names.Any(n => n.Equals(failure.Scheme, StringComparison.OrdinalIgnoreCase)));
 
-                if (group == null || scheme == null)
+                if (group == null || candidate == null)
                     continue;
-
-                var candidate = BaselineQuants.FromTensorSchemeId(scheme.UniqueId);
                 if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
                 RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate);
                 shapeBanCount++;
-                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{scheme.Names[0]}[/]",
+                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{candidate.Names[0]}[/]",
                     "[grey]Block Alignment[/]");
             }
 

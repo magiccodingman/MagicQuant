@@ -188,7 +188,7 @@ public static class TensorConfigGenerator
         if (TReg.All.IsDefault)
             throw new InvalidOperationException("TensorRegistry.All is default (uninitialized).");
 
-        var allowed = ComboLogic.GetAllowedSchemeIdsPerGroup(baseQuant);
+        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseQuant);
 
         if (allowed.IsDefault)
             throw new InvalidOperationException("Allowed scheme array is default (uninitialized).");

@@ -39,10 +39,10 @@ public class LearnedBaselinePruningServiceTests
         Assert.True(RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(TReg.Embeddings, TensorWeightScheme.IQ4_NL));
         Assert.True(RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(TReg.Embeddings, TensorWeightScheme.IQ4_XS));
 
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=Q6_K") && x.Contains("decision=ALLOW"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=Q5_K") && x.Contains("decision=BAN"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=Q4_K") && x.Contains("decision=BAN"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=IQ4_NL") && x.Contains("decision=BAN"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=IQ4_XS") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=Q6_K") && x.Contains("decision=ALLOW"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=Q5_K") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=Q4_K") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=IQ4_NL") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=IQ4_XS") && x.Contains("decision=BAN"));
     }
 }

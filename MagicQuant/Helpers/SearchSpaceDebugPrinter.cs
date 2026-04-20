@@ -73,7 +73,7 @@ public static class SearchSpaceDebugPrinter
                 Justification = Justify.Left
             });
 
-            var allowed = ComboLogic.GetAllowedSchemeIdsPerGroup(baseline);
+            var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseline);
             BigInteger baseCount = BigInteger.One;
 
             for (int i = 0; i < TReg.All.Length; i++)

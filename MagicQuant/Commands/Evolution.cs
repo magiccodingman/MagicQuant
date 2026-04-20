@@ -282,7 +282,7 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine($"[green]Groups reduced to BF16-only:[/] {isolationResult.ExplicitQuantBannedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]BF16-suppressed groups:[/] {isolationResult.Bf16SuppressedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]Hard damage eliminations:[/] {isolationResult.HardDamageEliminations:N0}");
-        AnsiConsole.MarkupLine($"[green]Dominance eliminations:[/] {isolationResult.DominatedGroupSchemesBanned:N0}");
+        AnsiConsole.MarkupLine($"[green]Dominance eliminations:[/] {isolationResult.DominatedGroupCandidatesBanned:N0}");
         AnsiConsole.MarkupLine($"[green]Bad trade eliminations:[/] {isolationResult.BadTradeEliminations:N0}");
         AnsiConsole.MarkupLine($"[green]Disabled combination baselines:[/] {isolationResult.DisabledBaselines:N0}");
         AnsiConsole.MarkupLine($"[green]Combination count before pruning:[/] {comboCountBefore:N0}");
