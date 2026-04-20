@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text;
+using System.Text.RegularExpressions;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
@@ -194,16 +196,18 @@ public sealed class ImatrixService
         if (!string.Equals(metadata.SourceKind, ToSidecarSourceKind(sourceKind), StringComparison.OrdinalIgnoreCase))
             return false;
 
+        string effectiveSplit = GetEffectiveSplitForMetadata(request, sourceKind);
+
         return sourceKind switch
         {
             ImatrixSourceKind.Https => string.Equals(metadata.OriginalUrl, request.ImatrixUrl, StringComparison.Ordinal),
             ImatrixSourceKind.HfDataset =>
                 string.Equals(metadata.DatasetRepo, request.DatasetRepo, StringComparison.Ordinal) &&
                 string.Equals(metadata.DatasetConfig, request.DatasetConfig, StringComparison.Ordinal) &&
-                string.Equals(metadata.DatasetSplit, request.DatasetSplit, StringComparison.Ordinal),
+                string.Equals(metadata.DatasetSplit, effectiveSplit, StringComparison.Ordinal),
             ImatrixSourceKind.LocalDatasetFile =>
                 string.Equals(metadata.LocalDatasetFile, Path.GetFullPath(request.LocalDatasetFile!), StringComparison.Ordinal) &&
-                string.Equals(metadata.DatasetSplit, request.DatasetSplit, StringComparison.Ordinal),
+                string.Equals(metadata.DatasetSplit, effectiveSplit, StringComparison.Ordinal),
             _ => false
         };
     }
@@ -220,6 +224,7 @@ public sealed class ImatrixService
     {
         AnsiConsole.MarkupLine(
             $"[grey]Imatrix: acquiring from source:[/] [cyan]{Markup.Escape(ToSidecarSourceKind(sourceKind))}[/]");
+        string effectiveSplit = GetEffectiveSplitForMetadata(request, sourceKind);
 
         switch (sourceKind)
         {
@@ -243,7 +248,7 @@ public sealed class ImatrixService
             OriginalDownloadName = request.ImatrixUrl == null ? null : Path.GetFileName(new Uri(request.ImatrixUrl).AbsolutePath),
             DatasetRepo = request.DatasetRepo,
             DatasetConfig = request.DatasetConfig,
-            DatasetSplit = request.DatasetSplit,
+            DatasetSplit = effectiveSplit,
             LocalDatasetFile = string.IsNullOrWhiteSpace(request.LocalDatasetFile) ? null : Path.GetFullPath(request.LocalDatasetFile)
         };
 
@@ -259,7 +264,7 @@ public sealed class ImatrixService
             CanonicalPath = datPath,
             SourceKind = ToSidecarSourceKind(sourceKind),
             SourceIdentity = sourceIdentity,
-            Split = request.DatasetSplit,
+            Split = effectiveSplit,
             Config = request.DatasetConfig,
             Sha256 = await ComputeSha256Async(datPath, ct),
             FileSizeBytes = fileInfo.Length
@@ -284,6 +289,14 @@ public sealed class ImatrixService
         ImatrixSourceKind.LocalDatasetFile => "local_dataset_file",
         _ => "unknown"
     };
+
+    private static string GetEffectiveSplitForMetadata(ImatrixRequest request, ImatrixSourceKind sourceKind)
+    {
+        if (sourceKind == ImatrixSourceKind.LocalDatasetFile)
+            return string.IsNullOrWhiteSpace(request.DatasetSplit) ? "<fallback-recursive>" : request.DatasetSplit.Trim();
+
+        return request.DatasetSplit ?? string.Empty;
+    }
 
     private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
     {
@@ -324,7 +337,44 @@ public sealed class ImatrixService
             throw new FileNotFoundException($"Local dataset file not found: {datasetPath}");
 
         AnsiConsole.MarkupLine($"[grey]Imatrix: building from local dataset file:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
-        await BuildImatrixFromDatasetTextAsync(datasetPath, datPath, buildLogPath, ct);
+        string exportedCorpusPath = Path.Combine(Path.GetDirectoryName(datPath)!, "local-dataset.export.txt");
+        string? splitPropertyPath = string.IsNullOrWhiteSpace(request.DatasetSplit) ? null : request.DatasetSplit!.Trim();
+
+        if (splitPropertyPath != null)
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: local dataset split/property =[/] [cyan]{Markup.Escape(splitPropertyPath)}[/]");
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: extracting property/path[/] [cyan]{Markup.Escape(splitPropertyPath)}[/] [grey]from local JSON rows.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]Imatrix warning:[/] no local split/property provided; using explicit fallback recursive text extraction mode.");
+        }
+
+        var exportSummary = await ExportLocalDatasetToCorpusAsync(
+            datasetPath,
+            exportedCorpusPath,
+            splitPropertyPath,
+            buildLogPath,
+            ct);
+
+        if (exportSummary.StructuredRows > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Imatrix warning:[/] input appears to be structured JSON rows " +
+                $"([cyan]{exportSummary.StructuredRows}[/]/[cyan]{exportSummary.TotalRows}[/]). " +
+                "Flattening extracted text into temporary corpus before llama-imatrix.");
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[grey]Imatrix: local dataset export complete.[/] rows=[cyan]{exportSummary.TotalRows}[/], " +
+            $"structured=[cyan]{exportSummary.StructuredRows}[/], missing_split=[cyan]{exportSummary.RowsMissingSplitProperty}[/], " +
+            $"extracted_text_blocks=[cyan]{exportSummary.ExtractedTextBlocks}[/], " +
+            $"corpus=[cyan]{Markup.Escape(exportedCorpusPath)}[/]");
+
+        await BuildImatrixFromDatasetTextAsync(exportedCorpusPath, datPath, buildLogPath, ct);
     }
 
     private async Task BuildFromHfDatasetAsync(ImatrixRequest request, string datPath, string buildLogPath, CancellationToken ct)
@@ -391,6 +441,13 @@ with open(args.out, 'w', encoding='utf-8') as f:
     {
         AnsiConsole.MarkupLine(
             $"[grey]Imatrix: invoking llama-imatrix build from dataset:[/] [cyan]{Markup.Escape(datasetPath)}[/]");
+        AnsiConsole.MarkupLine($"[grey]Imatrix: streaming llama-imatrix output to:[/] [cyan]{Markup.Escape(buildLogPath)}[/]");
+        if (File.Exists(datasetPath))
+        {
+            long corpusSizeBytes = new FileInfo(datasetPath).Length;
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: exported corpus ready.[/] [cyan]size={Markup.Escape(FormatBytes(corpusSizeBytes))}[/]");
+        }
 
         string llamaBin = Cache.LlamaBin ?? throw new InvalidOperationException("Cache.LlamaBin not set.");
         string binaryName = OperatingSystem.IsWindows() ? "llama-imatrix.exe" : "llama-imatrix";
@@ -415,18 +472,420 @@ with open(args.out, 'w', encoding='utf-8') as f:
             UseShellExecute = false
         };
 
+        string launchedCommand = $"\"{imatrixBin}\" {psi.Arguments}";
+        AnsiConsole.MarkupLine($"[grey]Imatrix: launching command:[/] [cyan]{Markup.Escape(launchedCommand)}[/]");
+
         using var p = System.Diagnostics.Process.Start(psi)
                       ?? throw new InvalidOperationException("Failed to start llama-imatrix process.");
 
-        string stdout = await p.StandardOutput.ReadToEndAsync();
-        string stderr = await p.StandardError.ReadToEndAsync();
-        await p.WaitForExitAsync(ct);
+        await using var buildLog = new StreamWriter(buildLogPath, append: true, Encoding.UTF8);
+        await buildLog.WriteLineAsync($"[{DateTime.UtcNow:O}] Launch: {launchedCommand}");
+        await buildLog.FlushAsync();
 
-        await File.AppendAllTextAsync(buildLogPath, stdout + Environment.NewLine + stderr, ct);
+        using var writeLock = new SemaphoreSlim(1, 1);
+        var startedUtc = DateTime.UtcNow;
+        var maxRuntime = TimeSpan.FromHours(2);
+        int outputLineCount = 0;
+        bool datDetected = false;
+        long lastDatSize = -1;
+
+        Task stdoutTask = PumpProcessStreamAsync(p.StandardOutput, "stdout", buildLog, writeLock, line =>
+        {
+            outputLineCount++;
+            AnsiConsole.MarkupLine($"[grey]llama-imatrix stdout:[/] {Markup.Escape(line)}");
+        }, ct);
+
+        Task stderrTask = PumpProcessStreamAsync(p.StandardError, "stderr", buildLog, writeLock, line =>
+        {
+            outputLineCount++;
+            AnsiConsole.MarkupLine($"[grey]llama-imatrix stderr:[/] {Markup.Escape(line)}");
+        }, ct);
+
+        while (!p.HasExited)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), ct);
+            var elapsed = DateTime.UtcNow - startedUtc;
+            bool datExists = File.Exists(datPath);
+            string datSizeText = "n/a";
+            if (datExists)
+            {
+                long datSize = new FileInfo(datPath).Length;
+                datSizeText = FormatBytes(datSize);
+
+                if (!datDetected)
+                {
+                    datDetected = true;
+                    lastDatSize = datSize;
+                    AnsiConsole.MarkupLine($"[green]Imatrix: output file detected:[/] [cyan]{Markup.Escape(datPath)}[/]");
+                    AnsiConsole.MarkupLine($"[green]Imatrix: output file size now[/] [cyan]{Markup.Escape(datSizeText)}[/]");
+                }
+                else if (datSize != lastDatSize)
+                {
+                    lastDatSize = datSize;
+                    AnsiConsole.MarkupLine($"[grey]Imatrix: output file size now[/] [cyan]{Markup.Escape(datSizeText)}[/]");
+                }
+            }
+
+            string corpusSizeText = File.Exists(datasetPath) ? FormatBytes(new FileInfo(datasetPath).Length) : "n/a";
+
+            if (elapsed > maxRuntime)
+            {
+                await buildLog.WriteLineAsync($"[{DateTime.UtcNow:O}] Timeout after {elapsed}. Killing llama-imatrix.");
+                await buildLog.FlushAsync();
+                p.Kill(entireProcessTree: true);
+                throw new TimeoutException(
+                    $"llama-imatrix exceeded safeguard runtime of {maxRuntime}. Process was terminated. See imatrix.build.log.");
+            }
+
+            AnsiConsole.MarkupLine(
+                $"[grey]Imatrix: llama-imatrix still running... elapsed[/] [cyan]{elapsed:hh\\:mm\\:ss}[/]" +
+                $"[grey], output lines[/] [cyan]{outputLineCount}[/]" +
+                $"[grey], dat_exists[/] [cyan]{datExists}[/]" +
+                $"[grey], dat_size[/] [cyan]{Markup.Escape(datSizeText)}[/]" +
+                $"[grey], corpus_size[/] [cyan]{Markup.Escape(corpusSizeText)}[/]" +
+                $"[grey], log[/] [cyan]{Markup.Escape(buildLogPath)}[/]");
+        }
+
+        await Task.WhenAll(stdoutTask, stderrTask);
+        await p.WaitForExitAsync(ct);
+        await buildLog.FlushAsync();
 
         if (p.ExitCode != 0)
             throw new InvalidOperationException("llama-imatrix failed. See imatrix.build.log.");
+
+        AnsiConsole.MarkupLine($"[green]Imatrix: llama-imatrix completed successfully.[/] [grey]exit={p.ExitCode}[/]");
     }
+
+    private static async Task<LocalDatasetExportSummary> ExportLocalDatasetToCorpusAsync(
+        string datasetPath,
+        string exportedCorpusPath,
+        string? splitPropertyPath,
+        string buildLogPath,
+        CancellationToken ct)
+    {
+        string ext = Path.GetExtension(datasetPath).ToLowerInvariant();
+        if (ext is not ".json" and not ".jsonl")
+            throw new InvalidOperationException($"Unsupported local dataset extension '{ext}'.");
+
+        int totalRows = 0;
+        int structuredRows = 0;
+        int extractedTextBlocks = 0;
+        int rowsWithMissingSplitProperty = 0;
+        bool usingSplitProperty = !string.IsNullOrWhiteSpace(splitPropertyPath);
+
+        await using var writer = new StreamWriter(exportedCorpusPath, false, Encoding.UTF8);
+
+        if (ext == ".jsonl")
+        {
+            using var reader = new StreamReader(datasetPath, Encoding.UTF8);
+            while (!reader.EndOfStream)
+            {
+                ct.ThrowIfCancellationRequested();
+                string? line = await reader.ReadLineAsync();
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                totalRows++;
+                string trimmed = line.TrimStart();
+                bool looksStructured = trimmed.StartsWith("{", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal);
+                if (looksStructured)
+                    structuredRows++;
+
+                bool rowMissingRequestedSplit;
+                foreach (string text in ExtractCorpusTextFromJsonPayload(line, splitPropertyPath, out rowMissingRequestedSplit))
+                {
+                    await writer.WriteLineAsync(text);
+                    await writer.WriteLineAsync();
+                    extractedTextBlocks++;
+                }
+
+                if (rowMissingRequestedSplit)
+                    rowsWithMissingSplitProperty++;
+            }
+        }
+        else
+        {
+            string json = await File.ReadAllTextAsync(datasetPath, ct);
+            using var doc = JsonDocument.Parse(json);
+
+            if (doc.RootElement.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                structuredRows = 1;
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var row in doc.RootElement.EnumerateArray())
+                {
+                    totalRows++;
+                    bool rowMissingRequestedSplit;
+                    foreach (string text in ExtractCorpusTextFromElement(row, splitPropertyPath, out rowMissingRequestedSplit))
+                    {
+                        await writer.WriteLineAsync(text);
+                        await writer.WriteLineAsync();
+                        extractedTextBlocks++;
+                    }
+
+                    if (rowMissingRequestedSplit)
+                        rowsWithMissingSplitProperty++;
+                }
+            }
+            else
+            {
+                totalRows = 1;
+                bool rowMissingRequestedSplit;
+                foreach (string text in ExtractCorpusTextFromElement(doc.RootElement, splitPropertyPath, out rowMissingRequestedSplit))
+                {
+                    await writer.WriteLineAsync(text);
+                    await writer.WriteLineAsync();
+                    extractedTextBlocks++;
+                }
+
+                if (rowMissingRequestedSplit)
+                    rowsWithMissingSplitProperty++;
+            }
+        }
+
+        await writer.FlushAsync();
+
+        if (usingSplitProperty && extractedTextBlocks == 0)
+        {
+            throw new InvalidOperationException(
+                $"Local dataset split/property '{splitPropertyPath}' was requested but no text could be extracted from '{datasetPath}'. " +
+                "Verify the property/path exists in your JSON rows.");
+        }
+
+        if (extractedTextBlocks == 0)
+            throw new InvalidOperationException(
+                $"No usable text content was extracted from local dataset file '{datasetPath}'.");
+
+        await File.AppendAllTextAsync(
+            buildLogPath,
+            $"[{DateTime.UtcNow:O}] Local dataset export: src={datasetPath}, out={exportedCorpusPath}, " +
+            $"split_property={(splitPropertyPath ?? "<fallback-recursive>")}, rows={totalRows}, structured_rows={structuredRows}, " +
+            $"rows_missing_split={rowsWithMissingSplitProperty}, extracted_text_blocks={extractedTextBlocks}{Environment.NewLine}",
+            ct);
+
+        return new LocalDatasetExportSummary(totalRows, structuredRows, extractedTextBlocks, rowsWithMissingSplitProperty);
+    }
+
+    private static IEnumerable<string> ExtractCorpusTextFromJsonPayload(string payload, string? splitPropertyPath, out bool missingRequestedSplit)
+    {
+        missingRequestedSplit = false;
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            return ExtractCorpusTextFromElement(doc.RootElement, splitPropertyPath, out missingRequestedSplit).ToList();
+        }
+        catch (JsonException)
+        {
+            if (splitPropertyPath == null && LooksLikeUsefulText(payload))
+                return new[] { payload.Trim() };
+
+            if (splitPropertyPath != null)
+                missingRequestedSplit = true;
+
+            return Array.Empty<string>();
+        }
+    }
+
+    private static IEnumerable<string> ExtractCorpusTextFromElement(JsonElement element, string? splitPropertyPath, out bool missingRequestedSplit)
+    {
+        missingRequestedSplit = false;
+
+        if (!string.IsNullOrWhiteSpace(splitPropertyPath))
+        {
+            if (!TryResolveJsonPath(element, splitPropertyPath!, out JsonElement resolved))
+            {
+                missingRequestedSplit = true;
+                return Array.Empty<string>();
+            }
+
+            var pathTexts = new List<string>();
+            CollectText(resolved, pathTexts);
+            return NormalizeDistinct(pathTexts);
+        }
+
+        var texts = new List<string>();
+        CollectText(element, texts);
+        return NormalizeDistinct(texts);
+    }
+
+    private static IEnumerable<string> NormalizeDistinct(List<string> texts)
+    {
+        // de-dup while preserving order
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var text in texts)
+        {
+            string normalized = Regex.Replace(text.Trim(), "\\s+", " ");
+            if (normalized.Length == 0)
+                continue;
+
+            if (seen.Add(normalized))
+                yield return normalized;
+        }
+    }
+
+    private static bool TryResolveJsonPath(JsonElement row, string splitPropertyPath, out JsonElement resolved)
+    {
+        resolved = row;
+        foreach (string rawSegment in splitPropertyPath.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (resolved.ValueKind == JsonValueKind.Object)
+            {
+                if (!TryGetPropertyCaseInsensitive(resolved, rawSegment, out resolved))
+                    return false;
+                continue;
+            }
+
+            if (resolved.ValueKind == JsonValueKind.Array)
+            {
+                if (int.TryParse(rawSegment, out int index))
+                {
+                    if (index < 0 || index >= resolved.GetArrayLength())
+                        return false;
+
+                    resolved = resolved[index];
+                    continue;
+                }
+
+                // if segment points to a property on each array element, gather all hits
+                var hits = new List<JsonElement>();
+                foreach (var item in resolved.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object && TryGetPropertyCaseInsensitive(item, rawSegment, out JsonElement value))
+                        hits.Add(value);
+                }
+
+                if (hits.Count == 0)
+                    return false;
+
+                using var hitsDoc = JsonDocument.Parse(JsonSerializer.Serialize(hits));
+                resolved = hitsDoc.RootElement.Clone();
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetPropertyCaseInsensitive(JsonElement obj, string name, out JsonElement value)
+    {
+        foreach (var prop in obj.EnumerateObject())
+        {
+            if (string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = prop.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static void CollectText(JsonElement element, List<string> sink)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.String:
+                string value = element.GetString() ?? string.Empty;
+                if (LooksLikeUsefulText(value))
+                    sink.Add(value);
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    CollectText(item, sink);
+                break;
+            case JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String)
+                    {
+                        string text = prop.Value.GetString() ?? string.Empty;
+                        if (IsLikelyTextFieldName(prop.Name) || LooksLikeUsefulText(text))
+                            sink.Add(text);
+                    }
+                    else
+                    {
+                        CollectText(prop.Value, sink);
+                    }
+                }
+                break;
+        }
+    }
+
+    private static bool LooksLikeUsefulText(string value)
+    {
+        string trimmed = value.Trim();
+        if (trimmed.Length < 4)
+            return false;
+
+        bool hasLetter = trimmed.Any(char.IsLetter);
+        bool hasWordBreak = trimmed.Contains(' ') || trimmed.Contains('\t') || trimmed.Contains('\n');
+        return hasLetter && (hasWordBreak || trimmed.Length >= 20);
+    }
+
+    private static bool IsLikelyTextFieldName(string fieldName) =>
+        fieldName.Equals("text", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("content", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("prompt", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("completion", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("response", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("instruction", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("input", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("output", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("question", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("answer", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("value", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("body", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("message", StringComparison.OrdinalIgnoreCase) ||
+        fieldName.Equals("messages", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task PumpProcessStreamAsync(
+        StreamReader reader,
+        string label,
+        StreamWriter buildLog,
+        SemaphoreSlim writeLock,
+        Action<string> onLine,
+        CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            string? line = await reader.ReadLineAsync(ct);
+            if (line == null)
+                break;
+
+            onLine(line);
+            await writeLock.WaitAsync(ct);
+            try
+            {
+                await buildLog.WriteLineAsync($"[llama-imatrix {label}] {line}");
+                await buildLog.FlushAsync();
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
+    }
+
+    private static string FormatBytes(long sizeBytes)
+    {
+        string[] units = ["B", "KB", "MB", "GB", "TB"];
+        double size = sizeBytes;
+        int unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+
+        return $"{size:0.0} {units[unit]}";
+    }
+
+    private sealed record LocalDatasetExportSummary(int TotalRows, int StructuredRows, int ExtractedTextBlocks, int RowsMissingSplitProperty);
 
     private static string ResolvePythonExecutableOrThrow()
     {

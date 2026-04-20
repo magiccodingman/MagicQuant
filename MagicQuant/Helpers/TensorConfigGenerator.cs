@@ -141,7 +141,7 @@ public static class TensorConfigGenerator
                 if (smallest != null && scheme.UniqueId == smallest.UniqueId)
                     continue;
 
-                if (scheme.IsBannedFor(group))
+                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
                     continue;
 
                 var quant = HybridQuant.CreateBlanket(
@@ -311,7 +311,7 @@ public static class TensorConfigGenerator
             if (!allowedIds.Contains(scheme.UniqueId))
                 continue;
 
-            if (scheme.IsBannedFor(group) || RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
+            if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
                 continue;
 
             return scheme;

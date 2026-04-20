@@ -42,7 +42,7 @@ public static class ComboLogic
                 if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId || scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
                     continue;
 
-                if (scheme.IsBannedFor(group))
+                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
                     continue;
 
                 ids.Add(scheme.UniqueId);
