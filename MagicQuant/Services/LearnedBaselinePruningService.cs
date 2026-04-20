@@ -99,6 +99,9 @@ public sealed class LearnedBaselinePruningService
 
             foreach (var candidate in explicitCandidates)
             {
+                if (candidate.BannedGroupIds.Contains(group.UniqueId))
+                    continue;
+
                 if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
@@ -147,6 +150,12 @@ public sealed class LearnedBaselinePruningService
                 set = new HashSet<byte>();
                 effectiveSchemesByBaselineAndGroup[key] = set;
             }
+
+            // The persisted TensorWeightSchemeId is the authoritative learned-family identity.
+            // FinalQuantType is useful extra metadata, but it cannot replace the stored scheme id
+            // because some learned baselines materialize tensors whose final emitted token differs
+            // from the baseline family we are learning from.
+            set.Add(row.TensorWeightSchemeId);
 
             if (aliasToSchemeIds.TryGetValue(CanonicalizeQuantToken(row.FinalQuantType), out var resolvedIds))
             {

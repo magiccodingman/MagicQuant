@@ -13,9 +13,6 @@ public static class ComboLogic
     public static ImmutableArray<byte[]> GetAllowedCandidateIdsPerGroup(BaselineQuants baseQuant)
     {
         bool imatrixAvailable = RuntimeSearchSpace.HasUsableImatrix();
-        var candidatesForRun = BaselineQuants.GetGroupCombinationCandidates(imatrixAvailable, allowHighPrecisionHybrids: false)
-            .ToImmutableArray();
-
         var builder = ImmutableArray.CreateBuilder<byte[]>();
         var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
 
@@ -23,38 +20,27 @@ public static class ComboLogic
         {
             if (unusedIds.Contains(group.UniqueId))
             {
-                builder.Add([TensorWeightScheme.NULL.UniqueId]);
+                builder.Add([BaselineQuants.TensorConfigNullSlotValue]);
                 continue;
             }
 
             var ids = new List<byte>();
 
-            // Strict policy (Option A):
-            // - normal explicit hybrid families come only from GetGroupCombinationCandidates(..., false)
-            // - BF16/F16 are injected only here and only when AllowHighPrecisionHybrids is enabled
-            if (RuntimeSearchSpace.AllowHighPrecisionHybrids && !RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
+            foreach (var alias in BaselineQuants.GetExactHighPrecisionAliases(RuntimeSearchSpace.AllowHighPrecisionHybrids))
             {
-                ids.Add(BaselineQuants.BF16_Hybrid.UniqueId);
-                ids.Add(BaselineQuants.F16_Hybrid.UniqueId);
-            }
-
-            foreach (var candidate in candidatesForRun)
-            {
-                if (candidate.BannedGroupIds.Contains(group.UniqueId))
+                if (RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
                     continue;
 
-                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
-                    continue;
-
-                ids.Add(candidate.UniqueId);
+                ids.Add(BaselineQuants.EncodeTensorConfigGroupSlot(alias));
             }
 
-            ids = ids.Distinct().OrderBy(x => x).ToList();
+            var realCandidates = RuntimeSearchSpace.GetAllowedRealExplicitCombinationCandidatesForGroup(group);
+            ids.AddRange(realCandidates.Select(BaselineQuants.EncodeTensorConfigGroupSlot));
+
+            ids = ids.Distinct().ToList();
 
             if (ids.Count == 0)
-            {
-                ids.Add(BaselineQuants.GetDefaultExplicitFallbackBaseline().UniqueId);
-            }
+                ids.Add(BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.GetDefaultExplicitFallbackBaseline()));
 
             builder.Add(ids.ToArray());
         }

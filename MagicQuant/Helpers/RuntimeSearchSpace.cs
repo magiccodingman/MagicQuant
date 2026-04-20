@@ -1,3 +1,4 @@
+using MQ.DB;
 using MQ.DB.Models;
 
 namespace MagicQuant.Helpers;
@@ -37,9 +38,6 @@ public static class RuntimeSearchSpace
 
     public static void BanCombinationCandidateForGroup(TensorGroup group, BaselineQuants candidate)
     {
-        if (candidate.UniqueId == BaselineQuants.GetDefaultExplicitFallbackBaseline().UniqueId)
-            return;
-
         if (!ExplicitCandidateBansByGroup.TryGetValue(group.UniqueId, out var set))
         {
             set = new HashSet<byte>();
@@ -98,7 +96,7 @@ public static class RuntimeSearchSpace
 
     public static void BanAllExplicitCombinationCandidatesForGroup(TensorGroup group)
     {
-        foreach (var candidate in BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: false))
+        foreach (var candidate in GetRealExplicitCombinationCandidatesForGroup(group))
             BanCombinationCandidateForGroup(group, candidate);
     }
 
@@ -116,11 +114,24 @@ public static class RuntimeSearchSpace
     public static bool IsCombinationCandidateRuntimeBannedForGroup(TensorGroup group, BaselineQuants candidate)
         => ExplicitCandidateBansByGroup.TryGetValue(group.UniqueId, out var set) && set.Contains(candidate.UniqueId);
 
-    public static bool HasAnyExplicitCombinationCandidateAllowed(TensorGroup group)
+    public static IReadOnlyList<BaselineQuants> GetRealExplicitCombinationCandidatesForGroup(TensorGroup group)
     {
         return BaselineQuants.GetGroupCombinationCandidates(_imatrixAvailable, allowHighPrecisionHybrids: false)
-            .Any(x => !IsCombinationCandidateRuntimeBannedForGroup(group, x));
+            .Where(x => !x.BannedGroupIds.Contains(group.UniqueId))
+            .OrderBy(x => x.ExplicitCandidateSortOrder)
+            .ThenBy(x => x.UniqueId)
+            .ToList();
     }
+
+    public static IReadOnlyList<BaselineQuants> GetAllowedRealExplicitCombinationCandidatesForGroup(TensorGroup group)
+    {
+        return GetRealExplicitCombinationCandidatesForGroup(group)
+            .Where(x => !IsCombinationCandidateRuntimeBannedForGroup(group, x))
+            .ToList();
+    }
+
+    public static bool HasAnyExplicitCombinationCandidateAllowed(TensorGroup group)
+        => GetAllowedRealExplicitCombinationCandidatesForGroup(group).Count > 0;
 
     public static bool IsGroupExplicitCandidateBanned(TensorGroup group) => !HasAnyExplicitCombinationCandidateAllowed(group);
 
@@ -151,6 +162,23 @@ public static class RuntimeSearchSpace
 
     public static IReadOnlyList<TensorGroup> GetBf16SuppressedGroups()
         => TReg.All.Where(IsBf16TensorChoiceSuppressed).OrderBy(x => x.UniqueId).ToList();
+
+    public static string GetDisplayStateForGroup(TensorGroup group)
+    {
+        if (Cache.UnusedTensorGroups.Any(x => x.UniqueId == group.UniqueId))
+            return "unused->NULL";
+
+        if (IsGroupExplicitCandidateBanned(group))
+            return "explicit-banned->Q8-fallback";
+
+        if (IsBf16TensorChoiceSuppressed(group))
+            return "BF16-suppressed";
+
+        if (HasLearnedBaselineMissingPrunesForGroup(group))
+            return "learned-pruned";
+
+        return "variable";
+    }
 
     public static (bool ExplicitAllowed, bool Bf16Allowed) GetFinalAllowedQuantFamiliesForGroup(TensorGroup group)
     {
@@ -183,8 +211,6 @@ public static class RuntimeSearchSpace
     public static bool IsCombinationBaselineDisabled(BaselineQuants baseline)
         => DisabledCombinationBaselineIds.Contains(baseline.UniqueId);
 
-    // Legacy compatibility wrappers (scheme-driven callers).
-    // Prefer candidate-based APIs in new code.
     [Obsolete("Use BanCombinationCandidateForGroup.")]
     public static void BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
         => BanCombinationCandidateForGroup(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId));

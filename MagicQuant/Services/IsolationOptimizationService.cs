@@ -64,7 +64,7 @@ public class IsolationOptimizationService
 
         var nativeBaseline = await LoadSnapshotAsync(
                                  HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()), ct)
-                             ?? throw new InvalidOperationException("Native BF16 baseline benchmark was not found.");
+                             ?? throw new InvalidOperationException($"Required native exact baseline benchmark was not found for model '{Cache.CurrentModelId}'.");
 
         var carrierBaselineId = BaselineQuants.Q8_0.UniqueId;
 
@@ -74,7 +74,7 @@ public class IsolationOptimizationService
             x.Key.StartsWith("carrier-baseonly:", StringComparison.Ordinal));
 
         var carrierBaseOnly = await LoadSnapshotAsync(carrierBaseOnlyPlan.Quant, ct)
-                              ?? throw new InvalidOperationException("Carrier base-only benchmark was not found.");
+                              ?? throw new InvalidOperationException($"Required carrier base-only benchmark was not found for model '{Cache.CurrentModelId}' and carrier '{BaselineQuants.Q8_0.Names[0]}'.");
 
         var groupPlans = plan.Plans
             .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe)
@@ -150,7 +150,7 @@ public class IsolationOptimizationService
 
         var nativeBaseline = await LoadSnapshotAsync(
                                  HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()), ct)
-                             ?? throw new InvalidOperationException("Native BF16 baseline benchmark was not found.");
+                             ?? throw new InvalidOperationException($"Required native exact baseline benchmark was not found for model '{Cache.CurrentModelId}'.");
 
         var carrierBaselineId = BaselineQuants.Q8_0.UniqueId;
 
@@ -160,7 +160,7 @@ public class IsolationOptimizationService
             x.Key.StartsWith("carrier-baseonly:", StringComparison.Ordinal));
 
         var carrierBaseOnly = await LoadSnapshotAsync(carrierBaseOnlyPlan.Quant, ct)
-                              ?? throw new InvalidOperationException("Carrier base-only benchmark was not found.");
+                              ?? throw new InvalidOperationException($"Required carrier base-only benchmark was not found for model '{Cache.CurrentModelId}' and carrier '{BaselineQuants.Q8_0.Names[0]}'.");
 
         var groupPlans = fullPlan.Plans
             .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe ||
@@ -310,7 +310,7 @@ public class IsolationOptimizationService
     }
 
     private static bool IsHighPrecisionCandidate(BaselineQuants candidate)
-        => candidate.UniqueId == BaselineQuants.BF16_Hybrid.UniqueId || candidate.UniqueId == BaselineQuants.F16_Hybrid.UniqueId;
+        => BaselineQuants.IsNativeExactAlias(candidate);
 
     private static void PopulateFinalGroupFlags(TensorGroup group, IsolationGroupDecision decision, IsolationOptimizationResult result)
     {

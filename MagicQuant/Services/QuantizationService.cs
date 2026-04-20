@@ -1439,6 +1439,15 @@ public class QuantizationService
         return baseQuant.DefaultTensorScheme;
     }
 
+    private static HashSet<string> GetExpectedTensorNamesForGroup(
+        TensorGroup group,
+        IReadOnlyCollection<string> sourceTensorNames)
+    {
+        return sourceTensorNames
+            .Where(x => group.Tensors.Any(p => Regex.IsMatch(x, $"^{p}$")))
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
     private List<RequestedTensorOverride> BuildRequestedTensorOverrides(
         HybridQuant quant,
         IReadOnlyCollection<string> sourceTensorNames)
@@ -1455,50 +1464,85 @@ public class QuantizationService
             if (hybrid?.TGroup == null)
                 continue;
 
-            if (hybrid.TensorType.UniqueId == TensorWeightScheme.NULL.UniqueId)
+            hybrid.ValidateOrThrow();
+
+            if (hybrid.MaterializedTensorScheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
                 continue;
 
-            if (hybrid.CandidateBaseline != null && hybrid.CandidateBaseline.UniqueId == quant.BaseQuant.UniqueId)
+            var expectedForGroup = GetExpectedTensorNamesForGroup(hybrid.TGroup, sourceTensorNames);
+            if (expectedForGroup.Count == 0)
                 continue;
 
-            var sourceBaseline = hybrid.CandidateBaseline ?? BaselineQuants.FromTensorSchemeId(hybrid.TensorType.UniqueId);
-            var learned = TryLoadLearnedTensorMapping(
-                sourceBaselineId: sourceBaseline.UniqueId,
-                targetGroup: hybrid.TGroup,
-                preferredSourceScheme: hybrid.CandidateBaseline?.DefaultTensorScheme ?? hybrid.TensorType);
-            if (learned.Count == 0)
+            switch (hybrid.OverrideMode)
             {
-                throw new InvalidOperationException(
-                    $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. " +
-                    "Run with --relearn-baseline-mappings to regenerate.");
-            }
-
-            var expectedForGroup = sourceTensorNames
-                .Where(x => hybrid.TGroup.Tensors.Any(p => Regex.IsMatch(x, $"^{p}$")))
-                .ToHashSet(StringComparer.Ordinal);
-
-            var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
-            var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
-            var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
-
-            if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
-            {
-                var missingText = missingExpected.Count == 0 ? "none" : string.Join(", ", missingExpected.Take(15));
-                var unexpectedText = unexpectedLearned.Count == 0 ? "none" : string.Join(", ", unexpectedLearned.Take(15));
-
-                throw new InvalidOperationException(
-                    $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. " +
-                    $"Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
-            }
-
-            foreach (var kv in learned)
-            {
-                result.Add(new RequestedTensorOverride
+                case HybridTensorOverrideMode.ExactTensorScheme:
                 {
-                    GroupName = hybrid.TGroup.Name,
-                    TensorName = kv.Key,
-                    SchemeName = kv.Value
-                });
+                    var exactScheme = hybrid.ExactTensorScheme!;
+
+                    if (baseScheme != null && exactScheme.UniqueId == baseScheme.UniqueId)
+                        continue;
+
+                    string schemeName = ResolveSchemeName(exactScheme);
+                    foreach (var tensorName in expectedForGroup.OrderBy(x => x, StringComparer.Ordinal))
+                    {
+                        result.Add(new RequestedTensorOverride
+                        {
+                            GroupName = hybrid.TGroup.Name,
+                            TensorName = tensorName,
+                            SchemeName = schemeName
+                        });
+                    }
+
+                    break;
+                }
+
+                case HybridTensorOverrideMode.LearnedBaselineCandidate:
+                {
+                    var sourceBaseline = hybrid.CandidateBaseline!;
+                    byte canonicalBaselineId = BaselineQuants.CanonicalLearningBaselineId(sourceBaseline);
+                    var learned = TryLoadLearnedTensorMapping(
+                        canonicalSourceBaselineId: canonicalBaselineId,
+                        targetGroup: hybrid.TGroup,
+                        preferredSourceScheme: sourceBaseline.DefaultTensorScheme,
+                        allowDominantFallback: false);
+
+                    if (learned.Count == 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}' (canonicalId={canonicalBaselineId}). " +
+                            "Run with --relearn-baseline-mappings to regenerate.");
+                    }
+
+                    var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
+                    var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
+                    var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
+
+                    if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
+                    {
+                        var missingText = missingExpected.Count == 0 ? "none" : string.Join(", ", missingExpected.Take(15));
+                        var unexpectedText = unexpectedLearned.Count == 0 ? "none" : string.Join(", ", unexpectedLearned.Take(15));
+
+                        throw new InvalidOperationException(
+                            $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. " +
+                            $"Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
+                    }
+
+                    foreach (var kv in learned.OrderBy(x => x.Key, StringComparer.Ordinal))
+                    {
+                        result.Add(new RequestedTensorOverride
+                        {
+                            GroupName = hybrid.TGroup.Name,
+                            TensorName = kv.Key,
+                            SchemeName = kv.Value
+                        });
+                    }
+
+                    break;
+                }
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Hybrid tensor for group '{hybrid.TGroup.Name}' has unsupported override mode '{hybrid.OverrideMode}'.");
             }
         }
 
@@ -1506,9 +1550,10 @@ public class QuantizationService
     }
 
     private Dictionary<string, string> TryLoadLearnedTensorMapping(
-        byte sourceBaselineId,
+        byte canonicalSourceBaselineId,
         TensorGroup targetGroup,
-        TensorWeightScheme? preferredSourceScheme = null)
+        TensorWeightScheme? preferredSourceScheme = null,
+        bool allowDominantFallback = false)
     {
         using var db = new MagicQuantContext();
 
@@ -1522,7 +1567,7 @@ public class QuantizationService
         var allRows = db.LearnedBaselineTensorQuants
             .AsNoTracking()
             .Where(x => x.AiModelHashId == model.Id)
-            .Where(x => x.BaselineQuantId == sourceBaselineId)
+            .Where(x => x.BaselineQuantId == canonicalSourceBaselineId)
             .Where(x => x.TensorGroupId == targetGroup.UniqueId)
             .OrderBy(x => x.TensorName)
             .ToList();
@@ -1530,20 +1575,32 @@ public class QuantizationService
         if (allRows.Count == 0)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
-        var rows = allRows;
+        List<MQ.DB.Models.DbModels.LearnedBaselineTensorQuant> rows = allRows;
+
         if (preferredSourceScheme != null)
         {
-            var preferred = allRows.Where(x => x.TensorWeightSchemeId == preferredSourceScheme.UniqueId).ToList();
+            var preferred = allRows
+                .Where(x => x.TensorWeightSchemeId == preferredSourceScheme.UniqueId)
+                .ToList();
+
             if (preferred.Count > 0)
+            {
                 rows = preferred;
+            }
+            else if (!allowDominantFallback)
+            {
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+            }
         }
 
         if (rows.Count == 0)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
-        // If rows contain mixed source schemes, use the dominant scheme for stable coverage semantics.
         if (rows.Select(x => x.TensorWeightSchemeId).Distinct().Count() > 1)
         {
+            if (!allowDominantFallback)
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+
             var dominantSchemeId = rows
                 .GroupBy(x => x.TensorWeightSchemeId)
                 .OrderByDescending(g => g.Count())
@@ -1800,18 +1857,35 @@ public class QuantizationService
         string baseName = ResolveBaseName(quant.BaseQuant);
 
         var effectiveTensors = quant.Tensors?
-             .Where(t => t?.TGroup != null && t.CandidateBaseline != null)
+            .Where(t => t?.TGroup != null)
             .ToList();
 
         if (effectiveTensors == null || effectiveTensors.Count == 0)
             return $"{modelName}-{baseName}";
 
         var grouped = effectiveTensors
-            .GroupBy(t => t.CandidateBaseline.Names[0])
+            .Select(t =>
+            {
+                t.ValidateOrThrow();
+
+                string typeName = t.OverrideMode switch
+                {
+                    HybridTensorOverrideMode.LearnedBaselineCandidate => t.CandidateBaseline!.Names[0],
+                    HybridTensorOverrideMode.ExactTensorScheme => ResolveSchemeName(t.ExactTensorScheme!),
+                    _ => throw new InvalidOperationException($"Unknown override mode '{t.OverrideMode}'.")
+                };
+
+                return new
+                {
+                    Type = typeName,
+                    Code = t.TGroup.ShortCode
+                };
+            })
+            .GroupBy(x => x.Type)
             .Select(g => new
             {
                 Type = g.Key,
-                Codes = g.Select(x => x.TGroup.ShortCode)
+                Codes = g.Select(x => x.Code)
                     .OrderBy(c => GetOrder(c))
                     .ToArray()
             })

@@ -62,6 +62,7 @@ public class Evolution : ICommand
             string.Equals(a.Name, "recheck-hardware-probe", StringComparison.OrdinalIgnoreCase));
         Cache.UseImatrix = args.Any(a => string.Equals(a.Name, "use-imatrix", StringComparison.OrdinalIgnoreCase));
         Cache.ForceImatrixRebuild = args.Any(a => string.Equals(a.Name, "imatrix-force-rebuild", StringComparison.OrdinalIgnoreCase));
+        RuntimeSearchSpace.ResetForNewModel();
         RuntimeSearchSpace.SetImatrixAvailability(false);
         RuntimeSearchSpace.AllowHighPrecisionHybrids = args.Any(a => string.Equals(a.Name, "allow-high-precision-hybrids", StringComparison.OrdinalIgnoreCase));
 
@@ -189,16 +190,6 @@ public class Evolution : ICommand
         var comboCountBefore = ComboCounter.CountAll();
         var learnedBaselinePruner = new LearnedBaselinePruningService();
 
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning");
-
-        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning[/]") { Justification = Justify.Left });
-        var learnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
-
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning");
-
-        foreach (var note in learnedPruningResult.Notes)
-            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
-
         AnsiConsole.Write(new Rule("[yellow]Initial Isolation Startup Samples[/]") { Justification = Justify.Left });
 
         var isolationPlanner = new IsolationPlanningService();
@@ -211,6 +202,16 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine($"  [green]Completed:[/] {initialSummary.Completed:N0}");
         AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {initialSummary.Skipped:N0}");
         AnsiConsole.MarkupLine($"  [red]Failed:[/] {initialSummary.Failed:N0}");
+
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning");
+
+        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning[/]") { Justification = Justify.Left });
+        var learnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
+
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning");
+
+        foreach (var note in learnedPruningResult.Notes)
+            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
 
         var isolationOptimizer = new IsolationOptimizationService();
 
@@ -279,7 +280,7 @@ public class Evolution : ICommand
 
         AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {learnedPruningResult.GroupCandidateEliminations:N0}");
         AnsiConsole.MarkupLine($"[green]Baselines skipped without learned rows:[/] {learnedPruningResult.BaselinesSkippedWithoutLearnedRows:N0}");
-        AnsiConsole.MarkupLine($"[green]Groups reduced to BF16-only:[/] {isolationResult.ExplicitQuantBannedGroups:N0}");
+        AnsiConsole.MarkupLine($"[green]Groups reduced to explicit-banned->Q8-fallback:[/] {isolationResult.ExplicitQuantBannedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]BF16-suppressed groups:[/] {isolationResult.Bf16SuppressedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]Hard damage eliminations:[/] {isolationResult.HardDamageEliminations:N0}");
         AnsiConsole.MarkupLine($"[green]Dominance eliminations:[/] {isolationResult.DominatedGroupCandidatesBanned:N0}");

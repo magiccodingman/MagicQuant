@@ -15,7 +15,7 @@ public static class SearchSpaceDebugPrinter
 
         var activeBaselines = RuntimeSearchSpace.GetActiveCombinationBaselines().ToList();
         var disabledBaselines = BaselineQuants.All
-             .Where(x => x.IsCombinationCarrierCandidate)
+            .Where(x => x.IsCombinationCarrierCandidate)
             .Where(x => RuntimeSearchSpace.IsCombinationBaselineDisabled(x))
             .OrderBy(x => x.UniqueId)
             .ToList();
@@ -64,8 +64,6 @@ public static class SearchSpaceDebugPrinter
             }
         }
 
-        var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
-
         foreach (var baseline in activeBaselines)
         {
             AnsiConsole.Write(new Rule($"[blue]Base: {Markup.Escape(string.Join("/", baseline.Names))}[/]")
@@ -84,19 +82,13 @@ public static class SearchSpaceDebugPrinter
 
                 var names = ids.Select(id =>
                 {
-                    if (id == TensorWeightScheme.NULL.UniqueId)
+                    if (BaselineQuants.IsNullTensorConfigGroupSlot(id))
                         return "NULL";
 
-                    var candidate = BaselineQuants.All.FirstOrDefault(x => x.UniqueId == id);
-                    return candidate?.Names[0] ?? $"Unknown({id})";
+                    return BaselineQuants.DecodeTensorConfigGroupSlotToBaseline(id).Names[0];
                 }).ToList();
 
-                string state =
-                    unusedIds.Contains(group.UniqueId) ? "unused->NULL" :
-                    RuntimeSearchSpace.IsGroupExplicitCandidateBanned(group) ? "BF16-only" :
-                    RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group) ? "BF16-suppressed" :
-                    RuntimeSearchSpace.HasLearnedBaselineMissingPrunesForGroup(group) ? "learned-pruned" :
-                    "variable";
+                string state = RuntimeSearchSpace.GetDisplayStateForGroup(group);
 
                 AnsiConsole.MarkupLine(
                     $"  [cyan]{Markup.Escape(group.Name)}[/] => [green]{ids.Length}[/] choice(s) " +

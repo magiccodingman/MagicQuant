@@ -45,23 +45,23 @@ public readonly struct TensorConfig
     public TensorConfig(HybridQuant h)
         : this(
             baseQuant: checked((byte)h.BaseQuant.UniqueId),
-            embeddings: GetCandidateIdOrDefault(h, TReg.Embeddings),
-            lmHead: GetCandidateIdOrDefault(h, TReg.LmHead),
-            attnQ: GetCandidateIdOrDefault(h, TReg.AttnQ),
-            attnKV: GetCandidateIdOrDefault(h, TReg.AttnKV),
-            attnOutput: GetCandidateIdOrDefault(h, TReg.AttnOutput),
-            ffnUpGate: GetCandidateIdOrDefault(h, TReg.FfnUpGate),
-            ffnDown: GetCandidateIdOrDefault(h, TReg.FfnDown),
-            moeExperts: GetCandidateIdOrDefault(h, TReg.MoeExperts),
-            moeRouter: GetCandidateIdOrDefault(h, TReg.MoeRouter))
+            embeddings: GetStoredIdOrDefault(h, TReg.Embeddings),
+            lmHead: GetStoredIdOrDefault(h, TReg.LmHead),
+            attnQ: GetStoredIdOrDefault(h, TReg.AttnQ),
+            attnKV: GetStoredIdOrDefault(h, TReg.AttnKV),
+            attnOutput: GetStoredIdOrDefault(h, TReg.AttnOutput),
+            ffnUpGate: GetStoredIdOrDefault(h, TReg.FfnUpGate),
+            ffnDown: GetStoredIdOrDefault(h, TReg.FfnDown),
+            moeExperts: GetStoredIdOrDefault(h, TReg.MoeExperts),
+            moeRouter: GetStoredIdOrDefault(h, TReg.MoeRouter))
     { }
 
-    private static byte GetCandidateIdOrDefault(HybridQuant h, TensorGroup group)
+    private static byte GetStoredIdOrDefault(HybridQuant h, TensorGroup group)
     {
         if (h.Tensors == null || h.Tensors.Count == 0)
-            return TensorWeightScheme.NULL.UniqueId;
+            return BaselineQuants.TensorConfigNullSlotValue;
 
-        BaselineQuants? found = null;
+        HybridTensor? found = null;
 
         for (int i = 0; i < h.Tensors.Count; i++)
         {
@@ -75,10 +75,20 @@ public readonly struct TensorConfig
             if (found != null)
                 throw new InvalidOperationException($"HybridQuant contains duplicate entries for group '{group.Name}' (UniqueId={group.UniqueId}).");
 
-            found = t.CandidateBaseline ?? BaselineQuants.FromTensorSchemeId(t.TensorType.UniqueId);
+            found = t;
         }
 
-        return found == null ? TensorWeightScheme.NULL.UniqueId : checked((byte)found.UniqueId);
+        if (found == null)
+            return BaselineQuants.TensorConfigNullSlotValue;
+
+        found.ValidateOrThrow();
+
+        return found.OverrideMode switch
+        {
+            HybridTensorOverrideMode.LearnedBaselineCandidate => BaselineQuants.EncodeTensorConfigGroupSlot(found.CandidateBaseline!),
+            HybridTensorOverrideMode.ExactTensorScheme => BaselineQuants.EncodeTensorConfigGroupSlot(found.ExactTensorScheme!),
+            _ => throw new InvalidOperationException($"Unknown HybridTensorOverrideMode '{found.OverrideMode}'.")
+        };
     }
 
     public static explicit operator TensorConfig(HybridQuant h) => new TensorConfig(h);
