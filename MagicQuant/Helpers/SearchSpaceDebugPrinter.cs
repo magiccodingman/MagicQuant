@@ -54,7 +54,7 @@ public static class SearchSpaceDebugPrinter
 
             foreach (var group in learnedPrunedGroups)
             {
-                var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedSchemesForGroup(group);
+                var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group);
 
                 var parts = learned.Select(x =>
                     $"{x.Candidate.Names[0]} <= {string.Join("/", x.MissingBaselines.Select(b => b.Names[0]))}");

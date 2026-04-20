@@ -16,6 +16,11 @@ public static class RuntimeSearchSpace
     private static readonly HashSet<byte> Bf16SuppressedTensorChoiceGroupIds = new();
     private static bool _imatrixAvailable;
 
+    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
+    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
+    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
+    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
+    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
     public static bool AllowHighPrecisionHybrids { get; set; }
 
     public static void ResetForNewModel()
@@ -106,7 +111,7 @@ public static class RuntimeSearchSpace
     public static IReadOnlyList<TensorGroup> GetGroupsWithLearnedBaselineMissingPrunes()
         => TReg.All.Where(HasLearnedBaselineMissingPrunesForGroup).OrderBy(x => x.UniqueId).ToList();
 
-    public static IReadOnlyList<RuntimeLearnedBaselineBanInfo> GetLearnedBaselineMissingPrunedSchemesForGroup(TensorGroup group)
+    public static IReadOnlyList<RuntimeLearnedBaselineBanInfo> GetLearnedBaselineMissingPrunedCandidatesForGroup(TensorGroup group)
     {
         if (!LearnedBaselineMissingByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
             return Array.Empty<RuntimeLearnedBaselineBanInfo>();
@@ -161,19 +166,25 @@ public static class RuntimeSearchSpace
     public static bool IsCombinationBaselineDisabled(BaselineQuants baseline)
         => DisabledCombinationBaselineIds.Contains(baseline.UniqueId);
 
-    // Legacy compatibility wrappers (scheme-driven callers)
+    // Legacy compatibility wrappers (scheme-driven callers).
+    // Prefer candidate-based APIs in new code.
+    [Obsolete("Use BanCombinationCandidateForGroup.")]
     public static void BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
         => BanCombinationCandidateForGroup(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId));
 
+    [Obsolete("Use BanCombinationCandidateForGroupByLearnedBaselineAbsence.")]
     public static void BanSchemeForGroupByLearnedBaselineAbsence(TensorGroup group, TensorWeightScheme scheme, BaselineQuants sourceBaseline)
         => BanCombinationCandidateForGroupByLearnedBaselineAbsence(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId), sourceBaseline);
 
+    [Obsolete("Use BanAllExplicitCombinationCandidatesForGroup.")]
     public static void BanAllExplicitTensorSchemesForGroup(TensorGroup group)
         => BanAllExplicitCombinationCandidatesForGroup(group);
 
+    [Obsolete("Use IsCombinationCandidateRuntimeBannedForGroup.")]
     public static bool IsSchemeRuntimeBannedForGroup(TensorGroup group, TensorWeightScheme scheme)
         => IsCombinationCandidateRuntimeBannedForGroup(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId));
 
+    [Obsolete("Use IsGroupExplicitCandidateBanned.")]
     public static bool IsGroupExplicitQuantBanned(TensorGroup group)
         => IsGroupExplicitCandidateBanned(group);
 }

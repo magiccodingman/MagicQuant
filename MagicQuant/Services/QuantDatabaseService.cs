@@ -375,7 +375,7 @@ public class QuantDatabaseService
         if (carrier == null)
             return null;
 
-        var deltaByGroupAndScheme = new Dictionary<(byte GroupId, byte SchemeId), long>();
+        var deltaByGroupAndCandidate = new Dictionary<(byte GroupId, byte CandidateId), long>();
 
         var groupPlans = fullPlan.Plans
             .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe || x.Kind == RequiredSampleKind.GroupIsolationContinuation)
@@ -392,13 +392,13 @@ public class QuantDatabaseService
                 continue;
 
             long delta = (long)snap.SizeBytes - (long)carrier.SizeBytes;
-            deltaByGroupAndScheme[(plan.TargetGroupId.Value, plan.TestedSchemeId.Value)] = delta;
+            deltaByGroupAndCandidate[(plan.TargetGroupId.Value, plan.TestedSchemeId.Value)] = delta;
         }
 
         return new PredictionContext(
             pureQ8BaseSize: pureQ8.SizeBytes,
             carrierBaseOnlySize: carrier.SizeBytes,
-            deltas: deltaByGroupAndScheme);
+            deltas: deltaByGroupAndCandidate);
     }
 
     private static async Task<BenchmarkRow?> LoadSnapshotByQuantAsync(
@@ -443,7 +443,7 @@ public class QuantDatabaseService
 
     private sealed class PredictionContext
     {
-        private readonly Dictionary<(byte GroupId, byte SchemeId), long> _deltas;
+        private readonly Dictionary<(byte GroupId, byte CandidateId), long> _deltas;
 
         public ulong PureQ8BaseSize { get; }
         public ulong CarrierBaseOnlySize { get; }
@@ -451,7 +451,7 @@ public class QuantDatabaseService
         public PredictionContext(
             ulong pureQ8BaseSize,
             ulong carrierBaseOnlySize,
-            Dictionary<(byte GroupId, byte SchemeId), long> deltas)
+            Dictionary<(byte GroupId, byte CandidateId), long> deltas)
         {
             PureQ8BaseSize = pureQ8BaseSize;
             CarrierBaseOnlySize = carrierBaseOnlySize;
@@ -478,12 +478,12 @@ public class QuantDatabaseService
             return (ulong)total;
         }
 
-        private void AddDelta(byte groupId, byte schemeId, ref long total)
+        private void AddDelta(byte groupId, byte candidateId, ref long total)
         {
-            if (schemeId == BaselineQuants.BF16_Hybrid.UniqueId || schemeId == BaselineQuants.F16_Hybrid.UniqueId)
+            if (candidateId == BaselineQuants.BF16_Hybrid.UniqueId || candidateId == BaselineQuants.F16_Hybrid.UniqueId)
                 return;
 
-            if (_deltas.TryGetValue((groupId, schemeId), out long delta))
+            if (_deltas.TryGetValue((groupId, candidateId), out long delta))
                 total += delta;
         }
     }

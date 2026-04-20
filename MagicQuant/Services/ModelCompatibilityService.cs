@@ -78,7 +78,7 @@ public class ModelCompatibilityService
 
             var shapeTable = new Table().Border(TableBorder.Rounded).Title("[red]Shape Incompatibilities[/]");
             shapeTable.AddColumn("Group");
-            shapeTable.AddColumn("Scheme");
+            shapeTable.AddColumn("Candidate");
             shapeTable.AddColumn("Reason");
 
             foreach (var group in TReg.All)

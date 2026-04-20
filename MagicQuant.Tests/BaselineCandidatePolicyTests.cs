@@ -50,4 +50,17 @@ public class BaselineCandidatePolicyTests
 
         Assert.Contains(BaselineQuants.BF16_Hybrid.UniqueId, allowed[attnQIndex]);
     }
+
+    [Fact]
+    public void CandidateBanAuthority_DrivesAllowedCandidateSet()
+    {
+        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.SetImatrixAvailability(true);
+
+        RuntimeSearchSpace.BanCombinationCandidateForGroup(TReg.AttnQ, BaselineQuants.Q6_K);
+        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
+        var attnQIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.AttnQ.UniqueId);
+
+        Assert.DoesNotContain(BaselineQuants.Q6_K.UniqueId, allowed[attnQIndex]);
+    }
 }
