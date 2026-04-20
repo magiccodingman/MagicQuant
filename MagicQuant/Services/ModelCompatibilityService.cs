@@ -26,7 +26,6 @@ public class ModelCompatibilityService
 
         RuntimeSearchSpace.ResetForNewModel();
         Cache.UnusedTensorGroups.Clear();
-        TensorWeightScheme.NULL.BannedGroups.Clear();
 
         string directory = Path.GetDirectoryName(ggufPath)!;
         string scriptPath = Path.Combine(directory, "check_compat.py");
@@ -87,9 +86,6 @@ public class ModelCompatibilityService
 
                 if (exists)
                 {
-                    if (!TensorWeightScheme.NULL.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
-                        TensorWeightScheme.NULL.BannedGroups.Add(group);
-
                     usedCount++;
                     continue;
                 }

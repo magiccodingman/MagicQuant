@@ -89,8 +89,6 @@ public sealed class LearnedBaselinePruningService
         var effectiveSchemesByCandidateAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
 
         var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
-            .Where(x => x.UniqueId != BaselineQuants.BF16_Hybrid.UniqueId)
-            .Where(x => x.UniqueId != BaselineQuants.F16_Hybrid.UniqueId)
             .OrderBy(x => x.UniqueId)
             .ToList();
 

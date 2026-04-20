@@ -5,13 +5,9 @@ namespace MQ.DB.Models;
 
 public sealed class TensorWeightScheme
 {
-    private readonly HashSet<byte> _defaultBannedGroupIds;
-
     public byte UniqueId { get; }
     public bool RequiresImatrix { get; }
     public ImmutableArray<string> Names { get; }
-    // Legacy/runtime-compat list. Baseline candidate policy must use BaselineQuants.BannedGroupIds.
-    public List<TensorGroup> BannedGroups { get; }
     public ushort? BlockNeo { get; }
     public bool IsEligibleForBaseline { get; }
 
@@ -19,7 +15,6 @@ public sealed class TensorWeightScheme
         byte uniqueId,
         bool requiresImatrix,
         ImmutableArray<string> names,
-        IEnumerable<TensorGroup> bannedGroups,
         ushort? blockNeo,
         bool isEligibleForBaseline = true)
     {
@@ -29,29 +24,6 @@ public sealed class TensorWeightScheme
         BlockNeo = blockNeo;
         IsEligibleForBaseline = isEligibleForBaseline;
 
-        var distinctGroups = bannedGroups
-            .GroupBy(x => x.UniqueId)
-            .Select(x => x.First())
-            .ToList();
-
-        BannedGroups = distinctGroups;
-        _defaultBannedGroupIds = distinctGroups.Select(x => x.UniqueId).ToHashSet();
-    }
-
-    public void ResetRuntimeBans()
-    {
-        BannedGroups.Clear();
-        foreach (var group in TReg.All.Where(x => _defaultBannedGroupIds.Contains(x.UniqueId)))
-            BannedGroups.Add(group);
-    }
-
-    // Legacy helper; candidate/search policy should query BaselineQuants.BannedGroupIds instead.
-    public bool IsBannedFor(TensorGroup group) => BannedGroups.Any(x => x.UniqueId == group.UniqueId);
-
-    public static void ResetAllRuntimeBans()
-    {
-        foreach (var scheme in All)
-            scheme.ResetRuntimeBans();
     }
 
     public static void ValidateSmallestConfiguration()
@@ -121,10 +93,10 @@ public sealed class TensorWeightScheme
     public static TensorWeightScheme BF16_F16 => GetCurrentNativePrecisionScheme();
 
     public static readonly TensorWeightScheme NULL =
-        new(0, false, ["NULL"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+        new(0, false, ["NULL"], null, isEligibleForBaseline: false);
 
     public static readonly TensorWeightScheme BF16 =
-        new(1, false, ["BF16", "BFLOAT16"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+        new(1, false, ["BF16", "BFLOAT16"], null, isEligibleForBaseline: false);
 
     /*public static readonly TensorWeightScheme MXFP4 =
         new(
@@ -141,31 +113,25 @@ public sealed class TensorWeightScheme
             isEligibleForBaseline: false);*/
 
     public static readonly TensorWeightScheme Q8_0 =
-        new(3, false, ["Q8_0"], Array.Empty<TensorGroup>(), null);
+        new(3, false, ["Q8_0"], null);
 
     public static readonly TensorWeightScheme Q6_K =
-        new(4, false, ["Q6_K"], Array.Empty<TensorGroup>(), 256);
+        new(4, false, ["Q6_K"], 256);
 
     public static readonly TensorWeightScheme Q5_K =
-        new(5, false, ["Q5_K"], new[] { TReg.MoeRouter }, 256);
+        new(5, false, ["Q5_K"], 256);
 
     public static readonly TensorWeightScheme IQ4_XS =
-        new(6, false, ["IQ4_XS"], new[] { TReg.MoeRouter }, 32);
+        new(6, false, ["IQ4_XS"], 32);
 
     public static readonly TensorWeightScheme IQ4_NL =
-        new(7, false, ["IQ4_NL"], new[] { TReg.MoeRouter }, 32);
+        new(7, false, ["IQ4_NL"], 32);
 
     public static readonly TensorWeightScheme IQ3_S =
         new(
             8,
             true,
             ["IQ3_S"],
-            new[]
-            {
-                TReg.Embeddings,
-                TReg.LmHead,
-                TReg.MoeRouter
-            },
             32
         );
 
@@ -174,12 +140,6 @@ public sealed class TensorWeightScheme
             9,
             true,
             ["IQ3_XS"],
-            new[]
-            {
-                TReg.Embeddings,
-                TReg.LmHead,
-                TReg.MoeRouter
-            },
             32
         );
 
@@ -188,12 +148,6 @@ public sealed class TensorWeightScheme
             10,
             true,
             ["IQ3_XXS"],
-            new[]
-            {
-                TReg.Embeddings,
-                TReg.LmHead,
-                TReg.MoeRouter
-            },
             32
         );
 
@@ -202,13 +156,6 @@ public sealed class TensorWeightScheme
             11,
             true,
             ["IQ2_S"],
-            new[]
-            {
-                TReg.Embeddings,
-                TReg.LmHead,
-                TReg.MoeRouter,
-                TReg.MoeExperts
-            },
             32
         );
 
@@ -217,13 +164,6 @@ public sealed class TensorWeightScheme
             12,
             true,
             ["IQ2_XS"],
-            new[]
-            {
-                TReg.Embeddings,
-                TReg.LmHead,
-                TReg.MoeRouter,
-                TReg.MoeExperts
-            },
             32
         );
 
@@ -232,14 +172,6 @@ public sealed class TensorWeightScheme
             13,
             true,
             ["IQ2_XXS"],
-            new[]
-            {
-                TReg.Embeddings,
-                TReg.LmHead,
-                TReg.MoeRouter,
-                TReg.MoeExperts,
-                TReg.AttnKV
-            },
             32
         );
 
@@ -248,15 +180,14 @@ public sealed class TensorWeightScheme
             14,
             false,
             ["Q4_K"],
-            new[] { TReg.MoeRouter },
             32
         );
 
     public static readonly TensorWeightScheme F16 =
-        new(15, false, ["F16", "FLOAT16", "FP16", "HALF"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+        new(15, false, ["F16", "FLOAT16", "FP16", "HALF"], null, isEligibleForBaseline: false);
 
     public static readonly TensorWeightScheme F32 =
-        new(16, false, ["F32", "FLOAT32", "FP32", "FLOAT"], Array.Empty<TensorGroup>(), null, isEligibleForBaseline: false);
+        new(16, false, ["F32", "FLOAT32", "FP32", "FLOAT"], null, isEligibleForBaseline: false);
 
     // This is the set used by hybrid search / combination generation.
     public static readonly ImmutableArray<TensorWeightScheme> All_Allowed_Hybrid_Quants =

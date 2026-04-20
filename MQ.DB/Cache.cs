@@ -52,9 +52,8 @@ public class Cache
     
     
     /*
-     * This is properly updated, but not really used. More for generic logs because the
-     * TensorWeightScheme is what's actually updated with the real ban logic both from the
-     * start and during runtime
+     * Groups not present in the current model graph. These are forced to NULL/ignored
+     * by runtime search-space planning.
      */
     public static List<TensorGroup> UnusedTensorGroups = new List<TensorGroup>();
     

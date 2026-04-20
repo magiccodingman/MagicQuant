@@ -29,7 +29,6 @@ public static class RuntimeSearchSpace
         Bf16SuppressedTensorChoiceGroupIds.Clear();
         _imatrixAvailable = false;
         AllowHighPrecisionHybrids = false;
-        TensorWeightScheme.ResetAllRuntimeBans();
     }
 
     public static void SetImatrixAvailability(bool available) => _imatrixAvailable = available;
