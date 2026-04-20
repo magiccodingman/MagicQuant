@@ -194,7 +194,7 @@ public static class RuntimeSearchSpace
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
             .Where(x => _imatrixAvailable || !x.RequiresImatrix)
-            .Any(x => !x.IsBannedFor(group));
+            .Any(x => !IsSchemeRuntimeBannedForGroup(group, x));
     }
 
     public static IReadOnlyList<BaselineQuants> GetActiveCombinationBaselines()

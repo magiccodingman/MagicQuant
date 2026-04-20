@@ -4,6 +4,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant", "MagicQuant\Ma
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MQ.DB", "MQ.DB\MQ.DB.csproj", "{A97D6992-2659-47F9-9AC9-99425D2677A4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant.Tests", "MagicQuant.Tests\MagicQuant.Tests.csproj", "{C988338A-EA4C-48A2-8D33-C98AE9AAF2ED}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -18,5 +20,9 @@ Global
 		{A97D6992-2659-47F9-9AC9-99425D2677A4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A97D6992-2659-47F9-9AC9-99425D2677A4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A97D6992-2659-47F9-9AC9-99425D2677A4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C988338A-EA4C-48A2-8D33-C98AE9AAF2ED}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C988338A-EA4C-48A2-8D33-C98AE9AAF2ED}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C988338A-EA4C-48A2-8D33-C98AE9AAF2ED}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C988338A-EA4C-48A2-8D33-C98AE9AAF2ED}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
