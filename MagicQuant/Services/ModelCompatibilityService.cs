@@ -37,7 +37,7 @@ public class ModelCompatibilityService
         {
             var groupDefinitions = TReg.All.ToDictionary(g => g.Name, g => g.Tensors);
 
-            var candidateBlockRequirements = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+            var candidateBlockRequirements = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
                 .Where(c => c.DefaultTensorScheme?.BlockNeo.HasValue == true)
                 .ToDictionary(c => c.Names[0], c => c.DefaultTensorScheme!.BlockNeo!.Value);
 
@@ -103,7 +103,7 @@ public class ModelCompatibilityService
             foreach (var failure in result.Incompatible)
             {
                 var group = TReg.GetByName(failure.Group);
-                var candidate = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+                var candidate = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
                     .FirstOrDefault(c => c.Names.Any(n => n.Equals(failure.Scheme, StringComparison.OrdinalIgnoreCase)));
 
                 if (group == null || candidate == null)

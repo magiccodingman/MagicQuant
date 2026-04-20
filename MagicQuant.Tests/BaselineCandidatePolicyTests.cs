@@ -120,4 +120,18 @@ public class BaselineCandidatePolicyTests
         Assert.DoesNotContain(BaselineQuants.BF16_Hybrid.UniqueId, allowed[attnQIndex]);
         Assert.DoesNotContain(BaselineQuants.F16_Hybrid.UniqueId, allowed[attnQIndex]);
     }
+
+    [Fact]
+    public void ComboLogic_UsesCandidateLevelBannedGroups()
+    {
+        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.SetImatrixAvailability(false);
+
+        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
+        var moeRouterIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.MoeRouter.UniqueId);
+
+        Assert.DoesNotContain(BaselineQuants.Q5_K.UniqueId, allowed[moeRouterIndex]);
+        Assert.DoesNotContain(BaselineQuants.IQ4_NL.UniqueId, allowed[moeRouterIndex]);
+        Assert.DoesNotContain(BaselineQuants.IQ4_XS.UniqueId, allowed[moeRouterIndex]);
+    }
 }

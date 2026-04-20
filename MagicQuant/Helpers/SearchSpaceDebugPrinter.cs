@@ -57,7 +57,7 @@ public static class SearchSpaceDebugPrinter
                 var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group);
 
                 var parts = learned.Select(x =>
-                    $"{x.Candidate.Names[0]} <= {string.Join("/", x.MissingBaselines.Select(b => b.Names[0]))}");
+                    $"{x.Candidate.Names[0]} (expected={string.Join("/", x.ExpectedTensorWeightSchemeIds)}, matched={string.Join("/", x.MatchedTensorWeightSchemeIds)})");
 
                 AnsiConsole.MarkupLine(
                     $"  [yellow]- {Markup.Escape(group.Name)}[/] :: [grey]{Markup.Escape(string.Join(", ", parts))}[/]");

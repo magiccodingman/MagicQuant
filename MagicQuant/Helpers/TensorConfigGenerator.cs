@@ -124,7 +124,7 @@ public static class TensorConfigGenerator
         var result = new RequiredSampleGenerationResult();
         var carrier = BaselineQuants.Q8_0;
 
-        var candidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+        var candidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
             .Where(x => x.UniqueId != BaselineQuants.BF16_Hybrid.UniqueId)
             .OrderBy(x => x.UniqueId)
             .ToList();

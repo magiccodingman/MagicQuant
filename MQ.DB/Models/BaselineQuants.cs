@@ -17,6 +17,13 @@ public record BaselineQuants(
     public TensorWeightScheme? DefaultTensorScheme =>
         TensorWeightSchemes.IsDefaultOrEmpty ? null : TensorWeightSchemes[0];
 
+    public IReadOnlyList<byte> BannedGroupIds =>
+        TensorWeightSchemes
+            .SelectMany(x => x.BannedGroups.Select(g => g.UniqueId))
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
     public static readonly BaselineQuants Q8_0 =
         new(0, false, ["Q8_0"], [TensorWeightScheme.Q8_0],
             IsPureBaselineCandidate: false,

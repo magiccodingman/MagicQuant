@@ -40,6 +40,9 @@ public static class ComboLogic
 
             foreach (var candidate in candidatesForRun)
             {
+                if (candidate.BannedGroupIds.Contains(group.UniqueId))
+                    continue;
+
                 if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 

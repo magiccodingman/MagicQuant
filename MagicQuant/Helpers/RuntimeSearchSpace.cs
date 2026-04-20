@@ -5,13 +5,16 @@ namespace MagicQuant.Helpers;
 public sealed class RuntimeLearnedBaselineBanInfo
 {
     public BaselineQuants Candidate { get; init; } = default!;
-    public IReadOnlyList<BaselineQuants> MissingBaselines { get; init; } = Array.Empty<BaselineQuants>();
+    public IReadOnlyList<byte> ExpectedTensorWeightSchemeIds { get; init; } = Array.Empty<byte>();
+    public IReadOnlyList<byte> MatchedTensorWeightSchemeIds { get; init; } = Array.Empty<byte>();
+    public IReadOnlyList<byte> MissingTensorWeightSchemeIds { get; init; } = Array.Empty<byte>();
+    public string Note { get; init; } = string.Empty;
 }
 
 public static class RuntimeSearchSpace
 {
     private static readonly Dictionary<byte, HashSet<byte>> ExplicitCandidateBansByGroup = new();
-    private static readonly Dictionary<byte, Dictionary<byte, HashSet<byte>>> LearnedBaselineMissingByGroupAndCandidate = new();
+    private static readonly Dictionary<byte, Dictionary<byte, RuntimeLearnedBaselineBanInfo>> LearnedPrunesByGroupAndCandidate = new();
     private static readonly HashSet<byte> DisabledCombinationBaselineIds = new();
     private static readonly HashSet<byte> Bf16SuppressedTensorChoiceGroupIds = new();
     private static bool _imatrixAvailable;
@@ -21,7 +24,7 @@ public static class RuntimeSearchSpace
     public static void ResetForNewModel()
     {
         ExplicitCandidateBansByGroup.Clear();
-        LearnedBaselineMissingByGroupAndCandidate.Clear();
+        LearnedPrunesByGroupAndCandidate.Clear();
         DisabledCombinationBaselineIds.Clear();
         Bf16SuppressedTensorChoiceGroupIds.Clear();
         _imatrixAvailable = false;
@@ -47,26 +50,51 @@ public static class RuntimeSearchSpace
         set.Add(candidate.UniqueId);
     }
 
-    public static void BanCombinationCandidateForGroupByLearnedBaselineAbsence(
+    public static void BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
         TensorGroup group,
         BaselineQuants candidate,
-        BaselineQuants sourceBaseline)
+        IReadOnlyCollection<byte> expectedTensorWeightSchemeIds,
+        IReadOnlyCollection<byte> matchedTensorWeightSchemeIds,
+        string note)
     {
         BanCombinationCandidateForGroup(group, candidate);
 
-        if (!LearnedBaselineMissingByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
+        if (!LearnedPrunesByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
         {
-            byCandidate = new Dictionary<byte, HashSet<byte>>();
-            LearnedBaselineMissingByGroupAndCandidate[group.UniqueId] = byCandidate;
+            byCandidate = new Dictionary<byte, RuntimeLearnedBaselineBanInfo>();
+            LearnedPrunesByGroupAndCandidate[group.UniqueId] = byCandidate;
         }
 
-        if (!byCandidate.TryGetValue(candidate.UniqueId, out var baselineIds))
-        {
-            baselineIds = new HashSet<byte>();
-            byCandidate[candidate.UniqueId] = baselineIds;
-        }
+        var expected = expectedTensorWeightSchemeIds
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+        var matched = matchedTensorWeightSchemeIds
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+        var missing = expected.Except(matched).OrderBy(x => x).ToList();
 
-        baselineIds.Add(sourceBaseline.UniqueId);
+        byCandidate[candidate.UniqueId] = new RuntimeLearnedBaselineBanInfo
+        {
+            Candidate = candidate,
+            ExpectedTensorWeightSchemeIds = expected,
+            MatchedTensorWeightSchemeIds = matched,
+            MissingTensorWeightSchemeIds = missing,
+            Note = note
+        };
+    }
+
+    public static void ClearLearnedBaselinePruneBookkeeping() => LearnedPrunesByGroupAndCandidate.Clear();
+
+    public static void ClearLearnedBaselinePruneForGroupCandidate(TensorGroup group, BaselineQuants candidate)
+    {
+        if (!LearnedPrunesByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
+            return;
+
+        byCandidate.Remove(candidate.UniqueId);
+        if (byCandidate.Count == 0)
+            LearnedPrunesByGroupAndCandidate.Remove(group.UniqueId);
     }
 
     public static void BanAllExplicitCombinationCandidatesForGroup(TensorGroup group)
@@ -101,25 +129,20 @@ public static class RuntimeSearchSpace
         => TReg.All.Where(IsGroupExplicitCandidateBanned).OrderBy(x => x.UniqueId).ToList();
 
     public static bool HasLearnedBaselineMissingPrunesForGroup(TensorGroup group)
-        => LearnedBaselineMissingByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate) && byCandidate.Count > 0;
+        => LearnedPrunesByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate) && byCandidate.Count > 0;
 
     public static IReadOnlyList<TensorGroup> GetGroupsWithLearnedBaselineMissingPrunes()
         => TReg.All.Where(HasLearnedBaselineMissingPrunesForGroup).OrderBy(x => x.UniqueId).ToList();
 
     public static IReadOnlyList<RuntimeLearnedBaselineBanInfo> GetLearnedBaselineMissingPrunedCandidatesForGroup(TensorGroup group)
     {
-        if (!LearnedBaselineMissingByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
+        if (!LearnedPrunesByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
             return Array.Empty<RuntimeLearnedBaselineBanInfo>();
 
-        var result = new List<RuntimeLearnedBaselineBanInfo>();
-        foreach (var kvp in byCandidate.OrderBy(x => x.Key))
-        {
-            var candidate = BaselineQuants.FromId(kvp.Key);
-            var baselines = kvp.Value.OrderBy(x => x).Select(BaselineQuants.FromId).ToList();
-            result.Add(new RuntimeLearnedBaselineBanInfo { Candidate = candidate, MissingBaselines = baselines });
-        }
-
-        return result;
+        return byCandidate
+            .OrderBy(x => x.Key)
+            .Select(x => x.Value)
+            .ToList();
     }
 
     public static void SuppressBf16TensorChoice(TensorGroup group) => Bf16SuppressedTensorChoiceGroupIds.Add(group.UniqueId);
@@ -167,9 +190,14 @@ public static class RuntimeSearchSpace
     public static void BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
         => BanCombinationCandidateForGroup(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId));
 
-    [Obsolete("Use BanCombinationCandidateForGroupByLearnedBaselineAbsence.")]
+    [Obsolete("Use BanCombinationCandidateForGroupDueToLearnedSchemeMismatch.")]
     public static void BanSchemeForGroupByLearnedBaselineAbsence(TensorGroup group, TensorWeightScheme scheme, BaselineQuants sourceBaseline)
-        => BanCombinationCandidateForGroupByLearnedBaselineAbsence(group, BaselineQuants.FromTensorSchemeId(scheme.UniqueId), sourceBaseline);
+        => BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
+            group,
+            BaselineQuants.FromTensorSchemeId(scheme.UniqueId),
+            expectedTensorWeightSchemeIds: [scheme.UniqueId],
+            matchedTensorWeightSchemeIds: Array.Empty<byte>(),
+            note: $"Legacy scheme-ban shim invoked for source baseline '{sourceBaseline.Names[0]}'.");
 
     [Obsolete("Use BanAllExplicitCombinationCandidatesForGroup.")]
     public static void BanAllExplicitTensorSchemesForGroup(TensorGroup group)

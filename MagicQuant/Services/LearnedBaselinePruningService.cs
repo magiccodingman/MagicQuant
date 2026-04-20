@@ -31,6 +31,8 @@ public sealed class LearnedBaselinePruningService
         if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
 
+        RuntimeSearchSpace.ClearLearnedBaselinePruneBookkeeping();
+
         var result = new LearnedBaselinePruningResult();
 
         await using var db = new MagicQuantContext();
@@ -81,10 +83,12 @@ public sealed class LearnedBaselinePruningService
         HashSet<byte> unusedGroupIds,
         LearnedBaselinePruningResult result)
     {
-        var aliasToSchemeIds = BuildAliasToSchemeIds();
-        var effectiveSchemesByBaselineAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
+        RuntimeSearchSpace.ClearLearnedBaselinePruneBookkeeping();
 
-        var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: true)
+        var aliasToSchemeIds = BuildAliasToSchemeIds();
+        var effectiveSchemesByCandidateAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
+
+        var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
             .Where(x => x.UniqueId != BaselineQuants.BF16_Hybrid.UniqueId)
             .Where(x => x.UniqueId != BaselineQuants.F16_Hybrid.UniqueId)
             .OrderBy(x => x.UniqueId)
@@ -100,22 +104,30 @@ public sealed class LearnedBaselinePruningService
                 if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
-                var owningBaseline = candidate;
-                var key = (owningBaseline.UniqueId, group.UniqueId);
-                bool hasEffectiveSet = effectiveSchemesByBaselineAndGroup.TryGetValue(key, out var effectiveForGroup);
-                var candidateSchemeId = candidate.DefaultTensorScheme?.UniqueId;
-                bool allow = hasEffectiveSet && candidateSchemeId.HasValue && effectiveForGroup!.Contains(candidateSchemeId.Value);
+                var key = (candidate.UniqueId, group.UniqueId);
+                bool hasEffectiveSet = effectiveSchemesByCandidateAndGroup.TryGetValue(key, out var effectiveForGroup);
+                var expectedIds = candidate.TensorWeightSchemes.Select(x => x.UniqueId).Distinct().OrderBy(x => x).ToList();
+                var effectiveIdsSet = hasEffectiveSet ? effectiveForGroup! : new HashSet<byte>();
+                var matchedIds = expectedIds.Where(effectiveIdsSet.Contains).OrderBy(x => x).ToList();
+                bool allow = matchedIds.Count > 0;
                 string effectiveIds = hasEffectiveSet
-                    ? string.Join(",", effectiveForGroup!.OrderBy(x => x))
+                    ? string.Join(",", effectiveIdsSet.OrderBy(x => x))
                     : "<none>";
+                string expected = string.Join(",", expectedIds);
+                string matched = matchedIds.Count > 0 ? string.Join(",", matchedIds) : "<none>";
 
                 result.Notes.Add(
                     $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Name}, " +
-                    $"candidate={candidate.Names[0]}, owner={owningBaseline.Names[0]}, effective=[{effectiveIds}], decision={(allow ? "ALLOW" : "BAN")}");
+                    $"candidate={candidate.Names[0]}, expected=[{expected}], effective=[{effectiveIds}], matched=[{matched}], decision={(allow ? "ALLOW" : "BAN")}");
 
                 if (!allow)
                 {
-                    RuntimeSearchSpace.BanCombinationCandidateForGroupByLearnedBaselineAbsence(group, candidate, owningBaseline);
+                    RuntimeSearchSpace.BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
+                        group,
+                        candidate,
+                        expectedTensorWeightSchemeIds: expectedIds,
+                        matchedTensorWeightSchemeIds: matchedIds,
+                        note: "No matching learned tensor-weight schemes for candidate/group.");
                     result.GroupCandidateEliminations++;
                 }
             }

@@ -182,6 +182,7 @@ public class IsolationOptimizationService
                     continue;
 
                 var candidateBaseline = BaselineQuants.FromId(item.TestedCandidateId!.Value);
+                RuntimeSearchSpace.ClearLearnedBaselinePruneForGroupCandidate(group, candidateBaseline);
 
                 candidates.Add(new GroupCandidateEvaluation
                 {
@@ -254,11 +255,25 @@ public class IsolationOptimizationService
                     $"{candidate.CandidateBaseline.Names[0]} | size={(candidate.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={candidate.SavingsRatio:P2} | kld={candidate.Kld:G6} | pplΔ={candidate.PplDeltaPercent:F4}%");
             }
 
+            var survivorIds = candidates.Select(x => x.CandidateBaseline.UniqueId).ToHashSet();
             foreach (var banInfo in RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group))
             {
-                var sourceBaselines = string.Join(", ", banInfo.MissingBaselines.Select(x => x.Names[0]));
+                if (survivorIds.Contains(banInfo.Candidate.UniqueId))
+                    continue;
+
+                string expected = banInfo.ExpectedTensorWeightSchemeIds.Count == 0
+                    ? "<none>"
+                    : string.Join(", ", banInfo.ExpectedTensorWeightSchemeIds);
+                string matched = banInfo.MatchedTensorWeightSchemeIds.Count == 0
+                    ? "<none>"
+                    : string.Join(", ", banInfo.MatchedTensorWeightSchemeIds);
+                string missing = banInfo.MissingTensorWeightSchemeIds.Count == 0
+                    ? "<none>"
+                    : string.Join(", ", banInfo.MissingTensorWeightSchemeIds);
+
                 decision.Candidates.Add(
-                    $"[pruned-early] {banInfo.Candidate.Names[0]} removed by learned baseline-family mapping for this group (missing baseline source(s): {sourceBaselines}).");
+                    $"[pruned-early] {banInfo.Candidate.Names[0]} removed by learned candidate/group scheme matching " +
+                    $"(expected schemes: {expected}; matched: {matched}; missing: {missing}).");
             }
 
             result.GroupDetails.Add(decision);
