@@ -17,6 +17,7 @@ public static class RuntimeSearchSpace
     private static readonly Dictionary<byte, Dictionary<byte, HashSet<byte>>> LearnedBaselineMissingByGroupAndScheme = new();
     private static readonly HashSet<byte> DisabledCombinationBaselineIds = new();
     private static readonly HashSet<byte> Bf16SuppressedTensorChoiceGroupIds = new();
+    private static bool _imatrixAvailable;
 
     public static void ResetForNewModel()
     {
@@ -24,8 +25,13 @@ public static class RuntimeSearchSpace
         LearnedBaselineMissingByGroupAndScheme.Clear();
         DisabledCombinationBaselineIds.Clear();
         Bf16SuppressedTensorChoiceGroupIds.Clear();
+        _imatrixAvailable = false;
         TensorWeightScheme.ResetAllRuntimeBans();
     }
+
+    public static void SetImatrixAvailability(bool available) => _imatrixAvailable = available;
+
+    public static bool HasUsableImatrix() => _imatrixAvailable;
 
     public static void BanSchemeForGroup(TensorGroup group, TensorWeightScheme scheme)
     {
@@ -187,13 +193,15 @@ public static class RuntimeSearchSpace
         return TensorWeightScheme.All_Allowed_Hybrid_Quants
             .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
             .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Any(x => !x.IsBannedFor(group));
+            .Where(x => _imatrixAvailable || !x.RequiresImatrix)
+            .Any(x => !IsSchemeRuntimeBannedForGroup(group, x));
     }
 
     public static IReadOnlyList<BaselineQuants> GetActiveCombinationBaselines()
     {
         return BaselineQuants.All
             .Where(x => x.BaseConversionBase != null)
+            .Where(x => _imatrixAvailable || !x.RequiresImatrix)
             .Where(x => !DisabledCombinationBaselineIds.Contains(x.UniqueId))
             .OrderBy(x => x.UniqueId)
             .ToList();

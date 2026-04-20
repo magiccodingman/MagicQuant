@@ -20,7 +20,7 @@ public sealed class LearnedBaselinePruningResult
 
 public sealed class LearnedBaselinePruningService
 {
-    private readonly record struct LearnedRow(
+    internal readonly record struct LearnedRow(
         byte BaselineQuantId,
         byte TensorWeightSchemeId,
         byte TensorGroupId,
@@ -35,19 +35,23 @@ public sealed class LearnedBaselinePruningService
 
         await using var db = new MagicQuantContext();
 
-        var aiModelHashId = await db.AiModelHashes
+        var aiModelHash = await db.AiModelHashes
             .AsNoTracking()
             .Where(x => x.UniqueHash == Cache.CurrentModelId)
-            .Select(x => (uint?)x.Id)
+            .Select(x => new { x.Id, x.UniqueHash })
             .FirstOrDefaultAsync(ct);
 
-        if (aiModelHashId == null)
+        if (aiModelHash == null)
             throw new InvalidOperationException(
                 $"AiModelHash row was not found for current model id '{Cache.CurrentModelId}'.");
 
+        result.Notes.Add(
+            $"Learned-baseline pruning model resolution: Cache.CurrentModelId={Cache.CurrentModelId}, " +
+            $"AiModelHash.Id={aiModelHash.Id}, AiModelHash.UniqueHash={aiModelHash.UniqueHash}");
+
         var learnedRows = await db.LearnedBaselineTensorQuants
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == aiModelHashId.Value)
+            .Where(x => x.AiModelHashId == aiModelHash.Id)
             .Select(x => new LearnedRow(
                 x.BaselineQuantId,
                 x.TensorWeightSchemeId,
@@ -62,12 +66,76 @@ public sealed class LearnedBaselinePruningService
             return result;
         }
 
-        var baselinesWithAnyLearnedRows = learnedRows
-            .Select(x => x.BaselineQuantId)
+        var unusedIds = Cache.UnusedTensorGroups
+            .Select(x => x.UniqueId)
             .ToHashSet();
 
-        var aliasToSchemeIds = BuildAliasToSchemeIds();
+        ApplyLearnedBaselinePruning(learnedRows, aiModelHash.Id, aiModelHash.UniqueHash, unusedIds, result);
+        return result;
+    }
 
+    internal static void ApplyLearnedBaselinePruning(
+        IReadOnlyList<LearnedRow> learnedRows,
+        uint aiModelHashId,
+        string aiModelHashUniqueHash,
+        HashSet<byte> unusedGroupIds,
+        LearnedBaselinePruningResult result)
+    {
+        var aliasToSchemeIds = BuildAliasToSchemeIds();
+        var effectiveSchemesByBaselineAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
+
+        var schemeOwnerById = BaselineQuants.All
+            .SelectMany(b => b.TensorWeightSchemes.Select(s => new
+            {
+                SchemeId = s.UniqueId,
+                Baseline = b
+            }))
+            .ToDictionary(x => x.SchemeId, x => x.Baseline);
+
+        var explicitSchemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
+            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
+            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+
+        foreach (var group in TReg.All.OrderBy(x => x.UniqueId))
+        {
+            if (unusedGroupIds.Contains(group.UniqueId))
+                continue;
+
+            foreach (var scheme in explicitSchemes)
+            {
+                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
+                    continue;
+
+                if (!schemeOwnerById.TryGetValue(scheme.UniqueId, out var owningBaseline))
+                    continue;
+
+                var key = (owningBaseline.UniqueId, group.UniqueId);
+                bool hasEffectiveSet = effectiveSchemesByBaselineAndGroup.TryGetValue(key, out var effectiveForGroup);
+                bool allow = hasEffectiveSet && effectiveForGroup!.Contains(scheme.UniqueId);
+                string effectiveIds = hasEffectiveSet
+                    ? string.Join(",", effectiveForGroup!.OrderBy(x => x))
+                    : "<none>";
+
+                result.Notes.Add(
+                    $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Name}, " +
+                    $"scheme={scheme.Names[0]}, owner={owningBaseline.Names[0]}, effective=[{effectiveIds}], decision={(allow ? "ALLOW" : "BAN")}");
+
+                if (!allow)
+                {
+                    RuntimeSearchSpace.BanSchemeForGroupByLearnedBaselineAbsence(group, scheme, owningBaseline);
+                    result.GroupSchemeEliminations++;
+                }
+            }
+        }
+    }
+
+    internal static Dictionary<(byte BaselineId, byte GroupId), HashSet<byte>> BuildEffectiveSchemesByBaselineAndGroup(
+        IReadOnlyList<LearnedRow> learnedRows,
+        Dictionary<string, HashSet<byte>> aliasToSchemeIds)
+    {
         var effectiveSchemesByBaselineAndGroup = new Dictionary<(byte BaselineId, byte GroupId), HashSet<byte>>();
 
         foreach (var row in learnedRows)
@@ -87,75 +155,10 @@ public sealed class LearnedBaselinePruningService
             }
         }
 
-        var skippedBaselineNotes = new HashSet<byte>();
-        var unusedIds = Cache.UnusedTensorGroups
-            .Select(x => x.UniqueId)
-            .ToHashSet();
-
-        var schemeOwnerById = BaselineQuants.All
-            .SelectMany(b => b.TensorWeightSchemes.Select(s => new
-            {
-                SchemeId = s.UniqueId,
-                Baseline = b
-            }))
-            .ToDictionary(x => x.SchemeId, x => x.Baseline);
-
-        var explicitSchemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .OrderBy(x => x.UniqueId)
-            .ToList();
-
-        foreach (var group in TReg.All.OrderBy(x => x.UniqueId))
-        {
-            if (unusedIds.Contains(group.UniqueId))
-                continue;
-
-            foreach (var scheme in explicitSchemes)
-            {
-                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
-                    continue;
-
-                if (!schemeOwnerById.TryGetValue(scheme.UniqueId, out var owningBaseline))
-                    continue;
-
-                if (!baselinesWithAnyLearnedRows.Contains(owningBaseline.UniqueId))
-                {
-                    if (skippedBaselineNotes.Add(owningBaseline.UniqueId))
-                    {
-                        result.BaselinesSkippedWithoutLearnedRows++;
-
-                        result.Notes.Add(
-                            $"Learned-baseline pruning skipped for baseline '{owningBaseline.Names[0]}' because no learned rows existed for the current model.");
-                    }
-
-                    continue;
-                }
-
-                var key = (owningBaseline.UniqueId, group.UniqueId);
-                var effectiveForGroup = effectiveSchemesByBaselineAndGroup.TryGetValue(key, out var found)
-                    ? found
-                    : null;
-
-                bool hasAnyConnectedMapping = effectiveForGroup != null &&
-                                              owningBaseline.TensorWeightSchemes.Any(connectedScheme =>
-                                                  effectiveForGroup.Contains(connectedScheme.UniqueId));
-
-                if (hasAnyConnectedMapping)
-                    continue;
-
-                RuntimeSearchSpace.BanSchemeForGroupByLearnedBaselineAbsence(group, scheme, owningBaseline);
-                result.GroupSchemeEliminations++;
-
-                result.Notes.Add(
-                    $"Learned-baseline prune: '{scheme.Names[0]}' removed for '{group.Name}' because baseline '{owningBaseline.Names[0]}' learned zero matching tensors in that group.");
-            }
-        }
-
-        return result;
+        return effectiveSchemesByBaselineAndGroup;
     }
 
-    private static Dictionary<string, HashSet<byte>> BuildAliasToSchemeIds()
+    internal static Dictionary<string, HashSet<byte>> BuildAliasToSchemeIds()
     {
         var map = new Dictionary<string, HashSet<byte>>(StringComparer.Ordinal);
 

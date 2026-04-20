@@ -268,6 +268,12 @@ public sealed class TensorWeightScheme
         Q5_K,
         IQ4_XS,
         IQ4_NL,
+        IQ3_S,
+        IQ3_XS,
+        IQ3_XXS,
+        IQ2_S,
+        IQ2_XS,
+        IQ2_XXS,
         Q4_K
     ];
 

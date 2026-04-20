@@ -18,7 +18,11 @@ if (args.Length == 0)
 
 // OPTIONAL: Manually append hardcoded flags for testing specific scenarios
 // Example: If you want to test "evolution --iterations 10" every time you debug
-string manualFlags = @"--model-dir ""/mnt/world8/AI/Models/Qwen3-4B-Instruct-2507-unsloth/""";
+string manualFlags =
+    @"--model-dir ""/mnt/world8/AI/Models/Qwen3-4B-Instruct-2507-unsloth/""
+      --use-imatrix
+      --imatrix-dataset-local-file ""/home/slurp/Documents/Output_Files/Dataset/artifacts/imatrix-general-v1-1m.jsonl""
+      --imatrix-dataset-split ""text""";
 args = args.Concat(manualFlags.Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToArray();
 #endif
 

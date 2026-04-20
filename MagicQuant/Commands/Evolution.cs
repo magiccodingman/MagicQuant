@@ -60,6 +60,9 @@ public class Evolution : ICommand
             string.Equals(a.Name, "relearn-baseline-mappings", StringComparison.OrdinalIgnoreCase));
         Cache.ForceRefreshHardwareProbe = args.Any(a =>
             string.Equals(a.Name, "recheck-hardware-probe", StringComparison.OrdinalIgnoreCase));
+        Cache.UseImatrix = args.Any(a => string.Equals(a.Name, "use-imatrix", StringComparison.OrdinalIgnoreCase));
+        Cache.ForceImatrixRebuild = args.Any(a => string.Equals(a.Name, "imatrix-force-rebuild", StringComparison.OrdinalIgnoreCase));
+        RuntimeSearchSpace.SetImatrixAvailability(false);
 
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
@@ -84,6 +87,7 @@ public class Evolution : ICommand
         var pyManager = new PythonManager(Cache.MagicQuantDirectory);
         var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
+        var imatrixService = new ImatrixService();
 
         if (Cache.ForceRelearnBaselineTensorMappings)
         {
@@ -93,6 +97,32 @@ public class Evolution : ICommand
 
         string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
+
+        var imatrixRequest = new ImatrixRequest
+        {
+            UseImatrix = Cache.UseImatrix,
+            ForceRebuild = Cache.ForceImatrixRebuild,
+            ImatrixUrl = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-url", StringComparison.OrdinalIgnoreCase))?.Value,
+            DatasetRepo = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-repo", StringComparison.OrdinalIgnoreCase))?.Value,
+            DatasetSplit = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-split", StringComparison.OrdinalIgnoreCase))?.Value,
+            DatasetConfig = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-config", StringComparison.OrdinalIgnoreCase))?.Value,
+            LocalDatasetFile = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-local-file", StringComparison.OrdinalIgnoreCase))?.Value,
+            ModelDirectory = Cache.ModelDirectory!,
+            MagicQuantDirectory = Cache.ModelMagicQuantDirectory!
+        };
+
+        var imatrixEnsureResult = await imatrixService.EnsureImatrixAsync(imatrixRequest, ct: default);
+        if (imatrixEnsureResult.Enabled)
+        {
+            string canonicalPath = imatrixEnsureResult.CanonicalImatrixPath ?? "n/a";
+            string rebuiltText = imatrixEnsureResult.Rebuilt ? "yes" : "no";
+            AnsiConsole.MarkupLine(
+                $"[green]Imatrix active:[/] {Markup.Escape(canonicalPath)} (rebuilt={rebuiltText})");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]Imatrix disabled for this run.[/]");
+        }
 
         bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
                                    await benchmarkService.TryInitializeExecutionPlanFromCacheAsync(
@@ -307,6 +337,13 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Required)");
         AnsiConsole.MarkupLine("  [green]--relearn-baseline-mappings[/]    Delete and relearn baseline tensor mappings (Optional)");
         AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
+        AnsiConsole.MarkupLine("  [green]--use-imatrix[/]    Enable imatrix acquisition/build and allow imatrix-required search candidates (Optional)");
+        AnsiConsole.MarkupLine("  [green]--imatrix-force-rebuild[/]    Delete/rebuild canonical imatrix artifacts before run (Optional)");
+        AnsiConsole.MarkupLine("  [green]--imatrix-url[/]    HTTPS URL for direct imatrix artifact download (Optional)");
+        AnsiConsole.MarkupLine("  [green]--imatrix-dataset-repo[/]    Hugging Face dataset repo ID for imatrix generation (Optional)");
+        AnsiConsole.MarkupLine("  [green]--imatrix-dataset-split[/]    Dataset split for HF/local dataset source metadata/build (Optional)");
+        AnsiConsole.MarkupLine("  [green]--imatrix-dataset-config[/]    Optional dataset config name for HF datasets (Optional)");
+        AnsiConsole.MarkupLine("  [green]--imatrix-dataset-local-file[/]    Full path to local .json/.jsonl dataset source (Optional)");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Example:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");
