@@ -89,7 +89,7 @@ public static class TensorConfigGenerator
                 Description = $"Smallest-first probe for group '{group.Name}' using '{smallest.Names[0]}'.",
                 Quant = quant,
                 TargetGroupId = group.UniqueId,
-                TestedSchemeId = smallest.UniqueId,
+                TestedCandidateId = smallest.UniqueId,
                 TestedBaselineId = carrier.UniqueId,
                 IsSmallestProbe = true
             });
@@ -157,7 +157,7 @@ public static class TensorConfigGenerator
                     Description = $"Continuation isolation for group '{group.Name}' using '{candidate.Names[0]}'.",
                     Quant = quant,
                     TargetGroupId = group.UniqueId,
-                    TestedSchemeId = candidate.UniqueId,
+                    TestedCandidateId = candidate.UniqueId,
                     TestedBaselineId = carrier.UniqueId
                 });
 
@@ -191,7 +191,7 @@ public static class TensorConfigGenerator
         var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseQuant);
 
         if (allowed.IsDefault)
-            throw new InvalidOperationException("Allowed scheme array is default (uninitialized).");
+            throw new InvalidOperationException("Allowed candidate array is default (uninitialized).");
 
         if (allowed.Length == 0)
             yield break;

@@ -16,11 +16,6 @@ public static class RuntimeSearchSpace
     private static readonly HashSet<byte> Bf16SuppressedTensorChoiceGroupIds = new();
     private static bool _imatrixAvailable;
 
-    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
-    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
-    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
-    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
-    [Obsolete("Use candidate-based RuntimeSearchSpace APIs.")]
     public static bool AllowHighPrecisionHybrids { get; set; }
 
     public static void ResetForNewModel()

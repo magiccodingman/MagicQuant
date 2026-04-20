@@ -92,7 +92,7 @@ public class IsolationOptimizationService
             if (snap == null)
                 continue;
 
-            var candidate = BaselineQuants.FromId(probe.TestedSchemeId!.Value);
+            var candidate = BaselineQuants.FromId(probe.TestedCandidateId!.Value);
             var reduction = ComputeReductionRatio(carrierBaseOnly.SizeBytes, snap.SizeBytes);
             var kld = GetAggregateKld(snap);
             var pplDelta = GetAggregatePplDeltaPercent(snap, nativeBaseline);
@@ -181,7 +181,7 @@ public class IsolationOptimizationService
                 if (snap == null)
                     continue;
 
-                var candidateBaseline = BaselineQuants.FromId(item.TestedSchemeId!.Value);
+                var candidateBaseline = BaselineQuants.FromId(item.TestedCandidateId!.Value);
 
                 candidates.Add(new GroupCandidateEvaluation
                 {

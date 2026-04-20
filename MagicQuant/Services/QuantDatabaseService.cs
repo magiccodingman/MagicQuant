@@ -384,7 +384,7 @@ public class QuantDatabaseService
 
         foreach (var plan in groupPlans)
         {
-            if (!plan.TargetGroupId.HasValue || !plan.TestedSchemeId.HasValue)
+            if (!plan.TargetGroupId.HasValue || !plan.TestedCandidateId.HasValue)
                 continue;
 
             var snap = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, plan.Quant, ct);
@@ -392,7 +392,7 @@ public class QuantDatabaseService
                 continue;
 
             long delta = (long)snap.SizeBytes - (long)carrier.SizeBytes;
-            deltaByGroupAndCandidate[(plan.TargetGroupId.Value, plan.TestedSchemeId.Value)] = delta;
+            deltaByGroupAndCandidate[(plan.TargetGroupId.Value, plan.TestedCandidateId.Value)] = delta;
         }
 
         return new PredictionContext(
