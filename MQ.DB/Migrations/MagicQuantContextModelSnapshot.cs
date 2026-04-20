@@ -347,6 +347,9 @@ namespace MQ.DB.Migrations
                     b.Property<uint>("AiModelHashId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("ImatrixDefinitionId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime>("CompletedUtc")
                         .HasColumnType("TEXT");
 
@@ -375,6 +378,8 @@ namespace MQ.DB.Migrations
                     b.HasIndex("AiBenchmarkId");
 
                     b.HasIndex("AiModelHashId");
+
+                    b.HasIndex("ImatrixDefinitionId");
 
                     b.HasIndex("StartedUtc");
 
@@ -446,6 +451,8 @@ namespace MQ.DB.Migrations
                         .IsRequired();
 
                     b.Navigation("AiModelHash");
+
+                    b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
                 });
@@ -619,6 +626,8 @@ namespace MQ.DB.Migrations
                     b.Navigation("AiBenchmark");
 
                     b.Navigation("AiModelHash");
+
+                    b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
                 });
