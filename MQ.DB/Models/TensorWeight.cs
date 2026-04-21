@@ -2,12 +2,11 @@ namespace MQ.DB.Models;
 
 public class TensorWeight
 {
-    public TensorWeight(byte uniqueId, bool requiresImatrix, string[] names, TensorGroup[]? bannedGroups = null)
+    public TensorWeight(byte uniqueId, bool requiresImatrix, string[] names)
     {
         Names = names.ToList();
         UniqueId = uniqueId;
         RequiresImatrix = requiresImatrix;
-        BannedGroups = bannedGroups?.ToList();
     }
 
     /// <summary>
@@ -45,8 +44,4 @@ public class TensorWeight
     
     public bool RequiresImatrix { get; }
     
-    /// <summary>
-    /// Which Tensor Groups this tensor weight CANNOT be attached too.
-    /// </summary>
-    public List<TensorGroup>? BannedGroups { get; }
 }

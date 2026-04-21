@@ -10,17 +10,9 @@ public static class ComboLogic
     private static readonly ImmutableArray<TensorGroup> GroupsOrdered =
         TReg.All.OrderBy(g => g.UniqueId).ToImmutableArray();
 
-    public static ImmutableArray<byte[]> GetAllowedSchemeIdsPerGroup(BaselineQuants baseQuant)
+    public static ImmutableArray<byte[]> GetAllowedCandidateIdsPerGroup(BaselineQuants baseQuant)
     {
         bool imatrixAvailable = RuntimeSearchSpace.HasUsableImatrix();
-
-        var schemesForRun = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(s => imatrixAvailable || !s.RequiresImatrix)
-            .ToImmutableArray();
-
-        if (schemesForRun.IsEmpty)
-            throw new InvalidOperationException("No tensor schemes available for this base.");
-
         var builder = ImmutableArray.CreateBuilder<byte[]>();
         var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
 
@@ -28,30 +20,27 @@ public static class ComboLogic
         {
             if (unusedIds.Contains(group.UniqueId))
             {
-                builder.Add([TensorWeightScheme.NULL.UniqueId]);
+                builder.Add([BaselineQuants.TensorConfigNullSlotValue]);
                 continue;
             }
 
             var ids = new List<byte>();
 
-            if (!RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
-                ids.Add(TensorWeightScheme.BF16_F16.UniqueId);
-
-            foreach (var scheme in schemesForRun)
+            foreach (var alias in BaselineQuants.GetExactHighPrecisionAliases(RuntimeSearchSpace.AllowHighPrecisionHybrids))
             {
-                if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId || scheme.UniqueId == TensorWeightScheme.BF16_F16.UniqueId)
+                if (RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group))
                     continue;
 
-                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
-                    continue;
-
-                ids.Add(scheme.UniqueId);
+                ids.Add(BaselineQuants.EncodeTensorConfigGroupSlot(alias));
             }
 
-            ids = ids.Distinct().OrderBy(x => x).ToList();
+            var realCandidates = RuntimeSearchSpace.GetAllowedRealExplicitCombinationCandidatesForGroup(group);
+            ids.AddRange(realCandidates.Select(BaselineQuants.EncodeTensorConfigGroupSlot));
+
+            ids = ids.Distinct().ToList();
 
             if (ids.Count == 0)
-                throw new InvalidOperationException($"Group '{group.Name}' has no valid tensor schemes for base '{string.Join("/", baseQuant.Names)}'.");
+                ids.Add(BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.GetDefaultExplicitFallbackBaseline()));
 
             builder.Add(ids.ToArray());
         }
@@ -61,7 +50,7 @@ public static class ComboLogic
 
     public static BigInteger CountCombinations(in BaselineQuants baseQuant)
     {
-        var allowed = GetAllowedSchemeIdsPerGroup(baseQuant);
+        var allowed = GetAllowedCandidateIdsPerGroup(baseQuant);
 
         BigInteger total = BigInteger.One;
         for (int i = 0; i < allowed.Length; i++)
@@ -75,7 +64,7 @@ public static class ComboCounter
 {
     public static BigInteger CountForBase(BaselineQuants baseQuant)
     {
-        var allowed = ComboLogic.GetAllowedSchemeIdsPerGroup(baseQuant);
+        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseQuant);
 
         BigInteger total = BigInteger.One;
         for (int i = 0; i < allowed.Length; i++)

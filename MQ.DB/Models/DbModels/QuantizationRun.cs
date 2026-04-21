@@ -11,6 +11,9 @@ public class QuantizationRun : ISQLiteEntity<QuantizationRun>
     public uint AiModelHashId { get; set; }
     public AiModelHash AiModelHash { get; set; } = default!;
 
+    public int? ImatrixDefinitionId { get; set; }
+    public ImatrixDefinition? ImatrixDefinition { get; set; }
+
     public Guid TensorComboId { get; set; }
     public TensorCombo TensorCombo { get; set; } = default!;
 
@@ -42,6 +45,7 @@ public class QuantizationRun : ISQLiteEntity<QuantizationRun>
             .ValueGeneratedNever();
 
         builder.HasIndex(x => x.AiModelHashId);
+        builder.HasIndex(x => x.ImatrixDefinitionId);
         builder.HasIndex(x => x.TensorComboId);
         builder.HasIndex(x => x.AiBenchmarkId);
         builder.HasIndex(x => x.StartedUtc);
@@ -56,6 +60,11 @@ public class QuantizationRun : ISQLiteEntity<QuantizationRun>
             .WithMany()
             .HasForeignKey(x => x.AiModelHashId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(x => x.ImatrixDefinition)
+            .WithMany()
+            .HasForeignKey(x => x.ImatrixDefinitionId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(x => x.TensorCombo)
             .WithMany()

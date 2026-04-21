@@ -11,6 +11,9 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
     public uint AiModelHashId { get; set; }
     public AiModelHash AiModelHash { get; set; } = default!;
 
+    public int? ImatrixDefinitionId { get; set; }
+    public ImatrixDefinition? ImatrixDefinition { get; set; }
+
     public string HardwareFingerprint { get; set; } = string.Empty;
     public string QuantizedModelFingerprint { get; set; } = string.Empty;
     public string QuantizationKey { get; set; } = string.Empty;
@@ -35,9 +38,11 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
         builder.Property(x => x.SlotsJson).HasMaxLength(8000);
 
         builder.HasIndex(x => x.AiModelHashId);
+        builder.HasIndex(x => x.ImatrixDefinitionId);
         builder.HasIndex(x => new
         {
             x.AiModelHashId,
+            x.ImatrixDefinitionId,
             x.HardwareFingerprint,
             x.QuantizedModelFingerprint,
             x.QuantizationKey,
@@ -48,5 +53,10 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
             .WithMany()
             .HasForeignKey(x => x.AiModelHashId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(x => x.ImatrixDefinition)
+            .WithMany()
+            .HasForeignKey(x => x.ImatrixDefinitionId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }

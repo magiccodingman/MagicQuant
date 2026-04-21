@@ -15,7 +15,7 @@ public static class SearchSpaceDebugPrinter
 
         var activeBaselines = RuntimeSearchSpace.GetActiveCombinationBaselines().ToList();
         var disabledBaselines = BaselineQuants.All
-            .Where(x => x.BaseConversionBase != null)
+            .Where(x => x.IsCombinationCarrierCandidate)
             .Where(x => RuntimeSearchSpace.IsCombinationBaselineDisabled(x))
             .OrderBy(x => x.UniqueId)
             .ToList();
@@ -54,17 +54,15 @@ public static class SearchSpaceDebugPrinter
 
             foreach (var group in learnedPrunedGroups)
             {
-                var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedSchemesForGroup(group);
+                var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group);
 
                 var parts = learned.Select(x =>
-                    $"{x.Scheme.Names[0]} <= {string.Join("/", x.MissingBaselines.Select(b => b.Names[0]))}");
+                    $"{x.Candidate.Names[0]} (expected={string.Join("/", x.ExpectedTensorWeightSchemeIds)}, matched={string.Join("/", x.MatchedTensorWeightSchemeIds)})");
 
                 AnsiConsole.MarkupLine(
                     $"  [yellow]- {Markup.Escape(group.Name)}[/] :: [grey]{Markup.Escape(string.Join(", ", parts))}[/]");
             }
         }
-
-        var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
 
         foreach (var baseline in activeBaselines)
         {
@@ -73,7 +71,7 @@ public static class SearchSpaceDebugPrinter
                 Justification = Justify.Left
             });
 
-            var allowed = ComboLogic.GetAllowedSchemeIdsPerGroup(baseline);
+            var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseline);
             BigInteger baseCount = BigInteger.One;
 
             for (int i = 0; i < TReg.All.Length; i++)
@@ -84,19 +82,13 @@ public static class SearchSpaceDebugPrinter
 
                 var names = ids.Select(id =>
                 {
-                    if (id == TensorWeightScheme.NULL.UniqueId)
+                    if (BaselineQuants.IsNullTensorConfigGroupSlot(id))
                         return "NULL";
 
-                    var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(x => x.UniqueId == id);
-                    return scheme?.Names[0] ?? $"Unknown({id})";
+                    return BaselineQuants.DecodeTensorConfigGroupSlotToBaseline(id).Names[0];
                 }).ToList();
 
-                string state =
-                    unusedIds.Contains(group.UniqueId) ? "unused->NULL" :
-                    RuntimeSearchSpace.IsGroupExplicitQuantBanned(group) ? "BF16-only" :
-                    RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group) ? "BF16-suppressed" :
-                    RuntimeSearchSpace.HasLearnedBaselineMissingPrunesForGroup(group) ? "learned-pruned" :
-                    "variable";
+                string state = RuntimeSearchSpace.GetDisplayStateForGroup(group);
 
                 AnsiConsole.MarkupLine(
                     $"  [cyan]{Markup.Escape(group.Name)}[/] => [green]{ids.Length}[/] choice(s) " +

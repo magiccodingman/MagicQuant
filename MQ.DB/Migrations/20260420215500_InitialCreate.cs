@@ -60,6 +60,32 @@ namespace MQ.DB.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "ImatrixDefinitions",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    AiModelHashId = table.Column<uint>(type: "INTEGER", nullable: false),
+                    IdentityHash = table.Column<string>(type: "TEXT", maxLength: 128, nullable: false),
+                    CanonicalPath = table.Column<string>(type: "TEXT", maxLength: 2048, nullable: true),
+                    SourceKind = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
+                    CreatedUtc = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    MetadataJson = table.Column<string>(type: "TEXT", maxLength: 8000, nullable: true),
+                    TokenCount = table.Column<int>(type: "INTEGER", nullable: true),
+                    BuildFingerprint = table.Column<string>(type: "TEXT", maxLength: 512, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ImatrixDefinitions", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_ImatrixDefinitions_AiModelHashes_AiModelHashId",
+                        column: x => x.AiModelHashId,
+                        principalTable: "AiModelHashes",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "AiBenchmarks",
                 columns: table => new
                 {
@@ -68,7 +94,8 @@ namespace MQ.DB.Migrations
                     SizeBytes = table.Column<ulong>(type: "INTEGER", nullable: false),
                     TokensPerSecond = table.Column<double>(type: "REAL", nullable: false),
                     TensorComboId = table.Column<Guid>(type: "TEXT", nullable: false),
-                    AiModelHashId = table.Column<uint>(type: "INTEGER", nullable: false)
+                    AiModelHashId = table.Column<uint>(type: "INTEGER", nullable: false),
+                    ImatrixDefinitionId = table.Column<int>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -80,9 +107,50 @@ namespace MQ.DB.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
+                        name: "FK_AiBenchmarks_ImatrixDefinitions_ImatrixDefinitionId",
+                        column: x => x.ImatrixDefinitionId,
+                        principalTable: "ImatrixDefinitions",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
                         name: "FK_AiBenchmarks_TensorCombos_TensorComboId",
                         column: x => x.TensorComboId,
                         principalTable: "TensorCombos",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ExecutionPlanProbeCaches",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "TEXT", nullable: false),
+                    AiModelHashId = table.Column<uint>(type: "INTEGER", nullable: false),
+                    ImatrixDefinitionId = table.Column<int>(type: "INTEGER", nullable: true),
+                    HardwareFingerprint = table.Column<string>(type: "TEXT", maxLength: 1024, nullable: false),
+                    QuantizedModelFingerprint = table.Column<string>(type: "TEXT", maxLength: 2048, nullable: false),
+                    QuantizationKey = table.Column<string>(type: "TEXT", maxLength: 128, nullable: false),
+                    DiscoveryTokenTarget = table.Column<int>(type: "INTEGER", nullable: false),
+                    StaticNgl = table.Column<int>(type: "INTEGER", nullable: false),
+                    UsesGpu = table.Column<bool>(type: "INTEGER", nullable: false),
+                    GroupSize = table.Column<int>(type: "INTEGER", nullable: false),
+                    SlotsJson = table.Column<string>(type: "TEXT", maxLength: 8000, nullable: false),
+                    CreatedUtc = table.Column<DateTime>(type: "TEXT", nullable: false),
+                    UpdatedUtc = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ExecutionPlanProbeCaches", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_ExecutionPlanProbeCaches_AiModelHashes_AiModelHashId",
+                        column: x => x.AiModelHashId,
+                        principalTable: "AiModelHashes",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_ExecutionPlanProbeCaches_ImatrixDefinitions_ImatrixDefinitionId",
+                        column: x => x.ImatrixDefinitionId,
+                        principalTable: "ImatrixDefinitions",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                 });
@@ -145,6 +213,7 @@ namespace MQ.DB.Migrations
                 {
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     AiModelHashId = table.Column<uint>(type: "INTEGER", nullable: false),
+                    ImatrixDefinitionId = table.Column<int>(type: "INTEGER", nullable: true),
                     TensorComboId = table.Column<Guid>(type: "TEXT", nullable: false),
                     AiBenchmarkId = table.Column<Guid>(type: "TEXT", nullable: true),
                     StartedUtc = table.Column<DateTime>(type: "TEXT", nullable: false),
@@ -170,6 +239,12 @@ namespace MQ.DB.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
+                        name: "FK_QuantizationRuns_ImatrixDefinitions_ImatrixDefinitionId",
+                        column: x => x.ImatrixDefinitionId,
+                        principalTable: "ImatrixDefinitions",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
                         name: "FK_QuantizationRuns_TensorCombos_TensorComboId",
                         column: x => x.TensorComboId,
                         principalTable: "TensorCombos",
@@ -183,6 +258,7 @@ namespace MQ.DB.Migrations
                 {
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     AiModelHashId = table.Column<uint>(type: "INTEGER", nullable: false),
+                    ImatrixDefinitionId = table.Column<int>(type: "INTEGER", nullable: true),
                     TensorComboId = table.Column<Guid>(type: "TEXT", nullable: false),
                     AiBenchmarkId = table.Column<Guid>(type: "TEXT", nullable: false),
                     CategoryBenchmarkId = table.Column<Guid>(type: "TEXT", nullable: true),
@@ -215,6 +291,12 @@ namespace MQ.DB.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.SetNull);
                     table.ForeignKey(
+                        name: "FK_BenchmarkRuns_ImatrixDefinitions_ImatrixDefinitionId",
+                        column: x => x.ImatrixDefinitionId,
+                        principalTable: "ImatrixDefinitions",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
                         name: "FK_BenchmarkRuns_TensorCombos_TensorComboId",
                         column: x => x.TensorComboId,
                         principalTable: "TensorCombos",
@@ -223,10 +305,15 @@ namespace MQ.DB.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_AiBenchmarks_AiModelHashId_TensorComboId",
+                name: "IX_AiBenchmarks_AiModelHashId_ImatrixDefinitionId_TensorComboId",
                 table: "AiBenchmarks",
-                columns: new[] { "AiModelHashId", "TensorComboId" },
+                columns: new[] { "AiModelHashId", "ImatrixDefinitionId", "TensorComboId" },
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_AiBenchmarks_ImatrixDefinitionId",
+                table: "AiBenchmarks",
+                column: "ImatrixDefinitionId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_AiBenchmarks_TensorComboId",
@@ -277,6 +364,11 @@ namespace MQ.DB.Migrations
                 column: "CategoryBenchmarkId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_BenchmarkRuns_ImatrixDefinitionId",
+                table: "BenchmarkRuns",
+                column: "ImatrixDefinitionId");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_BenchmarkRuns_StartedUtc",
                 table: "BenchmarkRuns",
                 column: "StartedUtc");
@@ -290,6 +382,28 @@ namespace MQ.DB.Migrations
                 name: "IX_CategoryBenchmark_AiBenchmarkId",
                 table: "CategoryBenchmark",
                 column: "AiBenchmarkId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionPlanProbeCaches_AiModelHashId",
+                table: "ExecutionPlanProbeCaches",
+                column: "AiModelHashId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionPlanProbeCaches_AiModelHashId_ImatrixDefinitionId_HardwareFingerprint_QuantizedModelFingerprint_QuantizationKey_DiscoveryTokenTarget",
+                table: "ExecutionPlanProbeCaches",
+                columns: new[] { "AiModelHashId", "ImatrixDefinitionId", "HardwareFingerprint", "QuantizedModelFingerprint", "QuantizationKey", "DiscoveryTokenTarget" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionPlanProbeCaches_ImatrixDefinitionId",
+                table: "ExecutionPlanProbeCaches",
+                column: "ImatrixDefinitionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImatrixDefinitions_AiModelHashId_IdentityHash",
+                table: "ImatrixDefinitions",
+                columns: new[] { "AiModelHashId", "IdentityHash" },
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_LearnedBaselineTensorQuants_AiBenchmarkId",
@@ -318,6 +432,11 @@ namespace MQ.DB.Migrations
                 column: "AiModelHashId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_QuantizationRuns_ImatrixDefinitionId",
+                table: "QuantizationRuns",
+                column: "ImatrixDefinitionId");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_QuantizationRuns_StartedUtc",
                 table: "QuantizationRuns",
                 column: "StartedUtc");
@@ -344,6 +463,9 @@ namespace MQ.DB.Migrations
                 name: "BenchmarkRuns");
 
             migrationBuilder.DropTable(
+                name: "ExecutionPlanProbeCaches");
+
+            migrationBuilder.DropTable(
                 name: "LearnedBaselineTensorQuants");
 
             migrationBuilder.DropTable(
@@ -356,10 +478,13 @@ namespace MQ.DB.Migrations
                 name: "AiBenchmarks");
 
             migrationBuilder.DropTable(
-                name: "AiModelHashes");
+                name: "ImatrixDefinitions");
 
             migrationBuilder.DropTable(
                 name: "TensorCombos");
+
+            migrationBuilder.DropTable(
+                name: "AiModelHashes");
         }
     }
 }

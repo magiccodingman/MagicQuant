@@ -13,7 +13,7 @@ namespace MagicQuant.Services;
 
 public sealed class LearnedBaselinePruningResult
 {
-    public int GroupSchemeEliminations { get; set; }
+    public int GroupCandidateEliminations { get; set; }
     public int BaselinesSkippedWithoutLearnedRows { get; set; }
     public List<string> Notes { get; } = new();
 }
@@ -30,6 +30,8 @@ public sealed class LearnedBaselinePruningService
     {
         if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
+
+        RuntimeSearchSpace.ClearLearnedBaselinePruneBookkeeping();
 
         var result = new LearnedBaselinePruningResult();
 
@@ -81,21 +83,12 @@ public sealed class LearnedBaselinePruningService
         HashSet<byte> unusedGroupIds,
         LearnedBaselinePruningResult result)
     {
+        RuntimeSearchSpace.ClearLearnedBaselinePruneBookkeeping();
+
         var aliasToSchemeIds = BuildAliasToSchemeIds();
-        var effectiveSchemesByBaselineAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
+        var effectiveSchemesByCandidateAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
 
-        var schemeOwnerById = BaselineQuants.All
-            .SelectMany(b => b.TensorWeightSchemes.Select(s => new
-            {
-                SchemeId = s.UniqueId,
-                Baseline = b
-            }))
-            .ToDictionary(x => x.SchemeId, x => x.Baseline);
-
-        var explicitSchemes = TensorWeightScheme.All_Allowed_Hybrid_Quants
-            .Where(x => x.UniqueId != TensorWeightScheme.NULL.UniqueId)
-            .Where(x => x.UniqueId != TensorWeightScheme.BF16_F16.UniqueId)
-            .Where(x => RuntimeSearchSpace.HasUsableImatrix() || !x.RequiresImatrix)
+        var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
             .OrderBy(x => x.UniqueId)
             .ToList();
 
@@ -104,29 +97,39 @@ public sealed class LearnedBaselinePruningService
             if (unusedGroupIds.Contains(group.UniqueId))
                 continue;
 
-            foreach (var scheme in explicitSchemes)
+            foreach (var candidate in explicitCandidates)
             {
-                if (RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(group, scheme))
+                if (candidate.BannedGroupIds.Contains(group.UniqueId))
                     continue;
 
-                if (!schemeOwnerById.TryGetValue(scheme.UniqueId, out var owningBaseline))
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
-                var key = (owningBaseline.UniqueId, group.UniqueId);
-                bool hasEffectiveSet = effectiveSchemesByBaselineAndGroup.TryGetValue(key, out var effectiveForGroup);
-                bool allow = hasEffectiveSet && effectiveForGroup!.Contains(scheme.UniqueId);
+                var key = (candidate.UniqueId, group.UniqueId);
+                bool hasEffectiveSet = effectiveSchemesByCandidateAndGroup.TryGetValue(key, out var effectiveForGroup);
+                var expectedIds = candidate.LearnedMatchTensorWeightSchemes.Select(x => x.UniqueId).Distinct().OrderBy(x => x).ToList();
+                var effectiveIdsSet = hasEffectiveSet ? effectiveForGroup! : new HashSet<byte>();
+                var matchedIds = expectedIds.Where(effectiveIdsSet.Contains).OrderBy(x => x).ToList();
+                bool allow = matchedIds.Count > 0;
                 string effectiveIds = hasEffectiveSet
-                    ? string.Join(",", effectiveForGroup!.OrderBy(x => x))
+                    ? string.Join(",", effectiveIdsSet.OrderBy(x => x))
                     : "<none>";
+                string expected = string.Join(",", expectedIds);
+                string matched = matchedIds.Count > 0 ? string.Join(",", matchedIds) : "<none>";
 
                 result.Notes.Add(
                     $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Name}, " +
-                    $"scheme={scheme.Names[0]}, owner={owningBaseline.Names[0]}, effective=[{effectiveIds}], decision={(allow ? "ALLOW" : "BAN")}");
+                    $"candidate={candidate.Names[0]}, expected=[{expected}], effective=[{effectiveIds}], matched=[{matched}], decision={(allow ? "ALLOW" : "BAN")}");
 
                 if (!allow)
                 {
-                    RuntimeSearchSpace.BanSchemeForGroupByLearnedBaselineAbsence(group, scheme, owningBaseline);
-                    result.GroupSchemeEliminations++;
+                    RuntimeSearchSpace.BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
+                        group,
+                        candidate,
+                        expectedTensorWeightSchemeIds: expectedIds,
+                        matchedTensorWeightSchemeIds: matchedIds,
+                        note: "No matching learned tensor-weight schemes for candidate/group.");
+                    result.GroupCandidateEliminations++;
                 }
             }
         }
@@ -147,6 +150,12 @@ public sealed class LearnedBaselinePruningService
                 set = new HashSet<byte>();
                 effectiveSchemesByBaselineAndGroup[key] = set;
             }
+
+            // The persisted TensorWeightSchemeId is the authoritative learned-family identity.
+            // FinalQuantType is useful extra metadata, but it cannot replace the stored scheme id
+            // because some learned baselines materialize tensors whose final emitted token differs
+            // from the baseline family we are learning from.
+            set.Add(row.TensorWeightSchemeId);
 
             if (aliasToSchemeIds.TryGetValue(CanonicalizeQuantToken(row.FinalQuantType), out var resolvedIds))
             {

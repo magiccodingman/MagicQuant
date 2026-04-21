@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace MQ.DB.Models;
@@ -30,39 +29,39 @@ public readonly struct TensorConfig
         byte moeExperts,
         byte moeRouter)
     {
-        BaseQuant   = baseQuant;
-        Embeddings  = embeddings;
-        LmHead      = lmHead;
-        AttnQ       = attnQ;
-        AttnKV      = attnKV;
-        AttnOutput  = attnOutput;
-        FfnUpGate   = ffnUpGate;
-        FfnDown     = ffnDown;
-        MoeExperts  = moeExperts;
-        MoeRouter   = moeRouter;
+        BaseQuant = baseQuant;
+        Embeddings = embeddings;
+        LmHead = lmHead;
+        AttnQ = attnQ;
+        AttnKV = attnKV;
+        AttnOutput = attnOutput;
+        FfnUpGate = ffnUpGate;
+        FfnDown = ffnDown;
+        MoeExperts = moeExperts;
+        MoeRouter = moeRouter;
     }
 
     // Converting constructor: HybridQuant -> TensorConfig
     public TensorConfig(HybridQuant h)
         : this(
-            baseQuant:  checked((byte)h.BaseQuant.UniqueId),
-            embeddings: GetSchemeIdOrDefault(h, TReg.Embeddings),
-            lmHead:     GetSchemeIdOrDefault(h, TReg.LmHead),
-            attnQ:      GetSchemeIdOrDefault(h, TReg.AttnQ),
-            attnKV:     GetSchemeIdOrDefault(h, TReg.AttnKV),
-            attnOutput: GetSchemeIdOrDefault(h, TReg.AttnOutput),
-            ffnUpGate:  GetSchemeIdOrDefault(h, TReg.FfnUpGate),
-            ffnDown:    GetSchemeIdOrDefault(h, TReg.FfnDown),
-            moeExperts: GetSchemeIdOrDefault(h, TReg.MoeExperts),
-            moeRouter:  GetSchemeIdOrDefault(h, TReg.MoeRouter))
+            baseQuant: checked((byte)h.BaseQuant.UniqueId),
+            embeddings: GetStoredIdOrDefault(h, TReg.Embeddings),
+            lmHead: GetStoredIdOrDefault(h, TReg.LmHead),
+            attnQ: GetStoredIdOrDefault(h, TReg.AttnQ),
+            attnKV: GetStoredIdOrDefault(h, TReg.AttnKV),
+            attnOutput: GetStoredIdOrDefault(h, TReg.AttnOutput),
+            ffnUpGate: GetStoredIdOrDefault(h, TReg.FfnUpGate),
+            ffnDown: GetStoredIdOrDefault(h, TReg.FfnDown),
+            moeExperts: GetStoredIdOrDefault(h, TReg.MoeExperts),
+            moeRouter: GetStoredIdOrDefault(h, TReg.MoeRouter))
     { }
 
-    private static byte GetSchemeIdOrDefault(HybridQuant h, TensorGroup group)
+    private static byte GetStoredIdOrDefault(HybridQuant h, TensorGroup group)
     {
         if (h.Tensors == null || h.Tensors.Count == 0)
-            return TensorWeightScheme.NULL.UniqueId;
+            return BaselineQuants.TensorConfigNullSlotValue;
 
-        TensorWeightScheme? found = null;
+        HybridTensor? found = null;
 
         for (int i = 0; i < h.Tensors.Count; i++)
         {
@@ -74,17 +73,22 @@ public readonly struct TensorConfig
                 continue;
 
             if (found != null)
-            {
-                throw new InvalidOperationException(
-                    $"HybridQuant contains duplicate entries for group '{group.Name}' (UniqueId={group.UniqueId}).");
-            }
+                throw new InvalidOperationException($"HybridQuant contains duplicate entries for group '{group.Name}' (UniqueId={group.UniqueId}).");
 
-            found = t.TensorType;
+            found = t;
         }
 
-        return found == null
-            ? TensorWeightScheme.NULL.UniqueId
-            : checked((byte)found.UniqueId);
+        if (found == null)
+            return BaselineQuants.TensorConfigNullSlotValue;
+
+        found.ValidateOrThrow();
+
+        return found.OverrideMode switch
+        {
+            HybridTensorOverrideMode.LearnedBaselineCandidate => BaselineQuants.EncodeTensorConfigGroupSlot(found.CandidateBaseline!),
+            HybridTensorOverrideMode.ExactTensorScheme => BaselineQuants.EncodeTensorConfigGroupSlot(found.ExactTensorScheme!),
+            _ => throw new InvalidOperationException($"Unknown HybridTensorOverrideMode '{found.OverrideMode}'.")
+        };
     }
 
     public static explicit operator TensorConfig(HybridQuant h) => new TensorConfig(h);

@@ -1,5 +1,11 @@
 namespace MQ.DB.Models;
 
+public enum HybridTensorOverrideMode
+{
+    LearnedBaselineCandidate = 1,
+    ExactTensorScheme = 2
+}
+
 public class HybridQuant
 {
     public BaselineQuants BaseQuant { get; set; } = default!;
@@ -22,18 +28,22 @@ public class HybridQuant
         AddIfNotNull(TReg.MoeRouter, c.MoeRouter);
     }
 
-    private void AddIfNotNull(TensorGroup group, byte schemeId)
+    private void AddIfNotNull(TensorGroup group, byte storedId)
     {
-        if (schemeId == TensorWeightScheme.NULL.UniqueId)
+        if (BaselineQuants.IsNullTensorConfigGroupSlot(storedId))
             return;
 
-        var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.First(g => g.UniqueId == schemeId);
+        var decodedBaselineId = BaselineQuants.DecodeTensorConfigGroupSlotToBaselineId(storedId);
 
-        Tensors.Add(new HybridTensor
+        if (BaselineQuants.IsNativeExactAlias(decodedBaselineId))
         {
-            TGroup = group,
-            TensorType = scheme
-        });
+            var exactScheme = BaselineQuants.ResolveExactOverrideScheme(decodedBaselineId);
+            Tensors.Add(HybridTensor.CreateExact(group, exactScheme));
+            return;
+        }
+
+        var candidate = BaselineQuants.FromId(decodedBaselineId);
+        Tensors.Add(HybridTensor.CreateLearned(group, candidate));
     }
 
     public HybridQuant Clone()
@@ -42,13 +52,32 @@ public class HybridQuant
         {
             BaseQuant = BaseQuant,
             Tensors = Tensors
-                .Select(t => new HybridTensor
-                {
-                    TGroup = t.TGroup,
-                    TensorType = t.TensorType
-                })
+                .Select(t => t.Clone())
                 .ToList()
         };
+    }
+
+    public HybridTensor? TryGetTensor(TensorGroup group) =>
+        Tensors.FirstOrDefault(x => x.TGroup.UniqueId == group.UniqueId);
+
+    public HybridTensor GetRequiredTensor(TensorGroup group) =>
+        TryGetTensor(group) ?? throw new InvalidOperationException($"HybridQuant does not contain group '{group.Name}'.");
+
+    public void SetExactOverride(TensorGroup group, TensorWeightScheme exactScheme)
+    {
+        RemoveGroupIfPresent(group);
+        Tensors.Add(HybridTensor.CreateExact(group, exactScheme));
+    }
+
+    public void SetLearnedCandidateOverride(TensorGroup group, BaselineQuants candidateBaseline)
+    {
+        RemoveGroupIfPresent(group);
+        Tensors.Add(HybridTensor.CreateLearned(group, candidateBaseline));
+    }
+
+    public void RemoveGroupIfPresent(TensorGroup group)
+    {
+        Tensors.RemoveAll(x => x.TGroup.UniqueId == group.UniqueId);
     }
 
     public static HybridQuant CreatePureBaseline(BaselineQuants baseQuant)
@@ -60,20 +89,30 @@ public class HybridQuant
         };
     }
 
-    public static HybridQuant CreateBlanket(
+    public static HybridQuant CreateExactBlanket(
         BaselineQuants baseQuant,
         IEnumerable<TensorGroup> groups,
-        TensorWeightScheme blanketScheme)
+        TensorWeightScheme exactScheme)
     {
         return new HybridQuant
         {
             BaseQuant = baseQuant,
             Tensors = groups
-                .Select(g => new HybridTensor
-                {
-                    TGroup = g,
-                    TensorType = blanketScheme
-                })
+                .Select(g => HybridTensor.CreateExact(g, exactScheme))
+                .ToList()
+        };
+    }
+
+    public static HybridQuant CreateLearnedCandidateBlanket(
+        BaselineQuants baseQuant,
+        IEnumerable<TensorGroup> groups,
+        BaselineQuants candidateBaseline)
+    {
+        return new HybridQuant
+        {
+            BaseQuant = baseQuant,
+            Tensors = groups
+                .Select(g => HybridTensor.CreateLearned(g, candidateBaseline))
                 .ToList()
         };
     }
@@ -84,5 +123,88 @@ public class HybridQuant
 public class HybridTensor
 {
     public TensorGroup TGroup { get; set; } = null!;
-    public TensorWeightScheme TensorType { get; set; } = default!;
+    public HybridTensorOverrideMode OverrideMode { get; set; }
+    public BaselineQuants? CandidateBaseline { get; set; }
+    public TensorWeightScheme? ExactTensorScheme { get; set; }
+    public TensorWeightScheme MaterializedTensorScheme { get; set; } = default!;
+
+    // Compatibility alias retained for older call sites.
+    public TensorWeightScheme TensorType
+    {
+        get => MaterializedTensorScheme;
+        set => MaterializedTensorScheme = value;
+    }
+
+    public static HybridTensor CreateLearned(TensorGroup group, BaselineQuants candidateBaseline)
+    {
+        if (BaselineQuants.IsNativeExactAlias(candidateBaseline))
+        {
+            throw new InvalidOperationException(
+                $"Baseline '{candidateBaseline.Names[0]}' is an exact/native alias and cannot be used as a learned baseline candidate.");
+        }
+
+        return new HybridTensor
+        {
+            TGroup = group,
+            OverrideMode = HybridTensorOverrideMode.LearnedBaselineCandidate,
+            CandidateBaseline = candidateBaseline,
+            ExactTensorScheme = null,
+            MaterializedTensorScheme = candidateBaseline.DefaultTensorScheme ?? TensorWeightScheme.GetCurrentNativePrecisionScheme()
+        };
+    }
+
+    public static HybridTensor CreateExact(TensorGroup group, TensorWeightScheme exactScheme)
+    {
+        return new HybridTensor
+        {
+            TGroup = group,
+            OverrideMode = HybridTensorOverrideMode.ExactTensorScheme,
+            CandidateBaseline = null,
+            ExactTensorScheme = exactScheme,
+            MaterializedTensorScheme = exactScheme
+        };
+    }
+
+    public HybridTensor Clone()
+    {
+        return new HybridTensor
+        {
+            TGroup = TGroup,
+            OverrideMode = OverrideMode,
+            CandidateBaseline = CandidateBaseline,
+            ExactTensorScheme = ExactTensorScheme,
+            MaterializedTensorScheme = MaterializedTensorScheme
+        };
+    }
+
+    public void ValidateOrThrow()
+    {
+        if (TGroup == null)
+            throw new InvalidOperationException("HybridTensor.TGroup is required.");
+
+        switch (OverrideMode)
+        {
+            case HybridTensorOverrideMode.LearnedBaselineCandidate:
+                if (CandidateBaseline == null)
+                    throw new InvalidOperationException($"HybridTensor for group '{TGroup.Name}' is missing CandidateBaseline.");
+
+                if (ExactTensorScheme != null)
+                    throw new InvalidOperationException($"HybridTensor for group '{TGroup.Name}' cannot specify ExactTensorScheme when OverrideMode is LearnedBaselineCandidate.");
+
+                if (BaselineQuants.IsNativeExactAlias(CandidateBaseline))
+                    throw new InvalidOperationException($"HybridTensor for group '{TGroup.Name}' cannot use exact/native alias '{CandidateBaseline.Names[0]}' as a learned baseline candidate.");
+                break;
+
+            case HybridTensorOverrideMode.ExactTensorScheme:
+                if (ExactTensorScheme == null)
+                    throw new InvalidOperationException($"HybridTensor for group '{TGroup.Name}' is missing ExactTensorScheme.");
+
+                if (CandidateBaseline != null)
+                    throw new InvalidOperationException($"HybridTensor for group '{TGroup.Name}' cannot specify CandidateBaseline when OverrideMode is ExactTensorScheme.");
+                break;
+
+            default:
+                throw new InvalidOperationException($"HybridTensor for group '{TGroup.Name}' has unknown OverrideMode '{OverrideMode}'.");
+        }
+    }
 }

@@ -25,6 +25,9 @@ namespace MQ.DB.Migrations
                     b.Property<uint>("AiModelHashId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("ImatrixDefinitionId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte>("Ngl")
                         .HasColumnType("INTEGER");
 
@@ -39,9 +42,11 @@ namespace MQ.DB.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ImatrixDefinitionId");
+
                     b.HasIndex("TensorComboId");
 
-                    b.HasIndex("AiModelHashId", "TensorComboId")
+                    b.HasIndex("AiModelHashId", "ImatrixDefinitionId", "TensorComboId")
                         .IsUnique();
 
                     b.ToTable("AiBenchmarks");
@@ -123,6 +128,9 @@ namespace MQ.DB.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("ImatrixDefinitionId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime>("StartedUtc")
                         .HasColumnType("TEXT");
 
@@ -139,6 +147,8 @@ namespace MQ.DB.Migrations
                     b.HasIndex("AiModelHashId");
 
                     b.HasIndex("CategoryBenchmarkId");
+
+                    b.HasIndex("ImatrixDefinitionId");
 
                     b.HasIndex("StartedUtc");
 
@@ -198,6 +208,9 @@ namespace MQ.DB.Migrations
                         .HasMaxLength(1024)
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("ImatrixDefinitionId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("QuantizationKey")
                         .IsRequired()
                         .HasMaxLength(128)
@@ -226,10 +239,57 @@ namespace MQ.DB.Migrations
 
                     b.HasIndex("AiModelHashId");
 
-                    b.HasIndex("AiModelHashId", "HardwareFingerprint", "QuantizedModelFingerprint", "QuantizationKey", "DiscoveryTokenTarget")
+                    b.HasIndex("ImatrixDefinitionId");
+
+                    b.HasIndex("AiModelHashId", "ImatrixDefinitionId", "HardwareFingerprint", "QuantizedModelFingerprint", "QuantizationKey", "DiscoveryTokenTarget")
                         .IsUnique();
 
                     b.ToTable("ExecutionPlanProbeCaches");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.ImatrixDefinition", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("AiModelHashId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("BuildFingerprint")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CanonicalPath")
+                        .HasMaxLength(2048)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("IdentityHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MetadataJson")
+                        .HasMaxLength(8000)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("TokenCount")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AiModelHashId", "IdentityHash")
+                        .IsUnique();
+
+                    b.ToTable("ImatrixDefinitions");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.LearnedBaselineTensorQuant", b =>
@@ -296,6 +356,9 @@ namespace MQ.DB.Migrations
                         .HasMaxLength(4000)
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("ImatrixDefinitionId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("OutputModelPath")
                         .HasMaxLength(2048)
                         .HasColumnType("TEXT");
@@ -314,6 +377,8 @@ namespace MQ.DB.Migrations
                     b.HasIndex("AiBenchmarkId");
 
                     b.HasIndex("AiModelHashId");
+
+                    b.HasIndex("ImatrixDefinitionId");
 
                     b.HasIndex("StartedUtc");
 
@@ -373,6 +438,11 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.ImatrixDefinition", "ImatrixDefinition")
+                        .WithMany()
+                        .HasForeignKey("ImatrixDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("MQ.DB.Models.DbModels.TensorCombo", "TensorCombo")
                         .WithMany()
                         .HasForeignKey("TensorComboId")
@@ -380,6 +450,8 @@ namespace MQ.DB.Migrations
                         .IsRequired();
 
                     b.Navigation("AiModelHash");
+
+                    b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
                 });
@@ -403,6 +475,11 @@ namespace MQ.DB.Migrations
                         .HasForeignKey("CategoryBenchmarkId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("MQ.DB.Models.DbModels.ImatrixDefinition", "ImatrixDefinition")
+                        .WithMany()
+                        .HasForeignKey("ImatrixDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("MQ.DB.Models.DbModels.TensorCombo", "TensorCombo")
                         .WithMany()
                         .HasForeignKey("TensorComboId")
@@ -414,6 +491,8 @@ namespace MQ.DB.Migrations
                     b.Navigation("AiModelHash");
 
                     b.Navigation("CategoryBenchmark");
+
+                    b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
                 });
@@ -430,6 +509,24 @@ namespace MQ.DB.Migrations
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.ExecutionPlanProbeCache", b =>
+                {
+                    b.HasOne("MQ.DB.Models.DbModels.AiModelHash", "AiModelHash")
+                        .WithMany()
+                        .HasForeignKey("AiModelHashId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.ImatrixDefinition", "ImatrixDefinition")
+                        .WithMany()
+                        .HasForeignKey("ImatrixDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("AiModelHash");
+
+                    b.Navigation("ImatrixDefinition");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.ImatrixDefinition", b =>
                 {
                     b.HasOne("MQ.DB.Models.DbModels.AiModelHash", "AiModelHash")
                         .WithMany()
@@ -472,6 +569,11 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.ImatrixDefinition", "ImatrixDefinition")
+                        .WithMany()
+                        .HasForeignKey("ImatrixDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("MQ.DB.Models.DbModels.TensorCombo", "TensorCombo")
                         .WithMany()
                         .HasForeignKey("TensorComboId")
@@ -481,6 +583,8 @@ namespace MQ.DB.Migrations
                     b.Navigation("AiBenchmark");
 
                     b.Navigation("AiModelHash");
+
+                    b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
                 });

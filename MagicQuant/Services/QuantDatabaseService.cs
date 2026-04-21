@@ -12,7 +12,7 @@ namespace MagicQuant.Services;
 
 public class QuantDatabaseService
 {
-    private const string DbFileName = "MagicQuant_Combinations.duckdb";
+    private const string DbFileNamePrefix = "MagicQuant_Combinations";
     private const string TableName = "tensor_configs";
 
     public async Task<long> GetRemainingCombinationCountAsync(CancellationToken ct = default)
@@ -91,7 +91,15 @@ public class QuantDatabaseService
             "Neither Cache.ModelMagicQuantDirectory nor Cache.MagicQuantDirectory is set.");
     }
 
-    private string ConnectionString => $"Data Source={Path.Combine(GetDuckDbDirectory(), DbFileName)}";
+    private static string BuildContextAwareDuckDbFileName()
+    {
+        string model = string.IsNullOrWhiteSpace(Cache.CurrentModelId) ? "unknown-model" : Cache.CurrentModelId;
+        string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixIdentityHash ?? "imatrix-unknown") : "no-imatrix";
+        string hp = RuntimeSearchSpace.AllowHighPrecisionHybrids ? "hp-on" : "hp-off";
+        return $"{DbFileNamePrefix}_{model}_{imatrix}_{hp}.duckdb";
+    }
+
+    private string ConnectionString => $"Data Source={Path.Combine(GetDuckDbDirectory(), BuildContextAwareDuckDbFileName())}";
 
     public async Task InitializeAsync(bool forceRebuild = false, CancellationToken ct = default)
     {
@@ -204,6 +212,43 @@ public class QuantDatabaseService
         return removed;
     }
 
+
+    public async Task<long> PruneHighPrecisionHybridCandidatesAsync(CancellationToken ct = default)
+    {
+        if (RuntimeSearchSpace.AllowHighPrecisionHybrids)
+            return 0;
+
+        using var connection = new DuckDBConnection(ConnectionString);
+        await connection.OpenAsync(ct);
+
+        var rows = await GetRemainingTensorConfigsAsync(ct);
+        var kept = rows.Where(x =>
+            x.Embeddings != BaselineQuants.BF16_Hybrid.UniqueId && x.Embeddings != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.LmHead != BaselineQuants.BF16_Hybrid.UniqueId && x.LmHead != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.AttnQ != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnQ != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.AttnKV != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnKV != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.AttnOutput != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnOutput != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.FfnUpGate != BaselineQuants.BF16_Hybrid.UniqueId && x.FfnUpGate != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.FfnDown != BaselineQuants.BF16_Hybrid.UniqueId && x.FfnDown != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.MoeExperts != BaselineQuants.BF16_Hybrid.UniqueId && x.MoeExperts != BaselineQuants.F16_Hybrid.UniqueId &&
+            x.MoeRouter != BaselineQuants.BF16_Hybrid.UniqueId && x.MoeRouter != BaselineQuants.F16_Hybrid.UniqueId).ToList();
+
+        long removed = rows.Count - kept.Count;
+        if (removed <= 0)
+            return 0;
+
+        var createCmd = connection.CreateCommand();
+        createCmd.CommandText = $@"
+            DROP TABLE IF EXISTS {TableName};
+            CREATE TABLE {TableName} (
+                BaseQuant TINYINT, Embeddings TINYINT, LmHead TINYINT, AttnQ TINYINT, AttnKV TINYINT,
+                AttnOutput TINYINT, FfnUpGate TINYINT, FfnDown TINYINT, MoeExperts TINYINT, MoeRouter TINYINT
+            );";
+        await createCmd.ExecuteNonQueryAsync(ct);
+        await BulkInsertAsync(connection, kept, ct);
+        return removed;
+    }
+
     private async Task<long> GetRowCountAsync(DuckDBConnection connection, CancellationToken ct)
     {
         var checkCmd = connection.CreateCommand();
@@ -309,9 +354,12 @@ public class QuantDatabaseService
         if (model == null)
             return null;
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var pureQ8 = await LoadSnapshotByQuantAsync(
             db,
             model.Id,
+            imatrixDefinitionId,
             HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0),
             ct);
 
@@ -323,11 +371,11 @@ public class QuantDatabaseService
         if (pureQ8 == null || carrierBaseOnlyPlan == null)
             return null;
 
-        var carrier = await LoadSnapshotByQuantAsync(db, model.Id, carrierBaseOnlyPlan.Quant, ct);
+        var carrier = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, carrierBaseOnlyPlan.Quant, ct);
         if (carrier == null)
             return null;
 
-        var deltaByGroupAndScheme = new Dictionary<(byte GroupId, byte SchemeId), long>();
+        var deltaByGroupAndCandidate = new Dictionary<(byte GroupId, byte CandidateId), long>();
 
         var groupPlans = fullPlan.Plans
             .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe || x.Kind == RequiredSampleKind.GroupIsolationContinuation)
@@ -336,26 +384,27 @@ public class QuantDatabaseService
 
         foreach (var plan in groupPlans)
         {
-            if (!plan.TargetGroupId.HasValue || !plan.TestedSchemeId.HasValue)
+            if (!plan.TargetGroupId.HasValue || !plan.TestedCandidateId.HasValue)
                 continue;
 
-            var snap = await LoadSnapshotByQuantAsync(db, model.Id, plan.Quant, ct);
+            var snap = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, plan.Quant, ct);
             if (snap == null)
                 continue;
 
             long delta = (long)snap.SizeBytes - (long)carrier.SizeBytes;
-            deltaByGroupAndScheme[(plan.TargetGroupId.Value, plan.TestedSchemeId.Value)] = delta;
+            deltaByGroupAndCandidate[(plan.TargetGroupId.Value, plan.TestedCandidateId.Value)] = delta;
         }
 
         return new PredictionContext(
             pureQ8BaseSize: pureQ8.SizeBytes,
             carrierBaseOnlySize: carrier.SizeBytes,
-            deltas: deltaByGroupAndScheme);
+            deltas: deltaByGroupAndCandidate);
     }
 
     private static async Task<BenchmarkRow?> LoadSnapshotByQuantAsync(
         MagicQuantContext db,
         uint modelId,
+        int? imatrixDefinitionId,
         HybridQuant quant,
         CancellationToken ct)
     {
@@ -368,6 +417,7 @@ public class QuantDatabaseService
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
                 x.b.AiModelHashId == modelId &&
+                x.b.ImatrixDefinitionId == imatrixDefinitionId &&
                 x.c.BaseQuant == lookup.BaseQuant &&
                 x.c.Embeddings == lookup.Embeddings &&
                 x.c.LmHead == lookup.LmHead &&
@@ -393,7 +443,7 @@ public class QuantDatabaseService
 
     private sealed class PredictionContext
     {
-        private readonly Dictionary<(byte GroupId, byte SchemeId), long> _deltas;
+        private readonly Dictionary<(byte GroupId, byte CandidateId), long> _deltas;
 
         public ulong PureQ8BaseSize { get; }
         public ulong CarrierBaseOnlySize { get; }
@@ -401,7 +451,7 @@ public class QuantDatabaseService
         public PredictionContext(
             ulong pureQ8BaseSize,
             ulong carrierBaseOnlySize,
-            Dictionary<(byte GroupId, byte SchemeId), long> deltas)
+            Dictionary<(byte GroupId, byte CandidateId), long> deltas)
         {
             PureQ8BaseSize = pureQ8BaseSize;
             CarrierBaseOnlySize = carrierBaseOnlySize;
@@ -428,12 +478,12 @@ public class QuantDatabaseService
             return (ulong)total;
         }
 
-        private void AddDelta(byte groupId, byte schemeId, ref long total)
+        private void AddDelta(byte groupId, byte candidateId, ref long total)
         {
-            if (schemeId == TensorWeightScheme.BF16_F16.UniqueId)
+            if (candidateId == BaselineQuants.BF16_Hybrid.UniqueId || candidateId == BaselineQuants.F16_Hybrid.UniqueId)
                 return;
 
-            if (_deltas.TryGetValue((groupId, schemeId), out long delta))
+            if (_deltas.TryGetValue((groupId, candidateId), out long delta))
                 total += delta;
         }
     }

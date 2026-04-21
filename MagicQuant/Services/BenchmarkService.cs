@@ -377,11 +377,13 @@ public class BenchmarkService
     {
         await using var db = new MagicQuantContext();
         var aiModelHashId = await GetOrCreateAiModelHashIdAsync(db, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, aiModelHashId, createIfMissing: false, ct);
 
         var row = await db.ExecutionPlanProbeCaches
             .AsNoTracking()
             .FirstOrDefaultAsync(x =>
                 x.AiModelHashId == aiModelHashId &&
+                x.ImatrixDefinitionId == imatrixDefinitionId &&
                 x.HardwareFingerprint == key.HardwareFingerprint &&
                 x.QuantizedModelFingerprint == key.QuantizedModelFingerprint &&
                 x.QuantizationKey == key.QuantizationKey &&
@@ -423,10 +425,12 @@ public class BenchmarkService
     {
         await using var db = new MagicQuantContext();
         var aiModelHashId = await GetOrCreateAiModelHashIdAsync(db, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, aiModelHashId, createIfMissing: true, ct);
 
         var existing = await db.ExecutionPlanProbeCaches
             .FirstOrDefaultAsync(x =>
                 x.AiModelHashId == aiModelHashId &&
+                x.ImatrixDefinitionId == imatrixDefinitionId &&
                 x.HardwareFingerprint == key.HardwareFingerprint &&
                 x.QuantizedModelFingerprint == key.QuantizedModelFingerprint &&
                 x.QuantizationKey == key.QuantizationKey &&
@@ -440,6 +444,7 @@ public class BenchmarkService
             existing = new ExecutionPlanProbeCache
             {
                 AiModelHashId = aiModelHashId,
+                ImatrixDefinitionId = imatrixDefinitionId,
                 HardwareFingerprint = key.HardwareFingerprint,
                 QuantizedModelFingerprint = key.QuantizedModelFingerprint,
                 QuantizationKey = key.QuantizationKey,
@@ -489,7 +494,8 @@ public class BenchmarkService
         if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
 
-        return $"model:{Cache.CurrentModelId}|quant:{quantizationKey}";
+        string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixIdentityHash ?? "imatrix-unknown") : "no-imatrix";
+        return $"model:{Cache.CurrentModelId}|imatrix:{imatrix}|quant:{quantizationKey}";
     }
 
     private static async Task<uint> GetOrCreateAiModelHashIdAsync(MagicQuantContext db, CancellationToken ct)
@@ -772,6 +778,7 @@ public class BenchmarkService
             db: db,
             model: identity.AiModelHash,
             combo: identity.TensorCombo,
+            imatrixDefinitionId: identity.ImatrixDefinitionId,
             res: reused,
             modelPath: modelPath,
             executedRunTimings: new List<PendingBenchmarkRunTiming>());
@@ -805,7 +812,7 @@ public class BenchmarkService
         var existingBench = await db.AiBenchmarks
             .Include(x => x.CategorBenchmarks)
             .AsNoTracking()
-            .FirstOrDefaultAsync(b => b.AiModelHashId == aiModelHash.Id && b.TensorComboId == tensorCombo.Id);
+            .FirstOrDefaultAsync(b => b.AiModelHashId == aiModelHash.Id && b.ImatrixDefinitionId == identity.ImatrixDefinitionId && b.TensorComboId == tensorCombo.Id);
 
         // 1. DB truth first
         if (existingBench != null && HasRequiredCategories(existingBench, requestedDomains, requireKld))
@@ -848,6 +855,7 @@ public class BenchmarkService
                 db: db,
                 model: aiModelHash,
                 combo: tensorCombo,
+                imatrixDefinitionId: identity.ImatrixDefinitionId,
                 res: reused,
                 modelPath: modelPath,
                 executedRunTimings: new List<PendingBenchmarkRunTiming>());
@@ -866,13 +874,14 @@ public class BenchmarkService
 
         var trackedBench = await db.AiBenchmarks
             .Include(x => x.CategorBenchmarks)
-            .FirstOrDefaultAsync(x => x.AiModelHashId == aiModelHash.Id && x.TensorComboId == tensorCombo.Id);
+            .FirstOrDefaultAsync(x => x.AiModelHashId == aiModelHash.Id && x.ImatrixDefinitionId == identity.ImatrixDefinitionId && x.TensorComboId == tensorCombo.Id);
 
         if (trackedBench == null)
         {
             trackedBench = new AiBenchmark
             {
                 AiModelHashId = aiModelHash.Id,
+                ImatrixDefinitionId = identity.ImatrixDefinitionId,
                 TensorComboId = tensorCombo.Id,
                 Ngl = 0,
                 SizeBytes = 0,
@@ -977,6 +986,7 @@ public class BenchmarkService
                     aiModelHashId: aiModelHash.Id,
                     tensorComboId: tensorCombo.Id,
                     aiBenchmarkId: trackedBench.Id,
+                    imatrixDefinitionId: identity.ImatrixDefinitionId,
                     category: DomainToCategory(domain),
                     startedUtc: startedUtc,
                     completedUtc: DateTime.UtcNow,
@@ -992,6 +1002,7 @@ public class BenchmarkService
             db: db,
             model: aiModelHash,
             combo: tensorCombo,
+            imatrixDefinitionId: identity.ImatrixDefinitionId,
             res: result,
             modelPath: modelPath,
             executedRunTimings: executedRunTimings);
@@ -1003,7 +1014,7 @@ public class BenchmarkService
     // Database helpers
     // ----------------------------------------------------------------
 
-    private async Task<(AiModelHash AiModelHash, TensorCombo TensorCombo)> GetOrCreateBenchmarkIdentityAsync(
+    private async Task<(AiModelHash AiModelHash, TensorCombo TensorCombo, int? ImatrixDefinitionId)> GetOrCreateBenchmarkIdentityAsync(
         MagicQuantContext db,
         HybridQuant quantConfig,
         CancellationToken ct = default)
@@ -1024,7 +1035,8 @@ public class BenchmarkService
 
         var tensorCombo = await GetOrCreateTensorComboAsync(db, quantConfig, ct);
 
-        return (aiModelHash, tensorCombo);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, aiModelHash.Id, createIfMissing: true, ct);
+        return (aiModelHash, tensorCombo, imatrixDefinitionId);
     }
 
     private async Task<TensorCombo> GetOrCreateTensorComboAsync(
@@ -1059,6 +1071,7 @@ public class BenchmarkService
         MagicQuantContext db,
         AiModelHash model,
         TensorCombo combo,
+        int? imatrixDefinitionId,
         BenchmarkResult res,
         string modelPath,
         IReadOnlyCollection<PendingBenchmarkRunTiming> executedRunTimings)
@@ -1088,6 +1101,7 @@ public class BenchmarkService
                 .Include(x => x.CategorBenchmarks)
                 .FirstOrDefaultAsync(x =>
                     x.AiModelHashId == model.Id &&
+                    x.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.TensorComboId == combo.Id);
 
             if (bench == null)
@@ -1095,6 +1109,7 @@ public class BenchmarkService
                 bench = new AiBenchmark
                 {
                     AiModelHashId = model.Id,
+                    ImatrixDefinitionId = imatrixDefinitionId,
                     TensorComboId = combo.Id
                 };
 
@@ -1179,6 +1194,7 @@ public class BenchmarkService
                     {
                         Id = Guid.NewGuid(),
                         AiModelHashId = model.Id,
+                        ImatrixDefinitionId = imatrixDefinitionId,
                         TensorComboId = combo.Id,
                         AiBenchmarkId = bench.Id,
                         CategoryBenchmarkId = categoryBenchmarkId,
@@ -1231,6 +1247,7 @@ public class BenchmarkService
         uint aiModelHashId,
         Guid tensorComboId,
         Guid aiBenchmarkId,
+        int? imatrixDefinitionId,
         byte category,
         DateTime startedUtc,
         DateTime completedUtc,
@@ -1240,6 +1257,7 @@ public class BenchmarkService
         {
             Id = Guid.NewGuid(),
             AiModelHashId = aiModelHashId,
+            ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = tensorComboId,
             AiBenchmarkId = aiBenchmarkId,
             CategoryBenchmarkId = null,

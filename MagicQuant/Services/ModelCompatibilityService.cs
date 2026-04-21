@@ -24,9 +24,8 @@ public class ModelCompatibilityService
 
         TensorWeightScheme.ValidateSmallestConfiguration();
 
-        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.ResetForCompatibilityPass();
         Cache.UnusedTensorGroups.Clear();
-        TensorWeightScheme.NULL.BannedGroups.Clear();
 
         string directory = Path.GetDirectoryName(ggufPath)!;
         string scriptPath = Path.Combine(directory, "check_compat.py");
@@ -37,16 +36,16 @@ public class ModelCompatibilityService
         {
             var groupDefinitions = TReg.All.ToDictionary(g => g.Name, g => g.Tensors);
 
-            var blockRequirements = TensorWeightScheme.All_Allowed_Hybrid_Quants
-                .Where(s => s.BlockNeo.HasValue)
-                .ToDictionary(s => s.Names[0], s => s.BlockNeo!.Value);
+            var candidateBlockRequirements = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
+                .Where(c => c.DefaultTensorScheme?.BlockNeo.HasValue == true)
+                .ToDictionary(c => c.Names[0], c => c.DefaultTensorScheme!.BlockNeo!.Value);
 
             var payload = new
             {
                 gguf_path = ggufPath,
                 output_path = resultPath,
                 groups = groupDefinitions,
-                schemes = blockRequirements
+                schemes = candidateBlockRequirements
             };
 
             string pyCode = GeneratePythonScript(JsonSerializer.Serialize(payload));
@@ -78,7 +77,7 @@ public class ModelCompatibilityService
 
             var shapeTable = new Table().Border(TableBorder.Rounded).Title("[red]Shape Incompatibilities[/]");
             shapeTable.AddColumn("Group");
-            shapeTable.AddColumn("Scheme");
+            shapeTable.AddColumn("Candidate");
             shapeTable.AddColumn("Reason");
 
             foreach (var group in TReg.All)
@@ -87,9 +86,6 @@ public class ModelCompatibilityService
 
                 if (exists)
                 {
-                    if (!TensorWeightScheme.NULL.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
-                        TensorWeightScheme.NULL.BannedGroups.Add(group);
-
                     usedCount++;
                     continue;
                 }
@@ -97,37 +93,29 @@ public class ModelCompatibilityService
                 unusedCount++;
                 Cache.UnusedTensorGroups.Add(group);
 
-                foreach (var scheme in TensorWeightScheme.All_Allowed_Hybrid_Quants)
-                {
-                    if (scheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
-                        continue;
-
-                    if (!scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
-                        scheme.BannedGroups.Add(group);
-                }
+                RuntimeSearchSpace.BanAllExplicitCombinationCandidatesForGroup(group);
             }
 
             foreach (var failure in result.Incompatible)
             {
                 var group = TReg.GetByName(failure.Group);
-                var scheme = TensorWeightScheme.All_Allowed_Hybrid_Quants.FirstOrDefault(s =>
-                    s.Names.Any(n => n.Equals(failure.Scheme, StringComparison.OrdinalIgnoreCase)));
+                var candidate = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
+                    .FirstOrDefault(c => c.Names.Any(n => n.Equals(failure.Scheme, StringComparison.OrdinalIgnoreCase)));
 
-                if (group == null || scheme == null)
+                if (group == null || candidate == null)
+                    continue;
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
-                if (scheme.BannedGroups.Any(x => x.UniqueId == group.UniqueId))
-                    continue;
-
-                scheme.BannedGroups.Add(group);
+                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate);
                 shapeBanCount++;
-                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{scheme.Names[0]}[/]",
+                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{candidate.Names[0]}[/]",
                     "[grey]Block Alignment[/]");
             }
 
             foreach (var group in TReg.All.Except(Cache.UnusedTensorGroups))
             {
-                if (RuntimeSearchSpace.IsGroupExplicitQuantBanned(group))
+                if (RuntimeSearchSpace.IsGroupExplicitCandidateBanned(group))
                     explicitQuantBannedCount++;
             }
 
@@ -149,7 +137,7 @@ public class ModelCompatibilityService
             }
             else
             {
-                AnsiConsole.MarkupLine("[green]No groups were reduced to BF16/NULL-only by compatibility checks.[/]");
+                AnsiConsole.MarkupLine("[green]No groups were reduced to explicit-banned/NULL-only by compatibility checks.[/]");
             }
 
             if (shapeBanCount > 0)

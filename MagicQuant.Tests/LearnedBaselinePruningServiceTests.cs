@@ -33,16 +33,45 @@ public class LearnedBaselinePruningServiceTests
             unusedGroupIds: unused,
             result: result);
 
-        Assert.False(RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(TReg.Embeddings, TensorWeightScheme.Q6_K));
-        Assert.True(RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(TReg.Embeddings, TensorWeightScheme.Q5_K));
-        Assert.True(RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(TReg.Embeddings, TensorWeightScheme.Q4_K));
-        Assert.True(RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(TReg.Embeddings, TensorWeightScheme.IQ4_NL));
-        Assert.True(RuntimeSearchSpace.IsSchemeRuntimeBannedForGroup(TReg.Embeddings, TensorWeightScheme.IQ4_XS));
+        Assert.False(RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(TReg.Embeddings, BaselineQuants.Q6_K));
+        Assert.True(RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(TReg.Embeddings, BaselineQuants.Q5_K));
+        Assert.True(RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(TReg.Embeddings, BaselineQuants.Q4_K_M));
+        Assert.True(RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(TReg.Embeddings, BaselineQuants.IQ4_NL));
+        Assert.True(RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(TReg.Embeddings, BaselineQuants.IQ4_XS));
 
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=Q6_K") && x.Contains("decision=ALLOW"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=Q5_K") && x.Contains("decision=BAN"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=Q4_K") && x.Contains("decision=BAN"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=IQ4_NL") && x.Contains("decision=BAN"));
-        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("scheme=IQ4_XS") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=Q6_K") && x.Contains("decision=ALLOW"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=Q5_K") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=Q4_K") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=IQ4_NL") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("group=embeddings") && x.Contains("candidate=IQ4_XS") && x.Contains("decision=BAN"));
+        Assert.Contains(result.Notes, x => x.Contains("expected=[4]") && x.Contains("effective=[4]") && x.Contains("matched=[4]"));
+    }
+
+    [Fact]
+    public void LearnedPruneBookkeeping_CanBeClearedPerGroupCandidate()
+    {
+        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.SetImatrixAvailability(true);
+
+        var result = new LearnedBaselinePruningResult();
+        var learnedRows = new List<LearnedBaselinePruningService.LearnedRow>
+        {
+            new(BaselineQuants.Q5_K.UniqueId, TensorWeightScheme.Q5_K.UniqueId, TReg.Embeddings.UniqueId, "Q6_K")
+        };
+
+        LearnedBaselinePruningService.ApplyLearnedBaselinePruning(
+            learnedRows,
+            aiModelHashId: 1,
+            aiModelHashUniqueHash: "regression-model-hash",
+            unusedGroupIds: new HashSet<byte>(),
+            result: result);
+
+        Assert.True(RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(TReg.Embeddings)
+            .Any(x => x.Candidate.UniqueId == BaselineQuants.Q5_K.UniqueId));
+
+        RuntimeSearchSpace.ClearLearnedBaselinePruneForGroupCandidate(TReg.Embeddings, BaselineQuants.Q5_K);
+
+        Assert.DoesNotContain(RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(TReg.Embeddings),
+            x => x.Candidate.UniqueId == BaselineQuants.Q5_K.UniqueId);
     }
 }

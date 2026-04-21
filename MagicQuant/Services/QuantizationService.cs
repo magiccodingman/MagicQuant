@@ -276,6 +276,8 @@ public class QuantizationService
         if (model == null)
             return (null, null);
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var comboId = await db.TensorCombos
             .AsNoTracking()
             .Where(x =>
@@ -297,7 +299,7 @@ public class QuantizationService
 
         var benchmarkId = await db.AiBenchmarks
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == comboId)
+             .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == comboId)
             .Select(x => x.Id)
             .FirstOrDefaultAsync(ct);
 
@@ -383,6 +385,7 @@ public class QuantizationService
 
             await PersistQuantizationRunAsync(
                 quant: quant,
+                imatrixDefinitionId: null,
                 startedUtc: startedUtc,
                 completedUtc: DateTime.UtcNow,
                 succeeded: true,
@@ -405,6 +408,7 @@ public class QuantizationService
             {
                 await PersistQuantizationRunAsync(
                     quant: quant,
+                    imatrixDefinitionId: null,
                     startedUtc: startedUtc,
                     completedUtc: DateTime.UtcNow,
                     succeeded: false,
@@ -454,9 +458,11 @@ public class QuantizationService
         if (model == null)
             return false;
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var bench = await db.AiBenchmarks
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == model.Id)
+            .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId)
             .Join(
                 db.TensorCombos.AsNoTracking(),
                 benchmark => benchmark.TensorComboId,
@@ -493,6 +499,7 @@ public class QuantizationService
 
     private async Task PersistQuantizationRunAsync(
         HybridQuant quant,
+        int? imatrixDefinitionId,
         DateTime startedUtc,
         DateTime completedUtc,
         bool succeeded,
@@ -540,8 +547,10 @@ public class QuantizationService
             await db.SaveChangesAsync(ct);
         }
 
+        imatrixDefinitionId ??= await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, aiModelHash.Id, createIfMissing: true, ct);
+
         Guid? aiBenchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == aiModelHash.Id && x.TensorComboId == tensorCombo.Id)
+            .Where(x => x.AiModelHashId == aiModelHash.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == tensorCombo.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
@@ -549,6 +558,7 @@ public class QuantizationService
         {
             Id = Guid.NewGuid(),
             AiModelHashId = aiModelHash.Id,
+            ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = tensorCombo.Id,
             AiBenchmarkId = aiBenchmarkId,
             StartedUtc = startedUtc,
@@ -1005,8 +1015,10 @@ public class QuantizationService
         if (combo == null)
             throw new InvalidOperationException("Native-source benchmark TensorCombo is missing; benchmark base model first.");
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
+            .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
@@ -1127,8 +1139,10 @@ public class QuantizationService
                              x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
                              x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 && x.MoeRouter == 0, ct);
 
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == model.Id && x.TensorComboId == combo.Id)
+            .Where(x => x.AiModelHashId == model.Id && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
@@ -1425,6 +1439,15 @@ public class QuantizationService
         return baseQuant.DefaultTensorScheme;
     }
 
+    private static HashSet<string> GetExpectedTensorNamesForGroup(
+        TensorGroup group,
+        IReadOnlyCollection<string> sourceTensorNames)
+    {
+        return sourceTensorNames
+            .Where(x => group.Tensors.Any(p => Regex.IsMatch(x, $"^{p}$")))
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
     private List<RequestedTensorOverride> BuildRequestedTensorOverrides(
         HybridQuant quant,
         IReadOnlyCollection<string> sourceTensorNames)
@@ -1441,53 +1464,96 @@ public class QuantizationService
             if (hybrid?.TGroup == null)
                 continue;
 
-            if (hybrid.TensorType.UniqueId == TensorWeightScheme.NULL.UniqueId)
+            hybrid.ValidateOrThrow();
+
+            if (hybrid.MaterializedTensorScheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
                 continue;
 
-            if (baseScheme != null && hybrid.TensorType.UniqueId == baseScheme.UniqueId)
+            var expectedForGroup = GetExpectedTensorNamesForGroup(hybrid.TGroup, sourceTensorNames);
+            if (expectedForGroup.Count == 0)
                 continue;
 
-            var learned = TryLoadLearnedTensorMapping(hybrid.TensorType, hybrid.TGroup);
-            if (learned.Count == 0)
+            switch (hybrid.OverrideMode)
             {
-                throw new InvalidOperationException(
-                    $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + scheme '{ResolveSchemeName(hybrid.TensorType)}'. " +
-                    "Run with --relearn-baseline-mappings to regenerate.");
-            }
-
-            var expectedForGroup = sourceTensorNames
-                .Where(x => hybrid.TGroup.Tensors.Any(p => Regex.IsMatch(x, $"^{p}$")))
-                .ToHashSet(StringComparer.Ordinal);
-
-            var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
-            var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
-            var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
-
-            if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
-            {
-                var missingText = missingExpected.Count == 0 ? "none" : string.Join(", ", missingExpected.Take(15));
-                var unexpectedText = unexpectedLearned.Count == 0 ? "none" : string.Join(", ", unexpectedLearned.Take(15));
-
-                throw new InvalidOperationException(
-                    $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + scheme '{ResolveSchemeName(hybrid.TensorType)}'. " +
-                    $"Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
-            }
-
-            foreach (var kv in learned)
-            {
-                result.Add(new RequestedTensorOverride
+                case HybridTensorOverrideMode.ExactTensorScheme:
                 {
-                    GroupName = hybrid.TGroup.Name,
-                    TensorName = kv.Key,
-                    SchemeName = kv.Value
-                });
+                    var exactScheme = hybrid.ExactTensorScheme!;
+
+                    if (baseScheme != null && exactScheme.UniqueId == baseScheme.UniqueId)
+                        continue;
+
+                    string schemeName = ResolveSchemeName(exactScheme);
+                    foreach (var tensorName in expectedForGroup.OrderBy(x => x, StringComparer.Ordinal))
+                    {
+                        result.Add(new RequestedTensorOverride
+                        {
+                            GroupName = hybrid.TGroup.Name,
+                            TensorName = tensorName,
+                            SchemeName = schemeName
+                        });
+                    }
+
+                    break;
+                }
+
+                case HybridTensorOverrideMode.LearnedBaselineCandidate:
+                {
+                    var sourceBaseline = hybrid.CandidateBaseline!;
+                    byte canonicalBaselineId = BaselineQuants.CanonicalLearningBaselineId(sourceBaseline);
+                    var learned = TryLoadLearnedTensorMapping(
+                        canonicalSourceBaselineId: canonicalBaselineId,
+                        targetGroup: hybrid.TGroup,
+                        preferredSourceScheme: sourceBaseline.DefaultTensorScheme,
+                        allowDominantFallback: false);
+
+                    if (learned.Count == 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}' (canonicalId={canonicalBaselineId}). " +
+                            "Run with --relearn-baseline-mappings to regenerate.");
+                    }
+
+                    var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
+                    var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
+                    var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
+
+                    if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
+                    {
+                        var missingText = missingExpected.Count == 0 ? "none" : string.Join(", ", missingExpected.Take(15));
+                        var unexpectedText = unexpectedLearned.Count == 0 ? "none" : string.Join(", ", unexpectedLearned.Take(15));
+
+                        throw new InvalidOperationException(
+                            $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. " +
+                            $"Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
+                    }
+
+                    foreach (var kv in learned.OrderBy(x => x.Key, StringComparer.Ordinal))
+                    {
+                        result.Add(new RequestedTensorOverride
+                        {
+                            GroupName = hybrid.TGroup.Name,
+                            TensorName = kv.Key,
+                            SchemeName = kv.Value
+                        });
+                    }
+
+                    break;
+                }
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Hybrid tensor for group '{hybrid.TGroup.Name}' has unsupported override mode '{hybrid.OverrideMode}'.");
             }
         }
 
         return result;
     }
 
-    private Dictionary<string, string> TryLoadLearnedTensorMapping(TensorWeightScheme sourceScheme, TensorGroup targetGroup)
+    private Dictionary<string, string> TryLoadLearnedTensorMapping(
+        byte canonicalSourceBaselineId,
+        TensorGroup targetGroup,
+        TensorWeightScheme? preferredSourceScheme = null,
+        bool allowDominantFallback = false)
     {
         using var db = new MagicQuantContext();
 
@@ -1498,33 +1564,52 @@ public class QuantizationService
         if (model == null)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
-        byte baselineId;
-        if (TensorWeightScheme.IsNativePrecisionScheme(sourceScheme))
-        {
-            baselineId = BaselineQuants.NativeSourceUniqueId;
-        }
-        else
-        {
-            var baseline = BaselineQuants.All.FirstOrDefault(x =>
-                x.TensorWeightSchemes.Any(s => s.UniqueId == sourceScheme.UniqueId));
-
-            if (baseline == null)
-                return new Dictionary<string, string>(StringComparer.Ordinal);
-
-            baselineId = baseline.UniqueId;
-        }
-
-        var rows = db.LearnedBaselineTensorQuants
+        var allRows = db.LearnedBaselineTensorQuants
             .AsNoTracking()
             .Where(x => x.AiModelHashId == model.Id)
-            .Where(x => x.BaselineQuantId == baselineId)
-            .Where(x => x.TensorWeightSchemeId == sourceScheme.UniqueId)
+            .Where(x => x.BaselineQuantId == canonicalSourceBaselineId)
             .Where(x => x.TensorGroupId == targetGroup.UniqueId)
             .OrderBy(x => x.TensorName)
             .ToList();
 
+        if (allRows.Count == 0)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        List<MQ.DB.Models.DbModels.LearnedBaselineTensorQuant> rows = allRows;
+
+        if (preferredSourceScheme != null)
+        {
+            var preferred = allRows
+                .Where(x => x.TensorWeightSchemeId == preferredSourceScheme.UniqueId)
+                .ToList();
+
+            if (preferred.Count > 0)
+            {
+                rows = preferred;
+            }
+            else if (!allowDominantFallback)
+            {
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+            }
+        }
+
         if (rows.Count == 0)
             return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        if (rows.Select(x => x.TensorWeightSchemeId).Distinct().Count() > 1)
+        {
+            if (!allowDominantFallback)
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+
+            var dominantSchemeId = rows
+                .GroupBy(x => x.TensorWeightSchemeId)
+                .OrderByDescending(g => g.Count())
+                .ThenBy(g => g.Key)
+                .Select(g => g.Key)
+                .First();
+
+            rows = rows.Where(x => x.TensorWeightSchemeId == dominantSchemeId).ToList();
+        }
 
         return rows.ToDictionary(x => x.TensorName, x => x.FinalQuantType, StringComparer.Ordinal);
     }
@@ -1772,18 +1857,35 @@ public class QuantizationService
         string baseName = ResolveBaseName(quant.BaseQuant);
 
         var effectiveTensors = quant.Tensors?
-            .Where(t => t?.TGroup != null && t.TensorType.UniqueId != TensorWeightScheme.NULL.UniqueId)
+            .Where(t => t?.TGroup != null)
             .ToList();
 
         if (effectiveTensors == null || effectiveTensors.Count == 0)
             return $"{modelName}-{baseName}";
 
         var grouped = effectiveTensors
-            .GroupBy(t => ResolveSchemeName(t.TensorType))
+            .Select(t =>
+            {
+                t.ValidateOrThrow();
+
+                string typeName = t.OverrideMode switch
+                {
+                    HybridTensorOverrideMode.LearnedBaselineCandidate => t.CandidateBaseline!.Names[0],
+                    HybridTensorOverrideMode.ExactTensorScheme => ResolveSchemeName(t.ExactTensorScheme!),
+                    _ => throw new InvalidOperationException($"Unknown override mode '{t.OverrideMode}'.")
+                };
+
+                return new
+                {
+                    Type = typeName,
+                    Code = t.TGroup.ShortCode
+                };
+            })
+            .GroupBy(x => x.Type)
             .Select(g => new
             {
                 Type = g.Key,
-                Codes = g.Select(x => x.TGroup.ShortCode)
+                Codes = g.Select(x => x.Code)
                     .OrderBy(c => GetOrder(c))
                     .ToArray()
             })
