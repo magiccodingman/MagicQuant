@@ -110,7 +110,6 @@ public class IsolationOptimizationService
             decision.Candidates.Add(
                 $"{candidate.Names[0]} | size={(snap.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={reduction:P2} | kld={kld:G6} | pplΔ={pplDelta:F4}%");
 
-            AppendLearnedEarlyPruneLines(group, decision, excludeCandidateId: candidate.UniqueId);
 
             if (reduction < options.MinMeaningfulGroupReductionRatio)
             {
@@ -118,13 +117,16 @@ public class IsolationOptimizationService
                 decision.ExplicitQuantBanned = true;
 
                 result.Notes.Add(
-                    $"Early stop for '{group.Name}': smallest baseline-candidate probe '{candidate.Names[0]}' only saved {reduction:P2}, below {options.MinMeaningfulGroupReductionRatio:P2}. Explicit baseline-candidate exploration removed for this group and continuation isolation samples were skipped.");
+                    $"Early stop for '{group.Name}': smallest baseline-candidate probe '{candidate.Names[0]}' only saved {reduction:P2}, below {options.MinMeaningfulGroupReductionRatio:P2}. Explicit baseline-candidate exploration removed for this group.");
 
                 result.GroupDetails.Add(decision);
                 continue;
             }
 
             result.GroupsToContinue.Add(group.UniqueId);
+
+            result.Notes.Add(
+                $"Continuation enabled for '{group.Name}': smallest baseline-candidate probe '{candidate.Names[0]}' saved {reduction:P2}. Candidate-level continuation will honor current runtime bans/prunes.");
 
             if (reduction >= IsolationPruningConfig.MinimumIsolationReductionToSuppressBf16Ratio)
             {
@@ -135,18 +137,93 @@ public class IsolationOptimizationService
                     $"Suppressed BF16 explicit candidate for '{group.Name}' because smallest baseline-candidate probe already saved {reduction:P2}.");
             }
 
-            int continuationCandidatesRemaining = RuntimeSearchSpace
-                .GetAllowedRealExplicitCombinationCandidatesForGroup(group)
-                .Count(x => x.UniqueId != candidate.UniqueId);
-
-            result.Notes.Add(
-                $"Early probe kept '{group.Name}' alive with smallest candidate '{candidate.Names[0]}' ({reduction:P2} savings). Remaining continuation candidates: {continuationCandidatesRemaining:N0}.");
+            await ApplyEarlyCandidatePruningForContinuingGroupAsync(group, decision, ct);
+            AppendLearnedPrunedCandidates(group, decision);
 
             result.GroupDetails.Add(decision);
         }
 
         return result;
     }
+
+    private static async Task ApplyEarlyCandidatePruningForContinuingGroupAsync(
+        TensorGroup group,
+        IsolationGroupDecision decision,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            return;
+
+        await using var db = new MagicQuantContext();
+
+        var aiModelHashId = await db.AiModelHashes
+            .AsNoTracking()
+            .Where(x => x.UniqueHash == Cache.CurrentModelId)
+            .Select(x => (uint?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (aiModelHashId == null)
+            return;
+
+        var learnedRows = await db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == aiModelHashId.Value && x.TensorGroupId == group.UniqueId)
+            .Select(x => new LearnedBaselinePruningService.LearnedRow(
+                x.BaselineQuantId,
+                x.TensorWeightSchemeId,
+                x.TensorGroupId,
+                x.FinalQuantType))
+            .ToListAsync(ct);
+
+        if (learnedRows.Count == 0)
+            return;
+
+        var aliasToSchemeIds = LearnedBaselinePruningService.BuildAliasToSchemeIds();
+        var effectiveSchemesByCandidateAndGroup = LearnedBaselinePruningService.BuildEffectiveSchemesByBaselineAndGroup(
+            learnedRows,
+            aliasToSchemeIds);
+
+        var candidates = BaselineQuants.GetGroupCombinationCandidatesSmallestFirst(
+                RuntimeSearchSpace.HasUsableImatrix(),
+                allowHighPrecisionHybrids: false)
+            .Where(x => !x.BannedGroupIds.Contains(group.UniqueId))
+            .ToList();
+
+        foreach (var candidate in candidates)
+        {
+            if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
+                continue;
+
+            var expectedIds = candidate.LearnedMatchTensorWeightSchemes
+                .Select(x => x.UniqueId)
+                .Distinct()
+                .OrderBy(x => x)
+                .ToList();
+
+            if (expectedIds.Count == 0)
+                continue;
+
+            var key = (candidate.UniqueId, group.UniqueId);
+            effectiveSchemesByCandidateAndGroup.TryGetValue(key, out var effectiveIdsSet);
+            effectiveIdsSet ??= new HashSet<byte>();
+
+            var matchedIds = expectedIds
+                .Where(effectiveIdsSet.Contains)
+                .OrderBy(x => x)
+                .ToList();
+
+            if (matchedIds.Count > 0)
+                continue;
+
+            RuntimeSearchSpace.BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
+                group,
+                candidate,
+                expectedTensorWeightSchemeIds: expectedIds,
+                matchedTensorWeightSchemeIds: matchedIds,
+                note: "Early continuation gate removed candidate because learned tensor schemes for this group do not match the candidate family.");
+        }
+    }
+
 
     public async Task<IsolationOptimizationResult> AnalyzeAndApplyFinalAsync(
         RequiredSampleGenerationResult fullPlan,
@@ -247,7 +324,6 @@ public class IsolationOptimizationService
             if (candidates.Count == 0)
             {
                 PopulateFinalGroupFlags(group, decision, result);
-                AppendLearnedEarlyPruneLines(group, decision);
                 result.GroupDetails.Add(decision);
                 continue;
             }
@@ -266,7 +342,25 @@ public class IsolationOptimizationService
             }
 
             var survivorIds = candidates.Select(x => x.CandidateBaseline.UniqueId).ToHashSet();
-            AppendLearnedEarlyPruneLines(group, decision, excludedCandidateIds: survivorIds);
+            foreach (var banInfo in RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group))
+            {
+                if (survivorIds.Contains(banInfo.Candidate.UniqueId))
+                    continue;
+
+                string expected = banInfo.ExpectedTensorWeightSchemeIds.Count == 0
+                    ? "<none>"
+                    : string.Join(", ", banInfo.ExpectedTensorWeightSchemeIds);
+                string matched = banInfo.MatchedTensorWeightSchemeIds.Count == 0
+                    ? "<none>"
+                    : string.Join(", ", banInfo.MatchedTensorWeightSchemeIds);
+                string missing = banInfo.MissingTensorWeightSchemeIds.Count == 0
+                    ? "<none>"
+                    : string.Join(", ", banInfo.MissingTensorWeightSchemeIds);
+
+                decision.Candidates.Add(
+                    $"[pruned-early] {banInfo.Candidate.Names[0]} removed by learned candidate/group scheme matching " +
+                    $"(expected schemes: {expected}; matched: {matched}; missing: {missing}).");
+            }
 
             result.GroupDetails.Add(decision);
         }
@@ -299,6 +393,30 @@ public class IsolationOptimizationService
         result.Bf16SuppressedGroups = result.GroupDetails.Count(x => x.Bf16Suppressed);
 
         return result;
+    }
+
+    private static void AppendLearnedPrunedCandidates(TensorGroup group, IsolationGroupDecision decision)
+    {
+        var learnedPruned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group);
+        if (learnedPruned.Count == 0)
+            return;
+
+        foreach (var ban in learnedPruned.OrderBy(x => x.Candidate.ExplicitCandidateSortOrder).ThenBy(x => x.Candidate.UniqueId))
+        {
+            decision.Candidates.Add(
+                $"[pruned-early] {ban.Candidate.Names[0]} removed by learned-baseline mapping for this group " +
+                $"(no matching tensor weights in baseline(s): {FormatSchemeNames(ban.ExpectedTensorWeightSchemeIds)})." );
+        }
+    }
+
+    private static string FormatSchemeNames(IEnumerable<byte> schemeIds)
+    {
+        var names = schemeIds
+            .Distinct()
+            .Select(id => TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id)?.Names[0] ?? id.ToString())
+            .ToList();
+
+        return names.Count == 0 ? "<none>" : string.Join(", ", names);
     }
 
     private static bool IsHighPrecisionCandidate(BaselineQuants candidate)
@@ -488,47 +606,6 @@ public class IsolationOptimizationService
 
         return 0;
     }
-
-
-    private static void AppendLearnedEarlyPruneLines(
-        TensorGroup group,
-        IsolationGroupDecision decision,
-        byte? excludeCandidateId = null,
-        ISet<byte>? excludedCandidateIds = null)
-    {
-        foreach (var banInfo in RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group))
-        {
-            if (excludeCandidateId.HasValue && banInfo.Candidate.UniqueId == excludeCandidateId.Value)
-                continue;
-
-            if (excludedCandidateIds != null && excludedCandidateIds.Contains(banInfo.Candidate.UniqueId))
-                continue;
-
-            decision.Candidates.Add(
-                $"[pruned-early] {banInfo.Candidate.Names[0]} removed by learned-baseline mapping for this group " +
-                $"(expected schemes: {FormatSchemeIds(banInfo.ExpectedTensorWeightSchemeIds)}; " +
-                $"matched: {FormatSchemeIds(banInfo.MatchedTensorWeightSchemeIds)}; " +
-                $"missing: {FormatSchemeIds(banInfo.MissingTensorWeightSchemeIds)}).");
-        }
-    }
-
-    private static string FormatSchemeIds(IEnumerable<byte> schemeIds)
-    {
-        var ids = schemeIds
-            .Distinct()
-            .OrderBy(x => x)
-            .ToList();
-
-        if (ids.Count == 0)
-            return "<none>";
-
-        return string.Join(", ", ids.Select(id =>
-        {
-            var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
-            return scheme?.Names[0] ?? id.ToString();
-        }));
-    }
-
 
     private async Task<BenchmarkSnapshot?> LoadSnapshotAsync(HybridQuant quant, CancellationToken ct)
     {

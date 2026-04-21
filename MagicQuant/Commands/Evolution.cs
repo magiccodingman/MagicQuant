@@ -200,6 +200,40 @@ public class Evolution : ICommand
         var comboCountBefore = ComboCounter.CountAll();
         var learnedBaselinePruner = new LearnedBaselinePruningService();
 
+        var totalLearnedPruningResult = new LearnedBaselinePruningResult();
+
+        if (!Cache.ForceRelearnBaselineTensorMappings)
+        {
+            var coverageStatus = await learnedBaselinePruner.GetCoverageStatusAsync();
+            if (coverageStatus.SafeToApplyBeforeStartup)
+            {
+                AnsiConsole.Write(new Rule("[yellow]Pre-Startup Learned Baseline Pruning[/]") { Justification = Justify.Left });
+                AnsiConsole.MarkupLine(
+                    $"[grey]Using existing learned baseline coverage before startup sampling:[/] [cyan]{coverageStatus.PresentCandidateGroupPairs:N0}[/]/[cyan]{coverageStatus.ExpectedCandidateGroupPairs:N0}[/] candidate-group pairs.");
+
+                SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Pre-Startup Learned-Baseline Pruning");
+                var preStartupLearnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
+                MergeLearnedPruningResults(totalLearnedPruningResult, preStartupLearnedPruningResult);
+                SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Pre-Startup Learned-Baseline Pruning");
+
+                foreach (var note in preStartupLearnedPruningResult.Notes)
+                    AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
+            }
+            else if (coverageStatus.HasAnyLearnedRows)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[grey]Skipping pre-startup learned pruning because learned coverage is incomplete for the current explicit candidate universe ({coverageStatus.PresentCandidateGroupPairs:N0}/{coverageStatus.ExpectedCandidateGroupPairs:N0} candidate-group pairs present).[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine("[grey]Skipping pre-startup learned pruning because no learned baseline rows exist yet for this model.[/]");
+            }
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]Skipping pre-startup learned pruning because --relearn-baseline-mappings was requested.[/]");
+        }
+
         AnsiConsole.Write(new Rule("[yellow]Initial Isolation Startup Samples[/]") { Justification = Justify.Left });
 
         var isolationPlanner = new IsolationPlanningService();
@@ -213,13 +247,14 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {initialSummary.Skipped:N0}");
         AnsiConsole.MarkupLine($"  [red]Failed:[/] {initialSummary.Failed:N0}");
 
-        AnsiConsole.MarkupLine("[bold magenta]Evolution flow marker:[/] startup sampling finished, entering learned-baseline pruning.");
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning");
+        AnsiConsole.MarkupLine("[bold magenta]Evolution flow marker:[/] startup sampling finished, refreshing learned-baseline pruning before initial probe analysis.");
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning Refresh");
 
-        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning[/]") { Justification = Justify.Left });
+        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning Refresh[/]") { Justification = Justify.Left });
         var learnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
+        MergeLearnedPruningResults(totalLearnedPruningResult, learnedPruningResult);
 
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning");
+        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning Refresh");
 
         foreach (var note in learnedPruningResult.Notes)
             AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
@@ -229,20 +264,17 @@ public class Evolution : ICommand
         AnsiConsole.Write(new Rule("[yellow]Initial Probe Analysis[/]") { Justification = Justify.Left });
         var initialAnalysis = await isolationOptimizer.AnalyzeInitialIsolationProbesAsync(initialPlan);
 
+        AnsiConsole.Write(new Rule("[yellow]Initial Probe Group Decisions[/]") { Justification = Justify.Left });
+        PrintIsolationGroupDecisions(initialAnalysis.GroupDetails);
+
         foreach (var note in initialAnalysis.Notes)
             AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
-
-        SearchSpaceDebugPrinter.PrintIsolationGroupDecisions(
-            "Initial Probe Group Decisions",
-            initialAnalysis.GroupDetails,
-            winningLabel: "Winning candidate");
 
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Initial Probe Analysis");
 
         AnsiConsole.Write(new Rule("[yellow]Continuation Isolation Samples[/]") { Justification = Justify.Left });
 
-        AnsiConsole.MarkupLine(
-            $"[grey]Groups continuing after early probe:[/] [cyan]{initialAnalysis.GroupsToContinue.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]Groups continuing after early probe:[/] [cyan]{initialAnalysis.GroupsToContinue.Count:N0}[/]");
 
         var continuationPlan = isolationPlanner.BuildContinuationPlan(
             initialAnalysis.GroupsToContinue,
@@ -273,10 +305,22 @@ public class Evolution : ICommand
 
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Final Isolation Optimization");
 
-        SearchSpaceDebugPrinter.PrintIsolationGroupDecisions(
-            "Final Isolation Group Decisions",
-            isolationResult.GroupDetails,
-            winningLabel: "Winning candidate");
+        foreach (var gd in isolationResult.GroupDetails.OrderBy(x => x.GroupName))
+        {
+            AnsiConsole.Write(
+                new Rule($"[yellow]Isolation Group: {Markup.Escape(gd.GroupName)}[/]")
+                {
+                    Justification = Justify.Left
+                });
+
+            AnsiConsole.MarkupLine($"[green]Best savings:[/] {gd.BestReductionRatio:P2}");
+            AnsiConsole.MarkupLine($"[green]Winning candidate:[/] {Markup.Escape(gd.WinningCandidate ?? "n/a")}");
+            AnsiConsole.MarkupLine($"[green]Explicit quant banned:[/] {(gd.ExplicitQuantBanned ? "[red]yes[/]" : "[green]no[/]")}");
+            AnsiConsole.MarkupLine($"[green]BF16 suppressed:[/] {(gd.Bf16Suppressed ? "[yellow]yes[/]" : "[green]no[/]")}");
+
+            foreach (var line in gd.Candidates)
+                AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(line)}[/]");
+        }
 
         var comboCountAfterRulePruning = ComboCounter.CountAll();
 
@@ -285,8 +329,8 @@ public class Evolution : ICommand
         long predictedSizePruned = await dbService.PrunePredictedLargerThanQ8Async(mergedPlan);
         long highPrecisionPruned = await dbService.PruneHighPrecisionHybridCandidatesAsync();
 
-        AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {learnedPruningResult.GroupCandidateEliminations:N0}");
-        AnsiConsole.MarkupLine($"[green]Baselines skipped without learned rows:[/] {learnedPruningResult.BaselinesSkippedWithoutLearnedRows:N0}");
+        AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {totalLearnedPruningResult.GroupCandidateEliminations:N0}");
+        AnsiConsole.MarkupLine($"[green]Baselines skipped without learned rows:[/] {totalLearnedPruningResult.BaselinesSkippedWithoutLearnedRows:N0}");
         AnsiConsole.MarkupLine($"[green]Groups reduced to explicit-banned->Q8-fallback:[/] {isolationResult.ExplicitQuantBannedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]BF16-suppressed groups:[/] {isolationResult.Bf16SuppressedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]Hard damage eliminations:[/] {isolationResult.HardDamageEliminations:N0}");
@@ -334,6 +378,35 @@ public class Evolution : ICommand
             throw new InvalidOperationException(
                 $"Prediction engine not created yet. Final surviving combinations were {finalRemainingCombinationCount:N0}, " +
                 $"which is above the brute-force threshold of {BruteForceFinalCombinationThreshold:N0}.");
+        }
+    }
+
+    private static void MergeLearnedPruningResults(LearnedBaselinePruningResult target, LearnedBaselinePruningResult source)
+    {
+        target.GroupCandidateEliminations += source.GroupCandidateEliminations;
+        target.BaselinesSkippedWithoutLearnedRows += source.BaselinesSkippedWithoutLearnedRows;
+
+        foreach (var note in source.Notes)
+            target.Notes.Add(note);
+    }
+
+    private static void PrintIsolationGroupDecisions(IEnumerable<IsolationGroupDecision> decisions)
+    {
+        foreach (var gd in decisions.OrderBy(x => x.GroupName))
+        {
+            AnsiConsole.Write(
+                new Rule($"[yellow]Isolation Group: {Markup.Escape(gd.GroupName)}[/]")
+                {
+                    Justification = Justify.Left
+                });
+
+            AnsiConsole.MarkupLine($"[green]Best savings:[/] {gd.BestReductionRatio:P2}");
+            AnsiConsole.MarkupLine($"[green]Winning candidate:[/] {Markup.Escape(gd.WinningCandidate ?? "n/a")}");
+            AnsiConsole.MarkupLine($"[green]Explicit quant banned:[/] {(gd.ExplicitQuantBanned ? "[red]yes[/]" : "[green]no[/]")}");
+            AnsiConsole.MarkupLine($"[green]BF16 suppressed:[/] {(gd.Bf16Suppressed ? "[yellow]yes[/]" : "[green]no[/]")}");
+
+            foreach (var line in gd.Candidates)
+                AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(line)}[/]");
         }
     }
 

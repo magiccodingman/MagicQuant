@@ -18,6 +18,16 @@ public sealed class LearnedBaselinePruningResult
     public List<string> Notes { get; } = new();
 }
 
+
+public sealed class LearnedBaselineCoverageStatus
+{
+    public bool HasAnyLearnedRows { get; set; }
+    public bool SafeToApplyBeforeStartup { get; set; }
+    public int ExpectedCandidateGroupPairs { get; set; }
+    public int PresentCandidateGroupPairs { get; set; }
+    public List<string> MissingPairs { get; } = new();
+}
+
 public sealed class LearnedBaselinePruningService
 {
     internal readonly record struct LearnedRow(
@@ -25,6 +35,75 @@ public sealed class LearnedBaselinePruningService
         byte TensorWeightSchemeId,
         byte TensorGroupId,
         string FinalQuantType);
+
+
+    public async Task<LearnedBaselineCoverageStatus> GetCoverageStatusAsync(CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            throw new InvalidOperationException("Cache.CurrentModelId is not set.");
+
+        var status = new LearnedBaselineCoverageStatus();
+
+        await using var db = new MagicQuantContext();
+
+        var aiModelHash = await db.AiModelHashes
+            .AsNoTracking()
+            .Where(x => x.UniqueHash == Cache.CurrentModelId)
+            .Select(x => new { x.Id })
+            .FirstOrDefaultAsync(ct);
+
+        if (aiModelHash == null)
+            return status;
+
+        var presentPairs = await db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == aiModelHash.Id)
+            .Select(x => new { x.BaselineQuantId, x.TensorGroupId })
+            .Distinct()
+            .ToListAsync(ct);
+
+        if (presentPairs.Count == 0)
+            return status;
+
+        status.HasAnyLearnedRows = true;
+
+        var present = presentPairs
+            .Select(x => (x.BaselineQuantId, x.TensorGroupId))
+            .ToHashSet();
+
+        var unusedIds = Cache.UnusedTensorGroups.Select(x => x.UniqueId).ToHashSet();
+        var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(
+                RuntimeSearchSpace.HasUsableImatrix(),
+                allowHighPrecisionHybrids: false)
+            .OrderBy(x => x.ExplicitCandidateSortOrder)
+            .ThenBy(x => x.UniqueId)
+            .ToList();
+
+        foreach (var group in TReg.All.OrderBy(x => x.UniqueId))
+        {
+            if (unusedIds.Contains(group.UniqueId))
+                continue;
+
+            foreach (var candidate in explicitCandidates)
+            {
+                if (candidate.BannedGroupIds.Contains(group.UniqueId))
+                    continue;
+
+                status.ExpectedCandidateGroupPairs++;
+
+                if (present.Contains((candidate.UniqueId, group.UniqueId)))
+                {
+                    status.PresentCandidateGroupPairs++;
+                    continue;
+                }
+
+                status.MissingPairs.Add($"{group.Name}:{candidate.Names[0]}");
+            }
+        }
+
+        status.SafeToApplyBeforeStartup = status.MissingPairs.Count == 0;
+        return status;
+    }
 
     public async Task<LearnedBaselinePruningResult> AnalyzeAndApplyAsync(CancellationToken ct = default)
     {
@@ -89,8 +168,7 @@ public sealed class LearnedBaselinePruningService
         var effectiveSchemesByCandidateAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
 
         var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
-            .OrderBy(x => x.ExplicitCandidateSortOrder)
-            .ThenBy(x => x.UniqueId)
+            .OrderBy(x => x.UniqueId)
             .ToList();
 
         foreach (var group in TReg.All.OrderBy(x => x.UniqueId))
@@ -112,9 +190,11 @@ public sealed class LearnedBaselinePruningService
                 var effectiveIdsSet = hasEffectiveSet ? effectiveForGroup! : new HashSet<byte>();
                 var matchedIds = expectedIds.Where(effectiveIdsSet.Contains).OrderBy(x => x).ToList();
                 bool allow = matchedIds.Count > 0;
-                string effectiveIds = FormatSchemeIds(effectiveIdsSet);
-                string expected = FormatSchemeIds(expectedIds);
-                string matched = FormatSchemeIds(matchedIds);
+                string effectiveIds = hasEffectiveSet
+                    ? string.Join(",", effectiveIdsSet.OrderBy(x => x))
+                    : "<none>";
+                string expected = string.Join(",", expectedIds);
+                string matched = matchedIds.Count > 0 ? string.Join(",", matchedIds) : "<none>";
 
                 result.Notes.Add(
                     $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Name}, " +
@@ -151,10 +231,11 @@ public sealed class LearnedBaselinePruningService
             }
 
             // The persisted TensorWeightSchemeId is the authoritative learned-family identity.
+            // FinalQuantType is useful extra metadata, but it cannot replace the stored scheme id
+            // because some learned baselines materialize tensors whose final emitted token differs
+            // from the baseline family we are learning from.
             set.Add(row.TensorWeightSchemeId);
 
-            // Also record any alias-based resolution from the actual emitted quant token so the
-            // logs stay explainable when llama.cpp materializes a family using synonymous names.
             if (aliasToSchemeIds.TryGetValue(CanonicalizeQuantToken(row.FinalQuantType), out var resolvedIds))
             {
                 foreach (var resolvedId in resolvedIds)
@@ -201,21 +282,5 @@ public sealed class LearnedBaselinePruningService
             .Replace("-", "_")
             .Replace(" ", string.Empty)
             .ToUpperInvariant();
-    }
-    private static string FormatSchemeIds(IEnumerable<byte> schemeIds)
-    {
-        var ids = schemeIds
-            .Distinct()
-            .OrderBy(x => x)
-            .ToList();
-
-        if (ids.Count == 0)
-            return "<none>";
-
-        return string.Join("/", ids.Select(id =>
-        {
-            var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
-            return scheme?.Names[0] ?? id.ToString();
-        }));
     }
 }
