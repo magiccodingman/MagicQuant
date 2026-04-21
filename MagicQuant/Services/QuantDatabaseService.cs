@@ -15,12 +15,74 @@ public class QuantDatabaseService
     private const string DbFileNamePrefix = "MagicQuant_Combinations";
     private const string TableName = "tensor_configs";
 
+    // Keep this moderate so generation still yields often enough for progress.
+    private const int GeneratorBatchSize = 250_000;
+
+    // Appender heartbeat. Lower = chattier.
+    private const long InsertProgressLogEveryRows = 50_000;
+
+    private static readonly string[] ExpectedColumnTypes =
+    [
+        "utinyint",
+        "utinyint",
+        "utinyint",
+        "utinyint",
+        "utinyint",
+        "utinyint",
+        "utinyint",
+        "utinyint",
+        "utinyint",
+        "utinyint"
+    ];
+
+    private static string CreateTableSql => $@"
+        DROP TABLE IF EXISTS {TableName};
+        CREATE TABLE {TableName} (
+            BaseQuant UTINYINT,
+            Embeddings UTINYINT,
+            LmHead UTINYINT,
+            AttnQ UTINYINT,
+            AttnKV UTINYINT,
+            AttnOutput UTINYINT,
+            FfnUpGate UTINYINT,
+            FfnDown UTINYINT,
+            MoeExperts UTINYINT,
+            MoeRouter UTINYINT
+        );";
+
+    private static async Task ConfigureFastLoadSessionAsync(DuckDBConnection connection, CancellationToken ct)
+    {
+        // These are safe session-level tweaks for this write-heavy workload.
+        // We do not care about insertion order for tensor combo staging.
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "SET preserve_insertion_order = false;";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        // Let DuckDB use the available machine parallelism.
+        int threadCount = Math.Max(1, Environment.ProcessorCount);
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = $"SET threads = {threadCount};";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+    }
+
+    private static async Task RecreateTableAsync(DuckDBConnection connection, CancellationToken ct)
+    {
+        using var createCmd = connection.CreateCommand();
+        createCmd.CommandText = CreateTableSql;
+        await createCmd.ExecuteNonQueryAsync(ct);
+    }
+
     public async Task<long> GetRemainingCombinationCountAsync(CancellationToken ct = default)
     {
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(connection, ct);
 
-        var cmd = connection.CreateCommand();
+        using var cmd = connection.CreateCommand();
         cmd.CommandText = $"SELECT COUNT(*) FROM {TableName};";
 
         return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
@@ -30,10 +92,11 @@ public class QuantDatabaseService
     {
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(connection, ct);
 
         var results = new List<TensorConfig>();
 
-        var cmd = connection.CreateCommand();
+        using var cmd = connection.CreateCommand();
         cmd.CommandText = $@"
         SELECT
             BaseQuant,
@@ -63,29 +126,29 @@ public class QuantDatabaseService
         while (await reader.ReadAsync(ct))
         {
             results.Add(new TensorConfig(
-                baseQuant:  Convert.ToByte(reader.GetValue(0)),
+                baseQuant: Convert.ToByte(reader.GetValue(0)),
                 embeddings: Convert.ToByte(reader.GetValue(1)),
-                lmHead:     Convert.ToByte(reader.GetValue(2)),
-                attnQ:      Convert.ToByte(reader.GetValue(3)),
-                attnKV:     Convert.ToByte(reader.GetValue(4)),
+                lmHead: Convert.ToByte(reader.GetValue(2)),
+                attnQ: Convert.ToByte(reader.GetValue(3)),
+                attnKV: Convert.ToByte(reader.GetValue(4)),
                 attnOutput: Convert.ToByte(reader.GetValue(5)),
-                ffnUpGate:  Convert.ToByte(reader.GetValue(6)),
-                ffnDown:    Convert.ToByte(reader.GetValue(7)),
+                ffnUpGate: Convert.ToByte(reader.GetValue(6)),
+                ffnDown: Convert.ToByte(reader.GetValue(7)),
                 moeExperts: Convert.ToByte(reader.GetValue(8)),
-                moeRouter:  Convert.ToByte(reader.GetValue(9))
+                moeRouter: Convert.ToByte(reader.GetValue(9))
             ));
         }
 
         return results;
     }
-    
+
     private static string GetDuckDbDirectory()
     {
         if (!string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
-            return Cache.ModelMagicQuantDirectory;
+            return Cache.ModelMagicQuantDirectory!;
 
         if (!string.IsNullOrWhiteSpace(Cache.MagicQuantDirectory))
-            return Cache.MagicQuantDirectory;
+            return Cache.MagicQuantDirectory!;
 
         throw new InvalidOperationException(
             "Neither Cache.ModelMagicQuantDirectory nor Cache.MagicQuantDirectory is set.");
@@ -108,14 +171,21 @@ public class QuantDatabaseService
 
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(connection, ct);
 
         BigInteger expectedTotal = ComboCounter.CountAll();
-        long currentDbCount = await GetRowCountAsync(connection, ct);
+        bool tableShapeOk = await HasExpectedTableShapeAsync(connection, ct);
+        long currentDbCount = tableShapeOk
+            ? await GetRowCountAsync(connection, ct)
+            : -1;
 
         AnsiConsole.MarkupLine(
             $"[bold]DuckDB Check:[/] Current Rows: [cyan]{currentDbCount:N0}[/] | Expected: [yellow]{expectedTotal:N0}[/]");
 
-        if (forceRebuild || currentDbCount != expectedTotal)
+        if (!tableShapeOk)
+            AnsiConsole.MarkupLine("[yellow]DuckDB table shape is missing or stale. Rebuild required.[/]");
+
+        if (forceRebuild || !tableShapeOk || currentDbCount != expectedTotal)
         {
             AnsiConsole.MarkupLine("[bold red]DuckDB empty, mismatch, forced, or stale.[/] Initializing/Rebuilding...");
             await RebuildDatabaseAsync(connection, expectedTotal, ct);
@@ -137,6 +207,7 @@ public class QuantDatabaseService
     {
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(connection, ct);
 
         var predictionContext = await BuildPredictionContextAsync(fullPlan, ct);
 
@@ -148,13 +219,13 @@ public class QuantDatabaseService
 
         var rows = new List<TensorConfig>();
 
-        var select = connection.CreateCommand();
-        select.CommandText = $@"
-            SELECT BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter
-            FROM {TableName};";
-
-        using (var reader = await select.ExecuteReaderAsync(ct))
+        using (var select = connection.CreateCommand())
         {
+            select.CommandText = $@"
+                SELECT BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter
+                FROM {TableName};";
+
+            using var reader = await select.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
                 rows.Add(new TensorConfig(
@@ -189,29 +260,12 @@ public class QuantDatabaseService
             return 0;
         }
 
-        var createCmd = connection.CreateCommand();
-        createCmd.CommandText = $@"
-            DROP TABLE IF EXISTS {TableName};
-            CREATE TABLE {TableName} (
-                BaseQuant TINYINT,
-                Embeddings TINYINT,
-                LmHead TINYINT,
-                AttnQ TINYINT,
-                AttnKV TINYINT,
-                AttnOutput TINYINT,
-                FfnUpGate TINYINT,
-                FfnDown TINYINT,
-                MoeExperts TINYINT,
-                MoeRouter TINYINT
-            );";
-        await createCmd.ExecuteNonQueryAsync(ct);
-
-        await BulkInsertAsync(connection, kept, ct);
+        await RecreateTableAsync(connection, ct);
+        await BulkAppendAsync(connection, kept, "predicted-size-prune", ct);
 
         AnsiConsole.MarkupLine($"[yellow]Predicted-size pruning removed:[/] [red]{removed:N0}[/] combo(s) larger than pure Q8.");
         return removed;
     }
-
 
     public async Task<long> PruneHighPrecisionHybridCandidatesAsync(CancellationToken ct = default)
     {
@@ -220,6 +274,7 @@ public class QuantDatabaseService
 
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(connection, ct);
 
         var rows = await GetRemainingTensorConfigsAsync(ct);
         var kept = rows.Where(x =>
@@ -237,30 +292,53 @@ public class QuantDatabaseService
         if (removed <= 0)
             return 0;
 
-        var createCmd = connection.CreateCommand();
-        createCmd.CommandText = $@"
-            DROP TABLE IF EXISTS {TableName};
-            CREATE TABLE {TableName} (
-                BaseQuant TINYINT, Embeddings TINYINT, LmHead TINYINT, AttnQ TINYINT, AttnKV TINYINT,
-                AttnOutput TINYINT, FfnUpGate TINYINT, FfnDown TINYINT, MoeExperts TINYINT, MoeRouter TINYINT
-            );";
-        await createCmd.ExecuteNonQueryAsync(ct);
-        await BulkInsertAsync(connection, kept, ct);
+        await RecreateTableAsync(connection, ct);
+        await BulkAppendAsync(connection, kept, "high-precision-prune", ct);
+
         return removed;
+    }
+
+    private async Task<bool> HasExpectedTableShapeAsync(DuckDBConnection connection, CancellationToken ct)
+    {
+        using var existsCmd = connection.CreateCommand();
+        existsCmd.CommandText = $"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{TableName}'";
+        long exists = (long)(await existsCmd.ExecuteScalarAsync(ct) ?? 0L);
+
+        if (exists == 0)
+            return false;
+
+        var actual = new List<string>();
+
+        using var shapeCmd = connection.CreateCommand();
+        shapeCmd.CommandText = $@"
+            SELECT lower(data_type)
+            FROM information_schema.columns
+            WHERE table_name = '{TableName}'
+            ORDER BY ordinal_position;";
+
+        using var reader = await shapeCmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            actual.Add(Convert.ToString(reader.GetValue(0)) ?? string.Empty);
+        }
+
+        if (actual.Count != ExpectedColumnTypes.Length)
+            return false;
+
+        for (int i = 0; i < ExpectedColumnTypes.Length; i++)
+        {
+            if (!string.Equals(actual[i], ExpectedColumnTypes[i], StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
     }
 
     private async Task<long> GetRowCountAsync(DuckDBConnection connection, CancellationToken ct)
     {
-        var checkCmd = connection.CreateCommand();
-        checkCmd.CommandText = $"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{TableName}'";
-        var exists = (long)(await checkCmd.ExecuteScalarAsync(ct) ?? 0);
-
-        if (exists == 0)
-            return -1;
-
-        var countCmd = connection.CreateCommand();
+        using var countCmd = connection.CreateCommand();
         countCmd.CommandText = $"SELECT COUNT(*) FROM {TableName}";
-        return (long)(await countCmd.ExecuteScalarAsync(ct) ?? 0);
+        return (long)(await countCmd.ExecuteScalarAsync(ct) ?? 0L);
     }
 
     private async Task RebuildDatabaseAsync(
@@ -268,78 +346,171 @@ public class QuantDatabaseService
         BigInteger expectedTotal,
         CancellationToken ct)
     {
-        var sw = Stopwatch.StartNew();
+        long totalTarget = (long)expectedTotal;
 
-        var createCmd = connection.CreateCommand();
-        createCmd.CommandText = $@"
-            DROP TABLE IF EXISTS {TableName};
-            CREATE TABLE {TableName} (
-                BaseQuant TINYINT,
-                Embeddings TINYINT,
-                LmHead TINYINT,
-                AttnQ TINYINT,
-                AttnKV TINYINT,
-                AttnOutput TINYINT,
-                FfnUpGate TINYINT,
-                FfnDown TINYINT,
-                MoeExperts TINYINT,
-                MoeRouter TINYINT
-            );";
-        await createCmd.ExecuteNonQueryAsync(ct);
+        AnsiConsole.MarkupLine($"[yellow]Starting bulk insert of {totalTarget:N0} rows...[/]");
+        AnsiConsole.MarkupLine(
+            $"[grey]Generator batch size:[/] {GeneratorBatchSize:N0}  [grey]| Appender heartbeat:[/] every {InsertProgressLogEveryRows:N0} rows");
 
-        long insertedTotal = 0;
-        var bases = RuntimeSearchSpace.GetActiveCombinationBaselines();
+        await RecreateTableAsync(connection, ct);
+        await ConfigureFastLoadSessionAsync(connection, ct);
 
-        AnsiConsole.MarkupLine($"Starting bulk insert of {expectedTotal:N0} rows...");
+        long insertedGrandTotal = 0;
+        var overallSw = Stopwatch.StartNew();
 
-        foreach (var baseline in bases)
+        using DuckDBAppender appender = connection.CreateAppender(TableName);
+
+        foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
         {
-            foreach (var batch in TensorConfigGenerator.GenerateTensorConfigBatches(baseline, ct: ct))
+            ct.ThrowIfCancellationRequested();
+
+            long baseInserted = 0;
+            int baseBatchNumber = 0;
+            var baseSw = Stopwatch.StartNew();
+            string baseName = baseline.Names.FirstOrDefault() ?? baseline.UniqueId.ToString();
+
+            AnsiConsole.MarkupLine($"[cyan]Generating + inserting base:[/] [bold]{Markup.Escape(baseName)}[/]");
+
+            foreach (var batch in TensorConfigGenerator.GenerateTensorConfigBatches(baseline, batchSize: GeneratorBatchSize))
             {
-                await BulkInsertAsync(connection, batch, ct);
-                insertedTotal += batch.Count;
-                AnsiConsole.MarkupLine($"  Inserted batch... Total so far: {insertedTotal:N0}");
+                ct.ThrowIfCancellationRequested();
+
+                baseBatchNumber++;
+                int batchCount = batch.Count;
+                var batchSw = Stopwatch.StartNew();
+
+                AnsiConsole.MarkupLine(
+                    $"  [grey]Base batch #{baseBatchNumber} generated:[/] {batchCount:N0} rows  [grey]| Base inserted before batch:[/] {baseInserted:N0}");
+
+                var progress = new InsertProgress
+                {
+                    InsertedTotal = insertedGrandTotal,
+                    LastLoggedTotal = insertedGrandTotal,
+                    ProgressLogEveryRows = InsertProgressLogEveryRows,
+                    TotalTarget = totalTarget,
+                    BaseName = baseName,
+                    BatchNumber = baseBatchNumber
+                };
+
+                AppendRows(appender, batch, progress, overallSw, ct);
+
+                insertedGrandTotal = progress.InsertedTotal;
+                baseInserted += batchCount;
+
+                batchSw.Stop();
+
+                double grandPct = totalTarget == 0 ? 100d : insertedGrandTotal * 100d / totalTarget;
+
+                AnsiConsole.MarkupLine(
+                    $"  [green]Base batch #{baseBatchNumber} done:[/] {batchCount:N0} rows in {batchSw.Elapsed.TotalSeconds:N1}s  " +
+                    $"[grey]| Base running:[/] {baseInserted:N0}  [grey]| Grand total:[/] {insertedGrandTotal:N0}/{totalTarget:N0} ({grandPct:N2}%)");
+
+                batch.Clear();
             }
+
+            baseSw.Stop();
+
+            double rowsPerSec = baseSw.Elapsed.TotalSeconds <= 0
+                ? 0
+                : baseInserted / baseSw.Elapsed.TotalSeconds;
+
+            AnsiConsole.MarkupLine(
+                $"[bold green]Base complete:[/] {Markup.Escape(baseName)}  " +
+                $"[grey]| Inserted:[/] {baseInserted:N0} rows  " +
+                $"[grey]| Time:[/] {baseSw.Elapsed.TotalMinutes:N2} min  " +
+                $"[grey]| Rate:[/] {rowsPerSec:N0} rows/sec");
         }
 
-        sw.Stop();
-        AnsiConsole.MarkupLine($"DuckDB rebuild complete! in {sw.Elapsed.TotalSeconds:F2}s");
+        appender.Close();
+        overallSw.Stop();
+
+        long finalCount = await GetRowCountAsync(connection, ct);
+
+        double finalRate = overallSw.Elapsed.TotalSeconds <= 0
+            ? 0
+            : insertedGrandTotal / overallSw.Elapsed.TotalSeconds;
+
+        AnsiConsole.MarkupLine(
+            $"[bold green]DuckDB rebuild complete.[/] " +
+            $"[grey]| Inserted tracked:[/] {insertedGrandTotal:N0}  " +
+            $"[grey]| Final row count:[/] {finalCount:N0}  " +
+            $"[grey]| Time:[/] {overallSw.Elapsed.TotalMinutes:N2} min  " +
+            $"[grey]| Avg rate:[/] {finalRate:N0} rows/sec");
     }
 
-    private async Task BulkInsertAsync(
+    private async Task BulkAppendAsync(
         DuckDBConnection connection,
         IReadOnlyCollection<TensorConfig> rows,
+        string label,
         CancellationToken ct)
     {
         if (rows.Count == 0)
             return;
 
-        using var tx = connection.BeginTransaction();
+        await ConfigureFastLoadSessionAsync(connection, ct);
 
+        using DuckDBAppender appender = connection.CreateAppender(TableName);
+
+        var progress = new InsertProgress
+        {
+            InsertedTotal = 0,
+            LastLoggedTotal = 0,
+            ProgressLogEveryRows = InsertProgressLogEveryRows,
+            TotalTarget = rows.Count,
+            BaseName = label,
+            BatchNumber = 1
+        };
+
+        AppendRows(appender, rows, progress, Stopwatch.StartNew(), ct);
+        appender.Close();
+    }
+
+    private static void AppendRows(
+        DuckDBAppender appender,
+        IReadOnlyCollection<TensorConfig> rows,
+        InsertProgress progress,
+        Stopwatch overallSw,
+        CancellationToken ct)
+    {
         foreach (var row in rows)
         {
-            var cmd = connection.CreateCommand();
-            cmd.Transaction = tx;
-            cmd.CommandText = $@"
-                INSERT INTO {TableName}
-                (BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+            ct.ThrowIfCancellationRequested();
 
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.BaseQuant });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.Embeddings });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.LmHead });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.AttnQ });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.AttnKV });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.AttnOutput });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.FfnUpGate });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.FfnDown });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.MoeExperts });
-            cmd.Parameters.Add(new DuckDBParameter { Value = row.MoeRouter });
+            appender.CreateRow()
+                .AppendValue(row.BaseQuant)
+                .AppendValue(row.Embeddings)
+                .AppendValue(row.LmHead)
+                .AppendValue(row.AttnQ)
+                .AppendValue(row.AttnKV)
+                .AppendValue(row.AttnOutput)
+                .AppendValue(row.FfnUpGate)
+                .AppendValue(row.FfnDown)
+                .AppendValue(row.MoeExperts)
+                .AppendValue(row.MoeRouter)
+                .EndRow();
 
-            await cmd.ExecuteNonQueryAsync(ct);
+            progress.InsertedTotal++;
+
+            if (progress.InsertedTotal - progress.LastLoggedTotal >= progress.ProgressLogEveryRows)
+            {
+                double elapsedSeconds = Math.Max(0.001, overallSw.Elapsed.TotalSeconds);
+                double rowsPerSecond = progress.InsertedTotal / elapsedSeconds;
+                double pct = progress.TotalTarget <= 0 ? 100d : progress.InsertedTotal * 100d / progress.TotalTarget;
+
+                long remaining = Math.Max(0, progress.TotalTarget - progress.InsertedTotal);
+                double etaSeconds = rowsPerSecond <= 0 ? 0 : remaining / rowsPerSecond;
+                var eta = TimeSpan.FromSeconds(etaSeconds);
+
+                AnsiConsole.MarkupLine(
+                    $"    [grey]Progress[/] [green]{progress.InsertedTotal:N0}[/]/[yellow]{progress.TotalTarget:N0}[/] " +
+                    $"({pct:N2}%)  [grey]| Rate:[/] {rowsPerSecond:N0}/sec  " +
+                    $"[grey]| ETA:[/] {eta:hh\\:mm\\:ss}  " +
+                    $"[grey]| Label:[/] {Markup.Escape(progress.BaseName)}  " +
+                    $"[grey]| Batch:[/] {progress.BatchNumber}");
+
+                progress.LastLoggedTotal = progress.InsertedTotal;
+            }
         }
-
-        tx.Commit();
     }
 
     private async Task<PredictionContext?> BuildPredictionContextAsync(
@@ -392,7 +563,7 @@ public class QuantDatabaseService
                 continue;
 
             long delta = (long)snap.SizeBytes - (long)carrier.SizeBytes;
-            deltaByGroupAndCandidate[(plan.TargetGroupId.Value, plan.TestedCandidateId.Value)] = delta;
+            deltaByGroupAndCandidate[(plan.TargetGroupId!.Value, plan.TestedCandidateId!.Value)] = delta;
         }
 
         return new PredictionContext(
@@ -416,18 +587,18 @@ public class QuantDatabaseService
                 c => c.Id,
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
-                x.b.AiModelHashId == modelId &&
-                x.b.ImatrixDefinitionId == imatrixDefinitionId &&
-                x.c.BaseQuant == lookup.BaseQuant &&
-                x.c.Embeddings == lookup.Embeddings &&
-                x.c.LmHead == lookup.LmHead &&
-                x.c.AttnQ == lookup.AttnQ &&
-                x.c.AttnKV == lookup.AttnKV &&
-                x.c.AttnOutput == lookup.AttnOutput &&
-                x.c.FfnUpGate == lookup.FfnUpGate &&
-                x.c.FfnDown == lookup.FfnDown &&
-                x.c.MoeExperts == lookup.MoeExperts &&
-                x.c.MoeRouter == lookup.MoeRouter,
+                    x.b.AiModelHashId == modelId &&
+                    x.b.ImatrixDefinitionId == imatrixDefinitionId &&
+                    x.c.BaseQuant == lookup.BaseQuant &&
+                    x.c.Embeddings == lookup.Embeddings &&
+                    x.c.LmHead == lookup.LmHead &&
+                    x.c.AttnQ == lookup.AttnQ &&
+                    x.c.AttnKV == lookup.AttnKV &&
+                    x.c.AttnOutput == lookup.AttnOutput &&
+                    x.c.FfnUpGate == lookup.FfnUpGate &&
+                    x.c.FfnDown == lookup.FfnDown &&
+                    x.c.MoeExperts == lookup.MoeExperts &&
+                    x.c.MoeRouter == lookup.MoeRouter,
                 ct);
 
         if (row == null)
@@ -439,6 +610,16 @@ public class QuantDatabaseService
     private sealed class BenchmarkRow
     {
         public ulong SizeBytes { get; set; }
+    }
+
+    private sealed class InsertProgress
+    {
+        public long InsertedTotal { get; set; }
+        public long LastLoggedTotal { get; set; }
+        public long ProgressLogEveryRows { get; set; }
+        public long TotalTarget { get; set; }
+        public string BaseName { get; set; } = string.Empty;
+        public int BatchNumber { get; set; }
     }
 
     private sealed class PredictionContext
