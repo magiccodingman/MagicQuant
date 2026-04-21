@@ -34,6 +34,14 @@ public static class RuntimeSearchSpace
 
     public static void SetImatrixAvailability(bool available) => _imatrixAvailable = available;
 
+    public static void ResetForCompatibilityPass()
+    {
+        ExplicitCandidateBansByGroup.Clear();
+        LearnedPrunesByGroupAndCandidate.Clear();
+        DisabledCombinationBaselineIds.Clear();
+        Bf16SuppressedTensorChoiceGroupIds.Clear();
+    }
+
     public static bool HasUsableImatrix() => _imatrixAvailable;
 
     public static void BanCombinationCandidateForGroup(TensorGroup group, BaselineQuants candidate)

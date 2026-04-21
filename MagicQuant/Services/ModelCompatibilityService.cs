@@ -24,7 +24,7 @@ public class ModelCompatibilityService
 
         TensorWeightScheme.ValidateSmallestConfiguration();
 
-        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.ResetForCompatibilityPass();
         Cache.UnusedTensorGroups.Clear();
 
         string directory = Path.GetDirectoryName(ggufPath)!;
@@ -137,7 +137,7 @@ public class ModelCompatibilityService
             }
             else
             {
-                AnsiConsole.MarkupLine("[green]No groups were reduced to BF16/NULL-only by compatibility checks.[/]");
+                AnsiConsole.MarkupLine("[green]No groups were reduced to explicit-banned/NULL-only by compatibility checks.[/]");
             }
 
             if (shapeBanCount > 0)

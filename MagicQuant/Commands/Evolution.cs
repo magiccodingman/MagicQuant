@@ -126,6 +126,10 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine("[grey]Imatrix disabled for this run.[/]");
         }
 
+        // Re-assert the live runtime flag from the imatrix resolution result so later phases
+        // cannot accidentally inherit a stale default.
+        RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Enabled);
+
         bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
                                    await benchmarkService.TryInitializeExecutionPlanFromCacheAsync(
                                        quantizationKey: q8QuantizationKey);
@@ -182,6 +186,12 @@ public class Evolution : ICommand
         var compatibilityService = new ModelCompatibilityService(pyManager);
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
 
+        // Compatibility must not be allowed to silently downgrade the live policy flags for the
+        // remainder of the evolution run. Re-assert them here as a final safeguard.
+        RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Enabled);
+        RuntimeSearchSpace.AllowHighPrecisionHybrids = args.Any(a =>
+            string.Equals(a.Name, "allow-high-precision-hybrids", StringComparison.OrdinalIgnoreCase));
+
         CliHelpers.ValidateCombinationLogicWorks(true);
 
         var dbService = new QuantDatabaseService();
@@ -203,6 +213,7 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {initialSummary.Skipped:N0}");
         AnsiConsole.MarkupLine($"  [red]Failed:[/] {initialSummary.Failed:N0}");
 
+        AnsiConsole.MarkupLine("[bold magenta]Evolution flow marker:[/] startup sampling finished, entering learned-baseline pruning.");
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning");
 
         AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning[/]") { Justification = Justify.Left });

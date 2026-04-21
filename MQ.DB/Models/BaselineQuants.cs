@@ -104,7 +104,7 @@ public record BaselineQuants(
         Create(7, true, "IQ3_S", TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId],
             isLearningBaseline: true,
             isCombinationCarrierCandidate: false,
-            isExplicitGroupCombinationCandidate: true,
+            isExplicitGroupCombinationCandidate: false,
             isHighPrecisionExactAlias: false,
             explicitCandidateSortOrder: 5);
 
@@ -112,7 +112,7 @@ public record BaselineQuants(
         Create(8, true, "IQ3_XS", TensorWeightScheme.IQ3_XS, [TensorWeightScheme.IQ3_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId],
             isLearningBaseline: true,
             isCombinationCarrierCandidate: false,
-            isExplicitGroupCombinationCandidate: true,
+            isExplicitGroupCombinationCandidate: false,
             isHighPrecisionExactAlias: false,
             explicitCandidateSortOrder: 4);
 
@@ -120,7 +120,7 @@ public record BaselineQuants(
         Create(9, true, "IQ3_XXS", TensorWeightScheme.IQ3_XXS, [TensorWeightScheme.IQ3_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId],
             isLearningBaseline: true,
             isCombinationCarrierCandidate: false,
-            isExplicitGroupCombinationCandidate: true,
+            isExplicitGroupCombinationCandidate: false,
             isHighPrecisionExactAlias: false,
             explicitCandidateSortOrder: 3);
 
@@ -128,7 +128,7 @@ public record BaselineQuants(
         Create(10, true, "IQ2_S", TensorWeightScheme.IQ2_S, [TensorWeightScheme.IQ2_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId],
             isLearningBaseline: true,
             isCombinationCarrierCandidate: false,
-            isExplicitGroupCombinationCandidate: true,
+            isExplicitGroupCombinationCandidate: false,
             isHighPrecisionExactAlias: false,
             explicitCandidateSortOrder: 2);
 
@@ -136,7 +136,7 @@ public record BaselineQuants(
         Create(11, true, "IQ2_XS", TensorWeightScheme.IQ2_XS, [TensorWeightScheme.IQ2_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId],
             isLearningBaseline: true,
             isCombinationCarrierCandidate: false,
-            isExplicitGroupCombinationCandidate: true,
+            isExplicitGroupCombinationCandidate: false,
             isHighPrecisionExactAlias: false,
             explicitCandidateSortOrder: 1);
 
@@ -144,7 +144,7 @@ public record BaselineQuants(
         Create(12, true, "IQ2_XXS", TensorWeightScheme.IQ2_XXS, [TensorWeightScheme.IQ2_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId, TReg.AttnKV.UniqueId],
             isLearningBaseline: true,
             isCombinationCarrierCandidate: false,
-            isExplicitGroupCombinationCandidate: true,
+            isExplicitGroupCombinationCandidate: false,
             isHighPrecisionExactAlias: false,
             explicitCandidateSortOrder: 0);
 
