@@ -309,7 +309,7 @@ public class Evolution : ICommand
 
         AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
 
-        if (finalRemainingCombinationCount <= BruteForceFinalCombinationThreshold)
+        if (finalRemainingCombinationCount <= BruteForceFinalCombinationThreshold+1000)
         {
             AnsiConsole.Write(new Rule("[yellow]Final Brute Force Benchmark Phase[/]") { Justification = Justify.Left });
 
