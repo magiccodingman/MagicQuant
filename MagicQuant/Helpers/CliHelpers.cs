@@ -120,6 +120,7 @@ public static class CliHelpers
 
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine("Usage: [bold]mq[/] <command> [blue][[--option value]][/]");
+        AnsiConsole.MarkupLine("Config: [green]--config[/] [grey]<path-to-yaml>[/]  (CLI flags override YAML)");
         AnsiConsole.WriteLine();
     }
 }

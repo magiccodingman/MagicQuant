@@ -21,19 +21,31 @@ public static class TensorConfigGenerator
         var result = new RequiredSampleGenerationResult();
         var nativeExactScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
 
-        foreach (var baseline in BaselineQuants.GetLearningBaselines(RuntimeSearchSpace.HasUsableImatrix()))
+        var alreadyAddedPureBaselineIds = new HashSet<byte>();
+
+        void AddPureBaselinePlan(BaselineQuants baseline)
         {
+            if (!alreadyAddedPureBaselineIds.Add(baseline.UniqueId))
+                return;
+
             result.Plans.Add(new RequiredSamplePlan
             {
                 Kind = RequiredSampleKind.PureBaseline,
                 Key = $"pure:{baseline.UniqueId}",
                 Description = $"Pure baseline build for {string.Join("/", baseline.Names)}",
                 Quant = HybridQuant.CreatePureBaseline(baseline),
-                TestedBaselineId = baseline.UniqueId
+                TestedBaselineId = baseline.UniqueId,
+                TestedBaselineCanonicalKey = baseline.CanonicalKey
             });
 
             result.PureBaselineCount++;
         }
+
+        foreach (var baseline in BaselineQuants.GetLearningBaselines(RuntimeSearchSpace.HasUsableImatrix()))
+            AddPureBaselinePlan(baseline);
+
+        // Q8 remains a required system anchor even when the user disables standard baselines.
+        AddPureBaselinePlan(BaselineQuants.Q8_0);
 
         foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
         {
@@ -46,7 +58,8 @@ public static class TensorConfigGenerator
                     baseQuant: baseline,
                     groups: activeGroups,
                     exactScheme: nativeExactScheme),
-                TestedBaselineId = baseline.UniqueId
+                TestedBaselineId = baseline.UniqueId,
+                TestedBaselineCanonicalKey = baseline.CanonicalKey
             });
 
             result.BaseOnlyIsolationCount++;
@@ -63,7 +76,8 @@ public static class TensorConfigGenerator
                 baseQuant: carrier,
                 groups: activeGroups,
                 exactScheme: nativeExactScheme),
-            TestedBaselineId = carrier.UniqueId
+            TestedBaselineId = carrier.UniqueId,
+            TestedBaselineCanonicalKey = carrier.CanonicalKey
         });
 
         result.BaseOnlyIsolationCount++;
@@ -89,7 +103,9 @@ public static class TensorConfigGenerator
                 Quant = quant,
                 TargetGroupId = group.UniqueId,
                 TestedCandidateId = smallest.UniqueId,
+                TestedCandidateCanonicalKey = smallest.CanonicalKey,
                 TestedBaselineId = carrier.UniqueId,
+                TestedBaselineCanonicalKey = carrier.CanonicalKey,
                 IsSmallestProbe = true
             });
 
@@ -159,7 +175,9 @@ public static class TensorConfigGenerator
                     Quant = quant,
                     TargetGroupId = group.UniqueId,
                     TestedCandidateId = candidate.UniqueId,
-                    TestedBaselineId = carrier.UniqueId
+                    TestedCandidateCanonicalKey = candidate.CanonicalKey,
+                    TestedBaselineId = carrier.UniqueId,
+                    TestedBaselineCanonicalKey = carrier.CanonicalKey
                 });
 
                 result.GroupIsolationCount++;

@@ -197,10 +197,15 @@ public static class RuntimeSearchSpace
 
     public static IReadOnlyList<BaselineQuants> GetActiveCombinationBaselines()
     {
-        return BaselineQuants.GetCombinationCarrierBaselines(_imatrixAvailable)
+        var active = BaselineQuants.GetCombinationCarrierBaselines(_imatrixAvailable)
             .Where(x => !DisabledCombinationBaselineIds.Contains(x.UniqueId))
             .OrderBy(x => x.UniqueId)
             .ToList();
+
+        if (active.Count == 0)
+            return new[] { BaselineQuants.Q8_0 };
+
+        return active;
     }
 
     public static bool DisableCombinationBaseline(BaselineQuants baseline, bool allowDisablingLast = false)

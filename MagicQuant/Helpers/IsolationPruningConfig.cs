@@ -2,13 +2,13 @@ namespace MagicQuant.Helpers;
 
 public static class IsolationPruningConfig
 {
-    public const double MinimumIsolationReductionToContinueRatio = 0.04d;
-    public const double MinimumIsolationReductionToSuppressBf16Ratio = 0.10d;
-    public const double MaximumIsolationPplDeltaPercent = 5.0d;
-    public const double MaximumIsolationKld = 0.1d;
-    public const double BadTradeMaxSizeDeltaPercent = 4.0d;
-    public const double BadTradeKldMultiplier = 2.5d;
-    public const double BadTradePplMultiplier = 3.5d;
-    public const double FloatingPointEpsilon = 1e-8d;
-    public const double MinimumMeaningfulBaseOnlyReductionRatio = 0.01d;
+    public static double MinimumIsolationReductionToContinueRatio => Config.Current.IsolationPruning.MinimumIsolationReductionToContinueRatio;
+    public static double MinimumIsolationReductionToSuppressBf16Ratio => Config.Current.IsolationPruning.MinimumIsolationReductionToSuppressBf16Ratio;
+    public static double MaximumIsolationPplDeltaPercent => Config.Current.IsolationPruning.MaximumIsolationPplDeltaPercent;
+    public static double MaximumIsolationKld => Config.Current.IsolationPruning.MaximumIsolationKld;
+    public static double BadTradeMaxSizeDeltaPercent => Config.Current.IsolationPruning.BadTradeMaxSizeDeltaPercent;
+    public static double BadTradeKldMultiplier => Config.Current.IsolationPruning.BadTradeKldMultiplier;
+    public static double BadTradePplMultiplier => Config.Current.IsolationPruning.BadTradePplMultiplier;
+    public static double FloatingPointEpsilon => Config.Current.IsolationPruning.FloatingPointEpsilon;
+    public static double MinimumMeaningfulBaseOnlyReductionRatio => Config.Current.IsolationPruning.MinimumMeaningfulBaseOnlyReductionRatio;
 }

@@ -1,3 +1,4 @@
+using MagicQuant.Configuration;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MagicQuant.Services;
@@ -12,7 +13,6 @@ namespace MagicQuant.Commands;
 
 public class Evolution : ICommand
 {
-    private const int BruteForceFinalCombinationThreshold = 2_000;
 
     public async Task Run(List<CliArg> args)
     {
@@ -23,17 +23,20 @@ public class Evolution : ICommand
         }
 
         string? modelDirRaw = args.FirstOrDefault(a =>
-            string.Equals(a.Name, "model-dir", StringComparison.OrdinalIgnoreCase))?.Value;
+    string.Equals(a.Name, "model-dir", StringComparison.OrdinalIgnoreCase))?.Value;
 
-        if (string.IsNullOrWhiteSpace(modelDirRaw))
-        {
-            const string msg = "[red]Error:[/] Missing required argument [yellow]--model-dir[/].";
-            AnsiConsole.MarkupLine(msg);
-            ShowEvolutionHelp();
-            throw new InvalidOperationException("Missing required argument --model-dir.");
-        }
+if (string.IsNullOrWhiteSpace(modelDirRaw))
+    modelDirRaw = Config.Current.Paths.ModelDir;
 
-        string fullModelPath = Path.GetFullPath(modelDirRaw);
+if (string.IsNullOrWhiteSpace(modelDirRaw))
+{
+    const string msg = "[red]Error:[/] Missing required model directory. Provide [yellow]--model-dir[/] or set [yellow]paths.model_dir[/] in YAML.";
+    AnsiConsole.MarkupLine(msg);
+    ShowEvolutionHelp();
+    throw new InvalidOperationException("Missing required model directory.");
+}
+
+string fullModelPath = Path.GetFullPath(modelDirRaw);
 
         if (!Directory.Exists(fullModelPath))
         {
@@ -56,15 +59,13 @@ public class Evolution : ICommand
 
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
-        Cache.ForceRelearnBaselineTensorMappings = args.Any(a =>
-            string.Equals(a.Name, "relearn-baseline-mappings", StringComparison.OrdinalIgnoreCase));
-        Cache.ForceRefreshHardwareProbe = args.Any(a =>
-            string.Equals(a.Name, "recheck-hardware-probe", StringComparison.OrdinalIgnoreCase));
-        Cache.UseImatrix = args.Any(a => string.Equals(a.Name, "use-imatrix", StringComparison.OrdinalIgnoreCase));
-        Cache.ForceImatrixRebuild = args.Any(a => string.Equals(a.Name, "imatrix-force-rebuild", StringComparison.OrdinalIgnoreCase));
-        RuntimeSearchSpace.ResetForNewModel();
-        RuntimeSearchSpace.SetImatrixAvailability(false);
-        RuntimeSearchSpace.AllowHighPrecisionHybrids = args.Any(a => string.Equals(a.Name, "allow-high-precision-hybrids", StringComparison.OrdinalIgnoreCase));
+Cache.ForceRelearnBaselineTensorMappings = Config.Current.Flags.ForceRelearnBaselineTensorMappings;
+Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
+Cache.UseImatrix = Config.Current.Flags.UseImatrix;
+Cache.ForceImatrixRebuild = Config.Current.Flags.ForceImatrixRebuild;
+RuntimeSearchSpace.ResetForNewModel();
+RuntimeSearchSpace.SetImatrixAvailability(false);
+RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
 
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
@@ -82,12 +83,14 @@ public class Evolution : ICommand
 
         AnsiConsole.MarkupLine("[grey]Acquiring unique model ID...[/]");
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
-        AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
+AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
 
-        await EnsureSqliteReadyAsync();
+var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
+var customBaselineService = new HuggingFaceBaselineService(pyManager);
+await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
+await EnsureSqliteReadyAsync();
 
-        var pyManager = new PythonManager(Cache.MagicQuantDirectory);
-        var benchmarkService = new BenchmarkService(pyManager);
+var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
         var imatrixService = new ImatrixService();
 
@@ -104,11 +107,11 @@ public class Evolution : ICommand
         {
             UseImatrix = Cache.UseImatrix,
             ForceRebuild = Cache.ForceImatrixRebuild,
-            ImatrixUrl = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-url", StringComparison.OrdinalIgnoreCase))?.Value,
-            DatasetRepo = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-repo", StringComparison.OrdinalIgnoreCase))?.Value,
-            DatasetSplit = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-split", StringComparison.OrdinalIgnoreCase))?.Value,
-            DatasetConfig = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-config", StringComparison.OrdinalIgnoreCase))?.Value,
-            LocalDatasetFile = args.FirstOrDefault(a => string.Equals(a.Name, "imatrix-dataset-local-file", StringComparison.OrdinalIgnoreCase))?.Value,
+ImatrixUrl = Config.Current.Imatrix.ImatrixUrl,
+DatasetRepo = Config.Current.Imatrix.DatasetRepo,
+DatasetSplit = Config.Current.Imatrix.DatasetSplit,
+DatasetConfig = Config.Current.Imatrix.DatasetConfig,
+LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
             ModelDirectory = Cache.ModelDirectory!,
             MagicQuantDirectory = Cache.ModelMagicQuantDirectory!
         };
@@ -189,8 +192,7 @@ public class Evolution : ICommand
         // Compatibility must not be allowed to silently downgrade the live policy flags for the
         // remainder of the evolution run. Re-assert them here as a final safeguard.
         RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Enabled);
-        RuntimeSearchSpace.AllowHighPrecisionHybrids = args.Any(a =>
-            string.Equals(a.Name, "allow-high-precision-hybrids", StringComparison.OrdinalIgnoreCase));
+        RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
 
         CliHelpers.ValidateCombinationLogicWorks(true);
 
@@ -349,13 +351,15 @@ public class Evolution : ICommand
 
         AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
 
-        if (finalRemainingCombinationCount <= BruteForceFinalCombinationThreshold)
+        int bruteForceFinalCombinationThreshold = Config.BruteForceFinalCombinationThreshold;
+
+        if (finalRemainingCombinationCount <= bruteForceFinalCombinationThreshold)
         {
             AnsiConsole.Write(new Rule("[yellow]Final Brute Force Benchmark Phase[/]") { Justification = Justify.Left });
 
             AnsiConsole.MarkupLine(
                 $"[green]Final combination count[/] [cyan]{finalRemainingCombinationCount:N0}[/] " +
-                $"is at or below the brute-force threshold of [yellow]{BruteForceFinalCombinationThreshold:N0}[/].");
+                $"is at or below the brute-force threshold of [yellow]{bruteForceFinalCombinationThreshold:N0}[/].");
 
             var finalConfigs = await dbService.GetRemainingTensorConfigsAsync();
             var finalQuants = finalConfigs
@@ -377,7 +381,7 @@ public class Evolution : ICommand
 
             throw new InvalidOperationException(
                 $"Prediction engine not created yet. Final surviving combinations were {finalRemainingCombinationCount:N0}, " +
-                $"which is above the brute-force threshold of {BruteForceFinalCombinationThreshold:N0}.");
+                $"which is above the brute-force threshold of {bruteForceFinalCombinationThreshold:N0}.");
         }
     }
 
@@ -417,9 +421,10 @@ public class Evolution : ICommand
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Usage:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"<path>\" [options]");
+        AnsiConsole.WriteLine("  mq evolution --config \"./config.default.yaml\"");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
-        AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Required)");
+        AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Optional if set in YAML)");
         AnsiConsole.MarkupLine("  [green]--relearn-baseline-mappings[/]    Delete and relearn baseline tensor mappings (Optional)");
         AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
         AnsiConsole.MarkupLine("  [green]--use-imatrix[/]    Enable imatrix acquisition/build and allow imatrix-required search candidates (Optional)");
@@ -431,6 +436,8 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-split[/]    Dataset split for HF/local dataset source metadata/build (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-config[/]    Optional dataset config name for HF datasets (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-local-file[/]    Full path to local .json/.jsonl dataset source (Optional)");
+        AnsiConsole.MarkupLine("  [green]--manual-max-predicted-size-bytes[/]    Override late predicted-size pruning ceiling (Optional; 0 = auto Q8 ceiling)");
+        AnsiConsole.MarkupLine("  [green]--config[/]    Path to YAML runtime config. CLI flags override YAML values.");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Example:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");

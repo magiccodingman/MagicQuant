@@ -13,10 +13,17 @@
       <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
       <PackageReference Include="Spectre.Console" Version="0.54.0" />
       <PackageReference Include="System.Management" Version="10.0.1" />
+      <PackageReference Include="YamlDotNet" Version="17.0.1" />
     </ItemGroup>
 
     <ItemGroup>
       <None Update="Helpers\pip_runner.py">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+      <None Update="config.default.yaml">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      </None>
+      <None Update="config.dev.yaml">
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </None>
     </ItemGroup>

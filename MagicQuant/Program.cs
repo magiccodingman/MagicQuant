@@ -1,32 +1,18 @@
-﻿using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 using MagicQuant.Commands;
+using MagicQuant.Configuration;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MagicQuant.Services;
-using Spectre.Console;
-using System.Collections.Immutable;
 using MQ.DB.Models;
+using Spectre.Console;
 
 #if DEBUG
-// If we are in Debug and no arguments were passed, default to "evolution"
 if (args.Length == 0)
 {
     args = new[] { "evolution" };
 }
-
-// OPTIONAL: Manually append hardcoded flags for testing specific scenarios
-// Example: If you want to test "evolution --iterations 10" every time you debug
-string manualFlags =
-    @"--model-dir ""/mnt/world8/AI/Models/Qwen3-4B-Instruct-2507-unsloth/""
-      --use-imatrix
-      --imatrix-dataset-local-file ""/home/slurp/Documents/Output_Files/Dataset/artifacts/imatrix-general-v1-1m.jsonl""
-      --imatrix-dataset-split ""text""";
-args = args.Concat(manualFlags.Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToArray();
 #endif
 
-// 2. Define the Command Registry
 var commands = new Dictionary<string, (string Description, Func<ICommand> Factory)>(StringComparer.OrdinalIgnoreCase)
 {
     { "evolution", ("Run the full evolutionary quantization search", () => new Evolution()) },
@@ -34,7 +20,6 @@ var commands = new Dictionary<string, (string Description, Func<ICommand> Factor
     { "initialize-llama-cpp", ("Initialize or update llama.cpp", () => new InitializeLlamaCpp()) }
 };
 
-// 3. Validate input
 if (args.Length == 0 || args[0].Equals("help", StringComparison.OrdinalIgnoreCase))
 {
     CliHelpers.ShowHelp(commands);
@@ -43,7 +28,6 @@ if (args.Length == 0 || args[0].Equals("help", StringComparison.OrdinalIgnoreCas
 
 string commandInput = args[0];
 
-// 4. Check if command exists
 if (!commands.TryGetValue(commandInput, out var commandInfo))
 {
     AnsiConsole.MarkupLine($"[red]Error:[/] The command [yellow]'{commandInput}'[/] does not exist.");
@@ -51,25 +35,35 @@ if (!commands.TryGetValue(commandInput, out var commandInfo))
     return;
 }
 
-// 5. Parse Arguments
 string remainingArgsString = string.Join(" ", args.Skip(1));
 List<CliArg> parsedArgs = CliHelpers.ParseArguments(remainingArgsString);
 
 try
 {
-    // strict startup integrity checks
+    var loadedConfig = MagicQuantYamlLoader.LoadAndApply(commandInput, parsedArgs);
+
     TensorWeightScheme.ValidateSmallestConfiguration();
     BaselineQuants.ValidateIntegrityOrThrow();
     QuantizationService.ValidateQuantNameNormalizationOrThrow();
 
-    // 6. Mandatory Validation for non-init commands
     if (!commandInput.Equals("initialize-llama-cpp", StringComparison.OrdinalIgnoreCase))
     {
         await AnsiConsole.Status()
-            .StartAsync("[grey]Checking environment dependencies...[/]", async ctx =>
+            .StartAsync("[grey]Checking environment dependencies...[/]", async _ =>
             {
                 var initializer = new InitializeLlamaCpp();
-                var validationArgs = new List<CliArg> { new CliArg { Name = "validate", Value = "" } };
+                var validationArgs = new List<CliArg>
+                {
+                    new() { Name = "validate", Value = string.Empty }
+                };
+
+                if (!string.IsNullOrWhiteSpace(loadedConfig.Paths.LlamaRoot))
+                    validationArgs.Add(new CliArg { Name = "llama-root", Value = loadedConfig.Paths.LlamaRoot });
+                if (!string.IsNullOrWhiteSpace(loadedConfig.Paths.LlamaBin))
+                    validationArgs.Add(new CliArg { Name = "llama-bin", Value = loadedConfig.Paths.LlamaBin });
+                if (!string.IsNullOrWhiteSpace(loadedConfig.Paths.ConvertScript))
+                    validationArgs.Add(new CliArg { Name = "convert-script", Value = loadedConfig.Paths.ConvertScript });
+
                 await initializer.Run(validationArgs);
             });
 
@@ -77,10 +71,8 @@ try
         AnsiConsole.WriteLine();
     }
 
-    // Manditory Run combinations and DuckDB setup
     CliHelpers.ValidateCombinationLogicWorks();
 
-    // 7. Execute Command
     var commandInstance = commandInfo.Factory();
     await commandInstance.Run(parsedArgs);
 }

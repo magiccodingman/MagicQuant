@@ -8,36 +8,49 @@ public class Cache
     /// Full path to llama.cpp repo
     /// </summary>
     public static string? LlamaRoot;
-    
+
     /// <summary>
     /// Full path to /llama.cpp/build/bin/
     /// </summary>
     public static string? LlamaBin;
-    
+
     /// <summary>
     /// full path to convert_hf_to_gguf.py
     /// </summary>
     public static string? ConvertScript;
-    
+
     /// <summary>
     /// System information about the PC that's detected
     /// during the initial llama cpp validation phase.
     /// </summary>
-    public static  SystemInfo? SysInfo;
-    
+    public static SystemInfo? SysInfo;
+
     /// <summary>
-    /// The full path to the model directory being quantized,
-    /// where a "MagicQuant" folder is created and used.
+    /// Root MagicQuant working directory. This is also where the Python
+    /// environment, default config files, and shared caches live.
     /// </summary>
     public static string? MagicQuantDirectory;
-    
+
     /// <summary>
     /// Full path to the desired model directory where the safetensors are.
     /// </summary>
     public static string? ModelDirectory;
-    
+
+    /// <summary>
+    /// Per-model MagicQuant working directory.
+    /// </summary>
     public static string? ModelMagicQuantDirectory;
-    
+
+    /// <summary>
+    /// Absolute path to the active YAML config that was loaded for this run.
+    /// </summary>
+    public static string? ActiveConfigPath { get; set; }
+
+    /// <summary>
+    /// Root directory where external/custom baseline GGUF files are staged.
+    /// </summary>
+    public static string? ExternalBaselineCacheDirectory { get; set; }
+
     /// <summary>
     /// Aka BF16, F16, or F32
     /// </summary>
@@ -49,15 +62,14 @@ public class Cache
         F16 = 2,
         F32 = 3
     }
-    
-    
+
     /*
      * Groups not present in the current model graph. These are forced to NULL/ignored
      * by runtime search-space planning.
      */
-    public static List<TensorGroup> UnusedTensorGroups = new List<TensorGroup>();
-    
-    public static string CurrentModelId { get; set; }
+    public static List<TensorGroup> UnusedTensorGroups = new();
+
+    public static string CurrentModelId { get; set; } = string.Empty;
 
     public static bool ForceRelearnBaselineTensorMappings { get; set; }
 

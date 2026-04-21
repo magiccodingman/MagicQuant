@@ -15,6 +15,11 @@ public class LearnedBaselineTensorQuant : ISQLiteEntity<LearnedBaselineTensorQua
     public AiModelHash AiModelHash { get; set; } = default!;
 
     public byte BaselineQuantId { get; set; }
+    public string BaselineCanonicalKey { get; set; } = string.Empty;
+    public string BaselineSourceKind { get; set; } = string.Empty;
+    public string? BaselineSourceRepository { get; set; }
+    public string? BaselineSourceFileName { get; set; }
+
     public byte TensorWeightSchemeId { get; set; }
     public byte TensorGroupId { get; set; }
 
@@ -24,6 +29,20 @@ public class LearnedBaselineTensorQuant : ISQLiteEntity<LearnedBaselineTensorQua
     public void Configure(EntityTypeBuilder<LearnedBaselineTensorQuant> builder)
     {
         builder.HasKey(x => x.Id);
+
+        builder.Property(x => x.BaselineCanonicalKey)
+            .HasMaxLength(256)
+            .IsRequired();
+
+        builder.Property(x => x.BaselineSourceKind)
+            .HasMaxLength(64)
+            .IsRequired();
+
+        builder.Property(x => x.BaselineSourceRepository)
+            .HasMaxLength(256);
+
+        builder.Property(x => x.BaselineSourceFileName)
+            .HasMaxLength(512);
 
         builder.Property(x => x.TensorName)
             .HasMaxLength(512)
@@ -36,7 +55,7 @@ public class LearnedBaselineTensorQuant : ISQLiteEntity<LearnedBaselineTensorQua
         builder.HasIndex(x => new
             {
                 x.AiModelHashId,
-                x.BaselineQuantId,
+                x.BaselineCanonicalKey,
                 x.TensorWeightSchemeId,
                 x.TensorName
             })

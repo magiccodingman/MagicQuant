@@ -245,10 +245,14 @@ public class QuantDatabaseService
 
         var kept = new List<TensorConfig>(rows.Count);
 
+        ulong sizeCeilingBytes = Config.ManualMaxPredictedSizeBytes > 0
+            ? Config.ManualMaxPredictedSizeBytes
+            : predictionContext.PureQ8BaseSize;
+
         foreach (var row in rows)
         {
             ulong predicted = predictionContext.Predict(row);
-            if (predicted <= predictionContext.PureQ8BaseSize)
+            if (predicted <= sizeCeilingBytes)
                 kept.Add(row);
         }
 
@@ -263,7 +267,11 @@ public class QuantDatabaseService
         await RecreateTableAsync(connection, ct);
         await BulkAppendAsync(connection, kept, "predicted-size-prune", ct);
 
-        AnsiConsole.MarkupLine($"[yellow]Predicted-size pruning removed:[/] [red]{removed:N0}[/] combo(s) larger than pure Q8.");
+        string ceilingLabel = Config.ManualMaxPredictedSizeBytes > 0
+            ? $"manual ceiling {Config.ManualMaxPredictedSizeBytes:N0} bytes"
+            : "pure Q8";
+
+        AnsiConsole.MarkupLine($"[yellow]Predicted-size pruning removed:[/] [red]{removed:N0}[/] combo(s) larger than {ceilingLabel}.");
         return removed;
     }
 

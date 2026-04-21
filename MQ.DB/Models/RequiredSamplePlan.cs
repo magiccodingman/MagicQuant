@@ -15,6 +15,7 @@ public sealed class RequiredSamplePlan
     public string Description { get; set; } = string.Empty;
     public HybridQuant Quant { get; set; } = default!;
     public byte? TargetGroupId { get; set; }
+
     // Legacy name kept for compatibility: this now stores the tested baseline-family candidate id.
     public byte? TestedSchemeId { get; set; }
 
@@ -23,7 +24,10 @@ public sealed class RequiredSamplePlan
         get => TestedSchemeId;
         set => TestedSchemeId = value;
     }
+
+    public string? TestedCandidateCanonicalKey { get; set; }
     public byte? TestedBaselineId { get; set; }
+    public string? TestedBaselineCanonicalKey { get; set; }
     public bool IsSmallestProbe { get; set; }
 }
 

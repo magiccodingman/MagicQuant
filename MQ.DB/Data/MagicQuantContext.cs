@@ -67,9 +67,22 @@ public class MagicQuantContext : DbContext
             .Select(x => new BaselineQuantDefinition
             {
                 BaselineQuantId = x.UniqueId,
+                CanonicalKey = x.CanonicalKey,
                 BaselineName = x.Names[0],
+                QuantizeBaseArgumentName = x.QuantizeBaseArgumentName,
                 DefaultTensorSchemeId = x.DefaultTensorScheme!.UniqueId,
-                DefaultTensorSchemeName = x.DefaultTensorScheme.Names[0]
+                DefaultTensorSchemeName = x.DefaultTensorScheme.Names[0],
+                SourceKind = x.SourceKind,
+                SourceOwner = x.SourceOwner,
+                SourceRepository = x.SourceRepository,
+                SourceFileName = x.SourceFileName,
+                ShortSourceName = x.ShortSourceName,
+                IsCustomBaseline = x.IsCustomBaseline,
+                IsLearningBaseline = x.IsLearningBaseline,
+                IsCombinationCarrierCandidate = x.IsCombinationCarrierCandidate,
+                IsExplicitGroupCombinationCandidate = x.IsExplicitGroupCombinationCandidate,
+                RequiresImatrix = x.RequiresImatrix,
+                ExplicitCandidateSortOrder = x.ExplicitCandidateSortOrder
             })
             .OrderBy(x => x.BaselineQuantId)
             .ToList();
@@ -90,15 +103,28 @@ public class MagicQuantContext : DbContext
                        current.Zip(expected, (a, b) =>
                            a.BaselineQuantId == b.BaselineQuantId &&
                            a.DefaultTensorSchemeId == b.DefaultTensorSchemeId &&
+                           a.IsCustomBaseline == b.IsCustomBaseline &&
+                           a.IsLearningBaseline == b.IsLearningBaseline &&
+                           a.IsCombinationCarrierCandidate == b.IsCombinationCarrierCandidate &&
+                           a.IsExplicitGroupCombinationCandidate == b.IsExplicitGroupCombinationCandidate &&
+                           a.RequiresImatrix == b.RequiresImatrix &&
+                           a.ExplicitCandidateSortOrder == b.ExplicitCandidateSortOrder &&
+                           string.Equals(a.CanonicalKey, b.CanonicalKey, StringComparison.Ordinal) &&
                            string.Equals(a.BaselineName, b.BaselineName, StringComparison.Ordinal) &&
-                           string.Equals(a.DefaultTensorSchemeName, b.DefaultTensorSchemeName, StringComparison.Ordinal))
+                           string.Equals(a.QuantizeBaseArgumentName, b.QuantizeBaseArgumentName, StringComparison.Ordinal) &&
+                           string.Equals(a.DefaultTensorSchemeName, b.DefaultTensorSchemeName, StringComparison.Ordinal) &&
+                           string.Equals(a.SourceKind, b.SourceKind, StringComparison.Ordinal) &&
+                           string.Equals(a.SourceOwner, b.SourceOwner, StringComparison.Ordinal) &&
+                           string.Equals(a.SourceRepository, b.SourceRepository, StringComparison.Ordinal) &&
+                           string.Equals(a.SourceFileName, b.SourceFileName, StringComparison.Ordinal) &&
+                           string.Equals(a.ShortSourceName, b.ShortSourceName, StringComparison.Ordinal))
                            .Any(equal => !equal);
 
         if (mismatch)
         {
             throw new InvalidOperationException(
-                "BaselineQuantDefinitions table is out of sync with code-defined BaselineQuants/DefaultTensorScheme mappings. " +
-                "Run migrations and regenerate the DB definitions.");
+                "BaselineQuantDefinitions table is out of sync with the runtime baseline registry. " +
+                "Delete the SQLite DB, recreate migrations, and let MagicQuant reseed baseline definitions.");
         }
     }
 
