@@ -89,7 +89,8 @@ public sealed class LearnedBaselinePruningService
         var effectiveSchemesByCandidateAndGroup = BuildEffectiveSchemesByBaselineAndGroup(learnedRows, aliasToSchemeIds);
 
         var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false)
-            .OrderBy(x => x.UniqueId)
+            .OrderBy(x => x.ExplicitCandidateSortOrder)
+            .ThenBy(x => x.UniqueId)
             .ToList();
 
         foreach (var group in TReg.All.OrderBy(x => x.UniqueId))
@@ -111,11 +112,9 @@ public sealed class LearnedBaselinePruningService
                 var effectiveIdsSet = hasEffectiveSet ? effectiveForGroup! : new HashSet<byte>();
                 var matchedIds = expectedIds.Where(effectiveIdsSet.Contains).OrderBy(x => x).ToList();
                 bool allow = matchedIds.Count > 0;
-                string effectiveIds = hasEffectiveSet
-                    ? string.Join(",", effectiveIdsSet.OrderBy(x => x))
-                    : "<none>";
-                string expected = string.Join(",", expectedIds);
-                string matched = matchedIds.Count > 0 ? string.Join(",", matchedIds) : "<none>";
+                string effectiveIds = FormatSchemeIds(effectiveIdsSet);
+                string expected = FormatSchemeIds(expectedIds);
+                string matched = FormatSchemeIds(matchedIds);
 
                 result.Notes.Add(
                     $"Learned-prune check: model={aiModelHashId}/{aiModelHashUniqueHash}, group={group.Name}, " +
@@ -152,11 +151,10 @@ public sealed class LearnedBaselinePruningService
             }
 
             // The persisted TensorWeightSchemeId is the authoritative learned-family identity.
-            // FinalQuantType is useful extra metadata, but it cannot replace the stored scheme id
-            // because some learned baselines materialize tensors whose final emitted token differs
-            // from the baseline family we are learning from.
             set.Add(row.TensorWeightSchemeId);
 
+            // Also record any alias-based resolution from the actual emitted quant token so the
+            // logs stay explainable when llama.cpp materializes a family using synonymous names.
             if (aliasToSchemeIds.TryGetValue(CanonicalizeQuantToken(row.FinalQuantType), out var resolvedIds))
             {
                 foreach (var resolvedId in resolvedIds)
@@ -203,5 +201,21 @@ public sealed class LearnedBaselinePruningService
             .Replace("-", "_")
             .Replace(" ", string.Empty)
             .ToUpperInvariant();
+    }
+    private static string FormatSchemeIds(IEnumerable<byte> schemeIds)
+    {
+        var ids = schemeIds
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
+        if (ids.Count == 0)
+            return "<none>";
+
+        return string.Join("/", ids.Select(id =>
+        {
+            var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
+            return scheme?.Names[0] ?? id.ToString();
+        }));
     }
 }

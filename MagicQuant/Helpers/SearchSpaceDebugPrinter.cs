@@ -1,6 +1,8 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Numerics;
+using MagicQuant.Services;
 using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
@@ -57,7 +59,7 @@ public static class SearchSpaceDebugPrinter
                 var learned = RuntimeSearchSpace.GetLearnedBaselineMissingPrunedCandidatesForGroup(group);
 
                 var parts = learned.Select(x =>
-                    $"{x.Candidate.Names[0]} (expected={string.Join("/", x.ExpectedTensorWeightSchemeIds)}, matched={string.Join("/", x.MatchedTensorWeightSchemeIds)})");
+                    $"{x.Candidate.Names[0]} (expected={FormatSchemeIds(x.ExpectedTensorWeightSchemeIds)}, matched={FormatSchemeIds(x.MatchedTensorWeightSchemeIds)}, missing={FormatSchemeIds(x.MissingTensorWeightSchemeIds)})");
 
                 AnsiConsole.MarkupLine(
                     $"  [yellow]- {Markup.Escape(group.Name)}[/] :: [grey]{Markup.Escape(string.Join(", ", parts))}[/]");
@@ -100,4 +102,55 @@ public static class SearchSpaceDebugPrinter
 
         AnsiConsole.MarkupLine($"[bold yellow]Grand total:[/] {ComboCounter.CountAll():N0}");
     }
+    public static void PrintIsolationGroupDecisions(
+        string title,
+        IEnumerable<IsolationGroupDecision> decisions,
+        string winningLabel = "Winning candidate")
+    {
+        var ordered = decisions
+            .OrderBy(x => x.GroupName, StringComparer.Ordinal)
+            .ToList();
+
+        if (ordered.Count == 0)
+            return;
+
+        AnsiConsole.Write(new Rule($"[yellow]{Markup.Escape(title)}[/]") { Justification = Justify.Left });
+
+        foreach (var gd in ordered)
+        {
+            AnsiConsole.Write(
+                new Rule($"[yellow]Isolation Group: {Markup.Escape(gd.GroupName)}[/]")
+                {
+                    Justification = Justify.Left
+                });
+
+            AnsiConsole.MarkupLine($"[green]Best savings:[/] {gd.BestReductionRatio:P2}");
+            AnsiConsole.MarkupLine($"[green]{Markup.Escape(winningLabel)}:[/] {Markup.Escape(gd.WinningCandidate ?? "n/a")}");
+            AnsiConsole.MarkupLine($"[green]Explicit quant banned:[/] {(gd.ExplicitQuantBanned ? "[red]yes[/]" : "[green]no[/]")}");
+            AnsiConsole.MarkupLine($"[green]BF16 suppressed:[/] {(gd.Bf16Suppressed ? "[yellow]yes[/]" : "[green]no[/]")}");
+
+            foreach (var line in gd.Candidates)
+                AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(line)}[/]");
+        }
+    }
+
+    private static string FormatSchemeIds(IEnumerable<byte> schemeIds)
+    {
+        var ids = schemeIds
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
+        if (ids.Count == 0)
+            return "<none>";
+
+        var parts = ids.Select(id =>
+        {
+            var scheme = TensorWeightScheme.All.FirstOrDefault(x => x.UniqueId == id);
+            return scheme?.Names[0] ?? id.ToString();
+        });
+
+        return string.Join("/", parts);
+    }
+
 }

@@ -12,7 +12,7 @@ namespace MagicQuant.Commands;
 
 public class Evolution : ICommand
 {
-    private const int BruteForceFinalCombinationThreshold = 1_000;
+    private const int BruteForceFinalCombinationThreshold = 2_000;
 
     public async Task Run(List<CliArg> args)
     {
@@ -232,9 +232,17 @@ public class Evolution : ICommand
         foreach (var note in initialAnalysis.Notes)
             AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
 
+        SearchSpaceDebugPrinter.PrintIsolationGroupDecisions(
+            "Initial Probe Group Decisions",
+            initialAnalysis.GroupDetails,
+            winningLabel: "Winning candidate");
+
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Initial Probe Analysis");
 
         AnsiConsole.Write(new Rule("[yellow]Continuation Isolation Samples[/]") { Justification = Justify.Left });
+
+        AnsiConsole.MarkupLine(
+            $"[grey]Groups continuing after early probe:[/] [cyan]{initialAnalysis.GroupsToContinue.Count:N0}[/]");
 
         var continuationPlan = isolationPlanner.BuildContinuationPlan(
             initialAnalysis.GroupsToContinue,
@@ -265,22 +273,10 @@ public class Evolution : ICommand
 
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Final Isolation Optimization");
 
-        foreach (var gd in isolationResult.GroupDetails.OrderBy(x => x.GroupName))
-        {
-            AnsiConsole.Write(
-                new Rule($"[yellow]Isolation Group: {Markup.Escape(gd.GroupName)}[/]")
-                {
-                    Justification = Justify.Left
-                });
-
-            AnsiConsole.MarkupLine($"[green]Best savings:[/] {gd.BestReductionRatio:P2}");
-            AnsiConsole.MarkupLine($"[green]Winning candidate:[/] {Markup.Escape(gd.WinningCandidate ?? "n/a")}");
-            AnsiConsole.MarkupLine($"[green]Explicit quant banned:[/] {(gd.ExplicitQuantBanned ? "[red]yes[/]" : "[green]no[/]")}");
-            AnsiConsole.MarkupLine($"[green]BF16 suppressed:[/] {(gd.Bf16Suppressed ? "[yellow]yes[/]" : "[green]no[/]")}");
-
-            foreach (var line in gd.Candidates)
-                AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(line)}[/]");
-        }
+        SearchSpaceDebugPrinter.PrintIsolationGroupDecisions(
+            "Final Isolation Group Decisions",
+            isolationResult.GroupDetails,
+            winningLabel: "Winning candidate");
 
         var comboCountAfterRulePruning = ComboCounter.CountAll();
 
@@ -309,7 +305,7 @@ public class Evolution : ICommand
 
         AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
 
-        if (finalRemainingCombinationCount <= BruteForceFinalCombinationThreshold+1000)
+        if (finalRemainingCombinationCount <= BruteForceFinalCombinationThreshold)
         {
             AnsiConsole.Write(new Rule("[yellow]Final Brute Force Benchmark Phase[/]") { Justification = Justify.Left });
 
