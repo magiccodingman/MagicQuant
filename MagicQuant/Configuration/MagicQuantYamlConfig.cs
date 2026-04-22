@@ -10,6 +10,7 @@ public sealed class MagicQuantYamlConfig
     public RuntimeEvolutionConfig Evolution { get; set; } = new();
     public RuntimeIsolationPruningConfig IsolationPruning { get; set; } = new();
     public RuntimePredictionConfig Prediction { get; set; } = new();
+    public RuntimeIdentityConfig Identity { get; set; } = new();
     public RuntimeBaselineConfig Baselines { get; set; } = new();
 
     public List<string> SensitivityProbeGroups { get; set; } =
@@ -126,6 +127,12 @@ public sealed class RuntimeIsolationPruningConfig
 public sealed class RuntimePredictionConfig
 {
     public ulong ManualMaxPredictedSizeBytes { get; set; } = 0;
+}
+
+public sealed class RuntimeIdentityConfig
+{
+    public string? ArchitectureFamilyName { get; set; }
+    public bool AllowArchitectureFamilyAliasOverride { get; set; }
 }
 
 public sealed class RuntimeBaselineConfig

@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace MQ.DB.Migrations
 {
     [DbContext(typeof(MagicQuantContext))]
-    [Migration("20260422171457_InitialCreate")]
+    [Migration("20260422202538_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -72,6 +72,72 @@ namespace MQ.DB.Migrations
                     b.ToTable("AiModelHashes");
                 });
 
+            modelBuilder.Entity("MQ.DB.Models.DbModels.ArchitectureFamily", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("TensorCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("TensorSignatureHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NormalizedName")
+                        .IsUnique();
+
+                    b.HasIndex("TensorSignatureHash", "TensorCount");
+
+                    b.ToTable("ArchitectureFamilies");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.ArchitectureFamilyModelHash", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("AiModelHashId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ArchitectureFamilyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsCanonical")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AiModelHashId")
+                        .IsUnique();
+
+                    b.HasIndex("ArchitectureFamilyId", "AiModelHashId")
+                        .IsUnique();
+
+                    b.ToTable("ArchitectureFamilyModelHashes");
+                });
+
             modelBuilder.Entity("MQ.DB.Models.DbModels.BaselineQuantDefinition", b =>
                 {
                     b.Property<byte>("BaselineQuantId")
@@ -81,6 +147,9 @@ namespace MQ.DB.Migrations
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("TEXT");
+
+                    b.Property<byte>("BitRange")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CanonicalKey")
                         .IsRequired()
@@ -520,6 +589,25 @@ namespace MQ.DB.Migrations
                     b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.ArchitectureFamilyModelHash", b =>
+                {
+                    b.HasOne("MQ.DB.Models.DbModels.AiModelHash", "AiModelHash")
+                        .WithMany()
+                        .HasForeignKey("AiModelHashId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AiModelHash");
+
+                    b.Navigation("ArchitectureFamily");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.BenchmarkRun", b =>

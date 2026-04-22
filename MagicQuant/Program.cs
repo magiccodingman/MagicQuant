@@ -9,7 +9,13 @@ using Spectre.Console;
 #if DEBUG
 if (args.Length == 0)
 {
-    args = new[] { "evolution" };
+    args = new[] { "evolution", "--architecture-family", @"""Qwen3-4B-Instruct-2507""" };
+}
+else if (args.Length > 0 &&
+         string.Equals(args[0], "evolution", StringComparison.OrdinalIgnoreCase) &&
+         !args.Any(x => string.Equals(x, "--architecture-family", StringComparison.OrdinalIgnoreCase)))
+{
+    args = args.Concat(new[] { "--architecture-family", @"""Qwen3-4B-Instruct-2507""" }).ToArray();
 }
 #endif
 

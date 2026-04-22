@@ -71,6 +71,17 @@ public class Cache
 
     public static string CurrentModelId { get; set; } = string.Empty;
 
+    public static string CurrentArchitectureFamilyName { get; set; } = string.Empty;
+
+    public static string CurrentArchitectureFamilyNormalizedName =>
+        string.IsNullOrWhiteSpace(CurrentArchitectureFamilyName)
+            ? string.Empty
+            : CurrentArchitectureFamilyName.Trim().ToLowerInvariant();
+
+    public static bool AllowArchitectureFamilyAliasOverride { get; set; }
+
+    public static int? CurrentArchitectureFamilyId { get; set; }
+
     public static bool ForceRelearnBaselineTensorMappings { get; set; }
 
     public static bool ForceRefreshHardwareProbe { get; set; }

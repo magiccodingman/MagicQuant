@@ -35,8 +35,12 @@ public static class ImatrixIdentityService
         if (string.IsNullOrWhiteSpace(identityHash))
             return null;
 
+        var scopedAiModelHashId = Cache.CurrentArchitectureFamilyId != null
+            ? await ArchitectureFamilyService.ResolveScopedAiModelHashIdAsync(db, ct)
+            : aiModelHashId;
+
         var existing = await db.ImatrixDefinitions
-            .FirstOrDefaultAsync(x => x.AiModelHashId == aiModelHashId && x.IdentityHash == identityHash, ct);
+            .FirstOrDefaultAsync(x => x.AiModelHashId == scopedAiModelHashId && x.IdentityHash == identityHash, ct);
 
         if (existing != null)
             return existing.Id;
@@ -46,7 +50,7 @@ public static class ImatrixIdentityService
 
         var row = new ImatrixDefinition
         {
-            AiModelHashId = aiModelHashId,
+            AiModelHashId = scopedAiModelHashId,
             IdentityHash = identityHash,
             CanonicalPath = Cache.ActiveImatrixPath,
             SourceKind = "runtime-active",

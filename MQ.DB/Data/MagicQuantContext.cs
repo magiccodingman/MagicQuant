@@ -204,6 +204,8 @@ public class MagicQuantContext : DbContext
     public DbSet<BaselineQuantDefinition> BaselineQuantDefinitions { get; set; }
     public DbSet<ExecutionPlanProbeCache> ExecutionPlanProbeCaches { get; set; }
     public DbSet<ImatrixDefinition> ImatrixDefinitions { get; set; }
+    public DbSet<ArchitectureFamily> ArchitectureFamilies { get; set; }
+    public DbSet<ArchitectureFamilyModelHash> ArchitectureFamilyModelHashes { get; set; }
 
     // --------------------------------------------------------
     // Configuration

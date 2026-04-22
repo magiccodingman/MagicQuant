@@ -107,6 +107,9 @@ var benchmarkService = new BenchmarkService(pyManager);
         string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
+        var architectureFamilyService = new ArchitectureFamilyService(pyManager);
+        await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(bf16ModelGgufPath);
+
         var imatrixRequest = new ImatrixRequest
         {
             UseImatrix = Cache.UseImatrix,

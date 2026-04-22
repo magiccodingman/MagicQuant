@@ -151,13 +151,7 @@ public static class TensorConfigGenerator
 
             foreach (var candidate in candidates)
             {
-                if (candidate.BannedGroupIds.Contains(group.UniqueId))
-                    continue;
-
                 if (smallest != null && candidate.UniqueId == smallest.UniqueId)
-                    continue;
-
-                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
                     continue;
 
                 var quant = HybridQuant.CreateExactBlanket(
@@ -310,12 +304,6 @@ public static class TensorConfigGenerator
                      RuntimeSearchSpace.HasUsableImatrix(),
                      allowHighPrecisionHybrids: false))
         {
-            if (candidate.BannedGroupIds.Contains(group.UniqueId))
-                continue;
-
-            if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
-                continue;
-
             return candidate;
         }
 

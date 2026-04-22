@@ -495,7 +495,8 @@ public class BenchmarkService
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
 
         string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixIdentityHash ?? "imatrix-unknown") : "no-imatrix";
-        return $"model:{Cache.CurrentModelId}|imatrix:{imatrix}|quant:{quantizationKey}";
+        string family = string.IsNullOrWhiteSpace(Cache.CurrentArchitectureFamilyName) ? Cache.CurrentModelId : Cache.CurrentArchitectureFamilyNormalizedName;
+        return $"family:{family}|model:{Cache.CurrentModelId}|imatrix:{imatrix}|quant:{quantizationKey}";
     }
 
     private static async Task<uint> GetOrCreateAiModelHashIdAsync(MagicQuantContext db, CancellationToken ct)
@@ -504,12 +505,16 @@ public class BenchmarkService
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
 
         var model = await db.AiModelHashes.FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
-        if (model != null)
-            return model.Id;
+        if (model == null)
+        {
+            model = new AiModelHash { UniqueHash = Cache.CurrentModelId };
+            db.AiModelHashes.Add(model);
+            await db.SaveChangesAsync(ct);
+        }
 
-        model = new AiModelHash { UniqueHash = Cache.CurrentModelId };
-        db.AiModelHashes.Add(model);
-        await db.SaveChangesAsync(ct);
+        if (Cache.CurrentArchitectureFamilyId != null)
+            return await ArchitectureFamilyService.ResolveScopedAiModelHashIdAsync(db, ct);
+
         return model.Id;
     }
 
@@ -1031,6 +1036,12 @@ public class BenchmarkService
             aiModelHash = new AiModelHash { UniqueHash = currentHashStr };
             db.AiModelHashes.Add(aiModelHash);
             await db.SaveChangesAsync(ct);
+        }
+
+        if (Cache.CurrentArchitectureFamilyId != null)
+        {
+            uint scopedId = await ArchitectureFamilyService.ResolveScopedAiModelHashIdAsync(db, ct);
+            aiModelHash = await db.AiModelHashes.FirstAsync(x => x.Id == scopedId, ct);
         }
 
         var tensorCombo = await GetOrCreateTensorComboAsync(db, quantConfig, ct);

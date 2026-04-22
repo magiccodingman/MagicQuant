@@ -531,11 +531,11 @@ public class IsolationOptimizationService
     {
         await using var db = new MagicQuantContext();
 
-        var model = await db.AiModelHashes.FirstOrDefaultAsync(x => x.UniqueHash == Cache.CurrentModelId, ct);
-        if (model == null)
+        var scopedAiModelHashId = await ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db, ct);
+        if (scopedAiModelHashId == null)
             return null;
 
-        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, model.Id, createIfMissing: false, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId.Value, createIfMissing: false, ct);
         var lookup = (TensorConfig)quant;
 
         var row = await db.AiBenchmarks
@@ -545,7 +545,7 @@ public class IsolationOptimizationService
                 c => c.Id,
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
-                    x.b.AiModelHashId == model.Id &&
+                    x.b.AiModelHashId == scopedAiModelHashId.Value &&
                     x.b.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.c.BaseQuant == lookup.BaseQuant &&
                     x.c.Embeddings == lookup.Embeddings &&

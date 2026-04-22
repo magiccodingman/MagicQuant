@@ -75,6 +75,13 @@ public static class MagicQuantYamlLoader
         Cache.ForceRefreshHardwareProbe = config.Flags.ForceRefreshHardwareProbe;
 
         RuntimeSearchSpace.AllowHighPrecisionHybrids = config.Flags.AllowHighPrecisionHybrids;
+        Cache.CurrentArchitectureFamilyName =
+            config.Identity.ArchitectureFamilyName?.Trim() ?? string.Empty;
+
+        Cache.AllowArchitectureFamilyAliasOverride =
+            config.Identity.AllowArchitectureFamilyAliasOverride;
+        
+        Cache.CurrentArchitectureFamilyId = null;
 
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
@@ -154,6 +161,9 @@ public static class MagicQuantYamlLoader
 
         if (ulong.TryParse(Get("manual-max-predicted-size-bytes"), out var manualBytes))
             config.Prediction.ManualMaxPredictedSizeBytes = manualBytes;
+
+        config.Identity.ArchitectureFamilyName = Prefer(Get("architecture-family"), config.Identity.ArchitectureFamilyName);
+        if (Has("allow-architecture-family-alias-override")) config.Identity.AllowArchitectureFamilyAliasOverride = true;
     }
 
     private static string? Prefer(string? preferred, string? fallback)

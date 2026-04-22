@@ -25,6 +25,23 @@ namespace MQ.DB.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "ArchitectureFamilies",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    NormalizedName = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
+                    DisplayName = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
+                    TensorSignatureHash = table.Column<string>(type: "TEXT", maxLength: 128, nullable: false),
+                    TensorCount = table.Column<int>(type: "INTEGER", nullable: false),
+                    CreatedUtc = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ArchitectureFamilies", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "BaselineQuantDefinitions",
                 columns: table => new
                 {
@@ -44,6 +61,7 @@ namespace MQ.DB.Migrations
                     IsCombinationCarrierCandidate = table.Column<bool>(type: "INTEGER", nullable: false),
                     IsExplicitGroupCombinationCandidate = table.Column<bool>(type: "INTEGER", nullable: false),
                     RequiresImatrix = table.Column<bool>(type: "INTEGER", nullable: false),
+                    BitRange = table.Column<byte>(type: "INTEGER", nullable: false),
                     ExplicitCandidateSortOrder = table.Column<int>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -94,6 +112,34 @@ namespace MQ.DB.Migrations
                         name: "FK_ImatrixDefinitions_AiModelHashes_AiModelHashId",
                         column: x => x.AiModelHashId,
                         principalTable: "AiModelHashes",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ArchitectureFamilyModelHashes",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "INTEGER", nullable: false)
+                        .Annotation("Sqlite:Autoincrement", true),
+                    ArchitectureFamilyId = table.Column<int>(type: "INTEGER", nullable: false),
+                    AiModelHashId = table.Column<uint>(type: "INTEGER", nullable: false),
+                    IsCanonical = table.Column<bool>(type: "INTEGER", nullable: false),
+                    CreatedUtc = table.Column<DateTime>(type: "TEXT", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ArchitectureFamilyModelHashes", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_ArchitectureFamilyModelHashes_AiModelHashes_AiModelHashId",
+                        column: x => x.AiModelHashId,
+                        principalTable: "AiModelHashes",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_ArchitectureFamilyModelHashes_ArchitectureFamilies_ArchitectureFamilyId",
+                        column: x => x.ArchitectureFamilyId,
+                        principalTable: "ArchitectureFamilies",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
@@ -343,6 +389,29 @@ namespace MQ.DB.Migrations
                 column: "UniqueHash");
 
             migrationBuilder.CreateIndex(
+                name: "IX_ArchitectureFamilies_NormalizedName",
+                table: "ArchitectureFamilies",
+                column: "NormalizedName",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ArchitectureFamilies_TensorSignatureHash_TensorCount",
+                table: "ArchitectureFamilies",
+                columns: new[] { "TensorSignatureHash", "TensorCount" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ArchitectureFamilyModelHashes_AiModelHashId",
+                table: "ArchitectureFamilyModelHashes",
+                column: "AiModelHashId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ArchitectureFamilyModelHashes_ArchitectureFamilyId_AiModelHashId",
+                table: "ArchitectureFamilyModelHashes",
+                columns: new[] { "ArchitectureFamilyId", "AiModelHashId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_BaselineQuantDefinitions_CanonicalKey",
                 table: "BaselineQuantDefinitions",
                 column: "CanonicalKey",
@@ -467,6 +536,9 @@ namespace MQ.DB.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
+                name: "ArchitectureFamilyModelHashes");
+
+            migrationBuilder.DropTable(
                 name: "BaselineQuantDefinitions");
 
             migrationBuilder.DropTable(
@@ -480,6 +552,9 @@ namespace MQ.DB.Migrations
 
             migrationBuilder.DropTable(
                 name: "QuantizationRuns");
+
+            migrationBuilder.DropTable(
+                name: "ArchitectureFamilies");
 
             migrationBuilder.DropTable(
                 name: "CategoryBenchmark");
