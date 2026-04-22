@@ -82,6 +82,7 @@ public class MagicQuantContext : DbContext
                 IsCombinationCarrierCandidate = x.IsCombinationCarrierCandidate,
                 IsExplicitGroupCombinationCandidate = x.IsExplicitGroupCombinationCandidate,
                 RequiresImatrix = x.RequiresImatrix,
+                BitRange = x.BitRange,
                 ExplicitCandidateSortOrder = x.ExplicitCandidateSortOrder
             })
             .OrderBy(x => x.BaselineQuantId)
@@ -149,6 +150,7 @@ public class MagicQuantContext : DbContext
                a.IsCombinationCarrierCandidate == b.IsCombinationCarrierCandidate &&
                a.IsExplicitGroupCombinationCandidate == b.IsExplicitGroupCombinationCandidate &&
                a.RequiresImatrix == b.RequiresImatrix &&
+               a.BitRange == b.BitRange &&
                a.ExplicitCandidateSortOrder == b.ExplicitCandidateSortOrder &&
                string.Equals(a.CanonicalKey, b.CanonicalKey, StringComparison.Ordinal) &&
                string.Equals(a.BaselineName, b.BaselineName, StringComparison.Ordinal) &&
@@ -178,6 +180,7 @@ public class MagicQuantContext : DbContext
         target.IsCombinationCarrierCandidate = source.IsCombinationCarrierCandidate;
         target.IsExplicitGroupCombinationCandidate = source.IsExplicitGroupCombinationCandidate;
         target.RequiresImatrix = source.RequiresImatrix;
+        target.BitRange = source.BitRange;
         target.ExplicitCandidateSortOrder = source.ExplicitCandidateSortOrder;
     }
 

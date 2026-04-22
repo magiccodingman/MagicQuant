@@ -22,6 +22,7 @@ public class BaselineQuantDefinition : ISQLiteEntity<BaselineQuantDefinition>
     public bool IsCombinationCarrierCandidate { get; set; }
     public bool IsExplicitGroupCombinationCandidate { get; set; }
     public bool RequiresImatrix { get; set; }
+    public byte BitRange { get; set; }
     public int ExplicitCandidateSortOrder { get; set; }
 
     public void Configure(EntityTypeBuilder<BaselineQuantDefinition> builder)
