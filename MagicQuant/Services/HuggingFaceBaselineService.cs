@@ -20,19 +20,39 @@ public sealed class HuggingFaceBaselineService
     {
         await EnsureHubSupportAsync();
 
+        var enabledRepos = Config.Current.Baselines.CustomRepositories.Where(x => x.Enabled).ToList();
         var resolved = new List<ResolvedCustomBaselineSpec>();
         BaselineQuants.ResetDynamicCustomBaselines();
 
+        AnsiConsole.Write(new Rule("[yellow]Custom Baseline Precheck[/]") { Justification = Justify.Left });
+        AnsiConsole.MarkupLine($"[grey]Enabled custom repositories:[/] [cyan]{enabledRepos.Count:N0}[/]");
+
+        if (enabledRepos.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey]No enabled custom repositories were configured for this run.[/]");
+            Config.SetResolvedCustomBaselines(Array.Empty<ResolvedCustomBaselineSpec>());
+            BaselineQuants.ValidateIntegrityOrThrow();
+            return resolved;
+        }
+
         byte nextId = BaselineQuants.GetFirstAvailableDynamicBaselineId();
 
-        foreach (var repo in Config.Current.Baselines.CustomRepositories.Where(x => x.Enabled))
+        foreach (var repo in enabledRepos)
         {
             if (string.IsNullOrWhiteSpace(repo.RepoId))
                 throw new InvalidOperationException("Custom baseline repository entry is missing repo_id.");
 
+            if (repo.Includes.Count == 0)
+                throw new InvalidOperationException($"Custom baseline repository '{repo.RepoId}' is enabled but has zero include entries.");
+
+            AnsiConsole.MarkupLine($"[cyan]Repo:[/] {Markup.Escape(repo.RepoId)} [grey](includes={repo.Includes.Count})[/]");
+
             var repoFiles = await ListRepoFilesAsync(repo.RepoId, ct);
             if (repoFiles.Count == 0)
                 throw new InvalidOperationException($"No files were returned from Hugging Face repo '{repo.RepoId}'.");
+
+            var ggufRepoFiles = repoFiles.Where(x => x.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)).ToList();
+            AnsiConsole.MarkupLine($"  [grey]GGUF files discovered:[/] [cyan]{ggufRepoFiles.Count:N0}[/]");
 
             string shortSourceName = string.IsNullOrWhiteSpace(repo.ShortSourceName)
                 ? DeriveShortSourceName(repo.RepoId)
@@ -86,41 +106,39 @@ public sealed class HuggingFaceBaselineService
 
                 BaselineQuants.RegisterDynamicCustomBaseline(dynamicBaseline);
 
-                resolved.Add(new ResolvedCustomBaselineSpec
+                var spec = new ResolvedCustomBaselineSpec
                 {
-                    DynamicBaselineId = nextId,
-                    CanonicalKey = canonicalKey,
-                    DisplayName = displayName,
+                    DynamicBaselineId = dynamicBaseline.UniqueId,
+                    CanonicalKey = dynamicBaseline.CanonicalKey,
+                    DisplayName = dynamicBaseline.Names[0],
                     RepoId = repo.RepoId,
-                    SourceOwner = DeriveSourceOwner(repo.RepoId),
-                    SourceFileName = resolvedFileName,
-                    ShortSourceName = shortSourceName,
+                    SourceOwner = dynamicBaseline.SourceOwner ?? string.Empty,
+                    SourceFileName = dynamicBaseline.SourceFileName ?? string.Empty,
+                    ShortSourceName = dynamicBaseline.ShortSourceName ?? shortSourceName,
                     BaselineFamily = standardFamily.Names[0],
-                    QuantizeBaseName = quantizeBaseName,
-                    RequiresImatrix = requiresImatrix,
-                    AllowAsLearningBaseline = allowAsLearning,
-                    AllowAsCombinationCarrier = allowAsCarrier,
-                    AllowAsExplicitGroupCandidate = allowAsExplicit,
-                    BannedGroupIds = bannedGroups
-                });
+                    QuantizeBaseName = dynamicBaseline.QuantizeBaseArgumentName,
+                    RequiresImatrix = dynamicBaseline.RequiresImatrix,
+                    AllowAsLearningBaseline = dynamicBaseline.IsLearningBaseline,
+                    AllowAsCombinationCarrier = dynamicBaseline.IsCombinationCarrierCandidate,
+                    AllowAsExplicitGroupCandidate = dynamicBaseline.IsExplicitGroupCombinationCandidate,
+                    BannedGroupIds = dynamicBaseline.BannedGroupIds
+                };
+
+                resolved.Add(spec);
+                AnsiConsole.MarkupLine(
+                    $"  [green]Resolved:[/] id=[cyan]{dynamicBaseline.UniqueId}[/] family=[yellow]{Markup.Escape(standardFamily.Names[0])}[/] file=[blue]{Markup.Escape(resolvedFileName)}[/] learning={allowAsLearning} carrier={allowAsCarrier} explicit={allowAsExplicit}");
 
                 checked { nextId++; }
             }
         }
 
+        if (enabledRepos.Count > 0 && resolved.Count == 0)
+            throw new InvalidOperationException("Custom baseline repositories were enabled, but zero custom baselines resolved into the runtime registry. Check YAML property names and include entries.");
+
         Config.SetResolvedCustomBaselines(resolved);
         BaselineQuants.ValidateIntegrityOrThrow();
 
-        if (resolved.Count > 0)
-        {
-            AnsiConsole.MarkupLine($"[green]Resolved custom baselines:[/] {resolved.Count:N0}");
-            foreach (var item in resolved)
-            {
-                AnsiConsole.MarkupLine(
-                    $"  [grey]- {Markup.Escape(item.DisplayName)}[/] => [cyan]{Markup.Escape(item.RepoId)}[/] / [yellow]{Markup.Escape(item.SourceFileName)}[/]");
-            }
-        }
-
+        AnsiConsole.MarkupLine($"[green]Custom baseline precheck complete:[/] [cyan]{resolved.Count:N0}[/] resolved custom baseline(s).");
         return resolved;
     }
 
@@ -136,8 +154,17 @@ public sealed class HuggingFaceBaselineService
 
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
 
+        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length == 0)
+            File.Delete(destinationPath);
+
         if (forceRedownload && File.Exists(destinationPath))
             File.Delete(destinationPath);
+
+        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length > 0)
+        {
+            AnsiConsole.MarkupLine($"[grey]Reusing cached external baseline:[/] {Markup.Escape(destinationPath)}");
+            return destinationPath;
+        }
 
         string payloadPath = Path.Combine(Path.GetDirectoryName(destinationPath)!, $"hf_download_{Guid.NewGuid():N}.json");
         string scriptPath = Path.Combine(Path.GetDirectoryName(destinationPath)!, $"hf_download_{Guid.NewGuid():N}.py");
@@ -178,12 +205,20 @@ public sealed class HuggingFaceBaselineService
                 )
 
                 if os.path.abspath(downloaded) != os.path.abspath(target_path):
+                    if os.path.exists(target_path):
+                        os.remove(target_path)
                     shutil.copy2(downloaded, target_path)
 
-                size = os.path.getsize(target_path)
-                result = {'success': True, 'path': target_path, 'size': size}
+                result = {
+                    'ok': True,
+                    'downloaded_path': target_path,
+                    'size_bytes': os.path.getsize(target_path) if os.path.exists(target_path) else 0,
+                }
             except Exception as ex:
-                result = {'success': False, 'error': str(ex)}
+                result = {
+                    'ok': False,
+                    'error': str(ex),
+                }
 
             with open(result_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f)
@@ -192,16 +227,14 @@ public sealed class HuggingFaceBaselineService
             await File.WriteAllTextAsync(scriptPath, py, ct);
             await _python.RunPythonScriptAsync(scriptPath, $"\"{payloadPath}\"");
 
-            using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(resultPath, ct));
-            if (!doc.RootElement.TryGetProperty("success", out var successProp) || !successProp.GetBoolean())
-            {
-                string error = doc.RootElement.TryGetProperty("error", out var errProp) ? errProp.GetString() ?? "unknown error" : "unknown error";
-                throw new InvalidOperationException($"Failed downloading external baseline '{baseline.Names[0]}': {error}");
-            }
+            var json = JsonDocument.Parse(await File.ReadAllTextAsync(resultPath, ct)).RootElement;
+            if (!json.GetProperty("ok").GetBoolean())
+                throw new InvalidOperationException($"External baseline download failed: {json.GetProperty("error").GetString()}");
 
             if (!File.Exists(destinationPath) || new FileInfo(destinationPath).Length == 0)
-                throw new InvalidOperationException($"External baseline download reported success but no valid file exists at '{destinationPath}'.");
+                throw new InvalidOperationException($"External baseline download completed but produced no file: {destinationPath}");
 
+            AnsiConsole.MarkupLine($"[green]Downloaded external baseline:[/] {Markup.Escape(destinationPath)}");
             return destinationPath;
         }
         finally

@@ -87,7 +87,11 @@ AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(
 
 var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
 var customBaselineService = new HuggingFaceBaselineService(pyManager);
-await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
+var resolvedCustomBaselines = await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
+if (Config.Current.Baselines.CustomRepositories.Any(x => x.Enabled) && resolvedCustomBaselines.Count == 0)
+{
+    throw new InvalidOperationException("Custom baseline repositories were enabled, but no custom baselines resolved into the runtime registry.");
+}
 await EnsureSqliteReadyAsync();
 
 var benchmarkService = new BenchmarkService(pyManager);
@@ -194,47 +198,17 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Enabled);
         RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
 
+        PrintCustomBaselineRuntimeSummary(resolvedCustomBaselines, imatrixEnsureResult.Enabled);
+
         CliHelpers.ValidateCombinationLogicWorks(true);
 
         var dbService = new QuantDatabaseService();
         await dbService.InitializeAsync();
 
         var comboCountBefore = ComboCounter.CountAll();
-        var learnedBaselinePruner = new LearnedBaselinePruningService();
-
         var totalLearnedPruningResult = new LearnedBaselinePruningResult();
 
-        if (!Cache.ForceRelearnBaselineTensorMappings)
-        {
-            var coverageStatus = await learnedBaselinePruner.GetCoverageStatusAsync();
-            if (coverageStatus.SafeToApplyBeforeStartup)
-            {
-                AnsiConsole.Write(new Rule("[yellow]Pre-Startup Learned Baseline Pruning[/]") { Justification = Justify.Left });
-                AnsiConsole.MarkupLine(
-                    $"[grey]Using existing learned baseline coverage before startup sampling:[/] [cyan]{coverageStatus.PresentCandidateGroupPairs:N0}[/]/[cyan]{coverageStatus.ExpectedCandidateGroupPairs:N0}[/] candidate-group pairs.");
-
-                SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Pre-Startup Learned-Baseline Pruning");
-                var preStartupLearnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
-                MergeLearnedPruningResults(totalLearnedPruningResult, preStartupLearnedPruningResult);
-                SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Pre-Startup Learned-Baseline Pruning");
-
-                foreach (var note in preStartupLearnedPruningResult.Notes)
-                    AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
-            }
-            else if (coverageStatus.HasAnyLearnedRows)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[grey]Skipping pre-startup learned pruning because learned coverage is incomplete for the current explicit candidate universe ({coverageStatus.PresentCandidateGroupPairs:N0}/{coverageStatus.ExpectedCandidateGroupPairs:N0} candidate-group pairs present).[/]");
-            }
-            else
-            {
-                AnsiConsole.MarkupLine("[grey]Skipping pre-startup learned pruning because no learned baseline rows exist yet for this model.[/]");
-            }
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("[grey]Skipping pre-startup learned pruning because --relearn-baseline-mappings was requested.[/]");
-        }
+        AnsiConsole.MarkupLine("[grey]Learned-baseline early pruning is disabled for this build. Startup sampling will proceed without learned-scheme candidate elimination.[/]");
 
         AnsiConsole.Write(new Rule("[yellow]Initial Isolation Startup Samples[/]") { Justification = Justify.Left });
 
@@ -249,17 +223,7 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {initialSummary.Skipped:N0}");
         AnsiConsole.MarkupLine($"  [red]Failed:[/] {initialSummary.Failed:N0}");
 
-        AnsiConsole.MarkupLine("[bold magenta]Evolution flow marker:[/] startup sampling finished, refreshing learned-baseline pruning before initial probe analysis.");
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Learned-Baseline Pruning Refresh");
-
-        AnsiConsole.Write(new Rule("[yellow]Learned Baseline Pruning Refresh[/]") { Justification = Justify.Left });
-        var learnedPruningResult = await learnedBaselinePruner.AnalyzeAndApplyAsync();
-        MergeLearnedPruningResults(totalLearnedPruningResult, learnedPruningResult);
-
-        SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Learned-Baseline Pruning Refresh");
-
-        foreach (var note in learnedPruningResult.Notes)
-            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(note)}[/]");
+        AnsiConsole.MarkupLine("[bold magenta]Evolution flow marker:[/] startup sampling finished. Learned-baseline early pruning remains disabled for subsequent phases.");
 
         var isolationOptimizer = new IsolationOptimizationService();
 
@@ -331,8 +295,8 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         long predictedSizePruned = await dbService.PrunePredictedLargerThanQ8Async(mergedPlan);
         long highPrecisionPruned = await dbService.PruneHighPrecisionHybridCandidatesAsync();
 
-        AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {totalLearnedPruningResult.GroupCandidateEliminations:N0}");
-        AnsiConsole.MarkupLine($"[green]Baselines skipped without learned rows:[/] {totalLearnedPruningResult.BaselinesSkippedWithoutLearnedRows:N0}");
+        AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {totalLearnedPruningResult.GroupCandidateEliminations:N0} [grey](early pruning disabled)[/]");
+        AnsiConsole.MarkupLine($"[green]Baselines skipped without learned rows:[/] {totalLearnedPruningResult.BaselinesSkippedWithoutLearnedRows:N0} [grey](early pruning disabled)[/]");
         AnsiConsole.MarkupLine($"[green]Groups reduced to explicit-banned->Q8-fallback:[/] {isolationResult.ExplicitQuantBannedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]BF16-suppressed groups:[/] {isolationResult.Bf16SuppressedGroups:N0}");
         AnsiConsole.MarkupLine($"[green]Hard damage eliminations:[/] {isolationResult.HardDamageEliminations:N0}");
@@ -385,15 +349,6 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         }
     }
 
-    private static void MergeLearnedPruningResults(LearnedBaselinePruningResult target, LearnedBaselinePruningResult source)
-    {
-        target.GroupCandidateEliminations += source.GroupCandidateEliminations;
-        target.BaselinesSkippedWithoutLearnedRows += source.BaselinesSkippedWithoutLearnedRows;
-
-        foreach (var note in source.Notes)
-            target.Notes.Add(note);
-    }
-
     private static void PrintIsolationGroupDecisions(IEnumerable<IsolationGroupDecision> decisions)
     {
         foreach (var gd in decisions.OrderBy(x => x.GroupName))
@@ -411,6 +366,39 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
 
             foreach (var line in gd.Candidates)
                 AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(line)}[/]");
+        }
+    }
+
+
+    private static void PrintCustomBaselineRuntimeSummary(
+        IReadOnlyCollection<ResolvedCustomBaselineSpec> resolvedCustomBaselines,
+        bool hasUsableImatrix)
+    {
+        AnsiConsole.Write(new Rule("[yellow]Custom Baseline Runtime Summary[/]") { Justification = Justify.Left });
+
+        var learning = BaselineQuants.GetLearningBaselines(hasUsableImatrix);
+        var carriers = BaselineQuants.GetCombinationCarrierBaselines(hasUsableImatrix);
+        var explicitCandidates = BaselineQuants.GetGroupCombinationCandidates(hasUsableImatrix, Config.Current.Flags.AllowHighPrecisionHybrids);
+
+        AnsiConsole.MarkupLine($"[grey]Learning baselines in runtime registry:[/] [cyan]{learning.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]Combination carriers in runtime registry:[/] [cyan]{carriers.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]Explicit group candidates in runtime registry:[/] [cyan]{explicitCandidates.Count:N0}[/]");
+
+        if (resolvedCustomBaselines.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey]No custom baselines were resolved for this run.[/]");
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"[green]Custom baselines registered:[/] [cyan]{resolvedCustomBaselines.Count:N0}[/]");
+
+        foreach (var custom in resolvedCustomBaselines.OrderBy(x => x.DynamicBaselineId))
+        {
+            bool inLearning = learning.Any(x => x.UniqueId == custom.DynamicBaselineId);
+            bool inCarriers = carriers.Any(x => x.UniqueId == custom.DynamicBaselineId);
+            bool inExplicit = explicitCandidates.Any(x => x.UniqueId == custom.DynamicBaselineId);
+
+            AnsiConsole.MarkupLine($"  [cyan]{custom.DynamicBaselineId}[/] [yellow]{Markup.Escape(custom.DisplayName)}[/] family={Markup.Escape(custom.BaselineFamily)} file={Markup.Escape(custom.SourceFileName)} learning={inLearning} carrier={inCarriers} explicit={inExplicit}");
         }
     }
 

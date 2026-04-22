@@ -137,93 +137,13 @@ public class IsolationOptimizationService
                     $"Suppressed BF16 explicit candidate for '{group.Name}' because smallest baseline-candidate probe already saved {reduction:P2}.");
             }
 
-            await ApplyEarlyCandidatePruningForContinuingGroupAsync(group, decision, ct);
-            AppendLearnedPrunedCandidates(group, decision);
+            result.Notes.Add($"Early learned-scheme continuation pruning is disabled for '{group.Name}'. All compatible candidates remain available for later pipeline stages.");
 
             result.GroupDetails.Add(decision);
         }
 
         return result;
     }
-
-    private static async Task ApplyEarlyCandidatePruningForContinuingGroupAsync(
-        TensorGroup group,
-        IsolationGroupDecision decision,
-        CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
-            return;
-
-        await using var db = new MagicQuantContext();
-
-        var aiModelHashId = await db.AiModelHashes
-            .AsNoTracking()
-            .Where(x => x.UniqueHash == Cache.CurrentModelId)
-            .Select(x => (uint?)x.Id)
-            .FirstOrDefaultAsync(ct);
-
-        if (aiModelHashId == null)
-            return;
-
-        var learnedRows = await db.LearnedBaselineTensorQuants
-            .AsNoTracking()
-            .Where(x => x.AiModelHashId == aiModelHashId.Value && x.TensorGroupId == group.UniqueId)
-            .Select(x => new LearnedBaselinePruningService.LearnedRow(
-                x.BaselineQuantId,
-                x.TensorWeightSchemeId,
-                x.TensorGroupId,
-                x.FinalQuantType))
-            .ToListAsync(ct);
-
-        if (learnedRows.Count == 0)
-            return;
-
-        var aliasToSchemeIds = LearnedBaselinePruningService.BuildAliasToSchemeIds();
-        var effectiveSchemesByCandidateAndGroup = LearnedBaselinePruningService.BuildEffectiveSchemesByBaselineAndGroup(
-            learnedRows,
-            aliasToSchemeIds);
-
-        var candidates = BaselineQuants.GetGroupCombinationCandidatesSmallestFirst(
-                RuntimeSearchSpace.HasUsableImatrix(),
-                allowHighPrecisionHybrids: false)
-            .Where(x => !x.BannedGroupIds.Contains(group.UniqueId))
-            .ToList();
-
-        foreach (var candidate in candidates)
-        {
-            if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate))
-                continue;
-
-            var expectedIds = candidate.LearnedMatchTensorWeightSchemes
-                .Select(x => x.UniqueId)
-                .Distinct()
-                .OrderBy(x => x)
-                .ToList();
-
-            if (expectedIds.Count == 0)
-                continue;
-
-            var key = (candidate.UniqueId, group.UniqueId);
-            effectiveSchemesByCandidateAndGroup.TryGetValue(key, out var effectiveIdsSet);
-            effectiveIdsSet ??= new HashSet<byte>();
-
-            var matchedIds = expectedIds
-                .Where(effectiveIdsSet.Contains)
-                .OrderBy(x => x)
-                .ToList();
-
-            if (matchedIds.Count > 0)
-                continue;
-
-            RuntimeSearchSpace.BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
-                group,
-                candidate,
-                expectedTensorWeightSchemeIds: expectedIds,
-                matchedTensorWeightSchemeIds: matchedIds,
-                note: "Early continuation gate removed candidate because learned tensor schemes for this group do not match the candidate family.");
-        }
-    }
-
 
     public async Task<IsolationOptimizationResult> AnalyzeAndApplyFinalAsync(
         RequiredSampleGenerationResult fullPlan,

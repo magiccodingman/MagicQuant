@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
@@ -30,6 +31,7 @@ public static class MagicQuantYamlLoader
 
         var yaml = File.ReadAllText(configPath);
         var loaded = deserializer.Deserialize<MagicQuantYamlConfig>(yaml) ?? MagicQuantYamlConfig.CreateDefault();
+      
         ApplyCliOverrides(loaded, args);
         NormalizeAndApply(loaded);
 

@@ -1,64 +1,231 @@
-# Production-friendly default runtime config.
-# CLI flags still override anything here.
+# ============================================================
+# MagicQuant - Default Production Configuration
+# ============================================================
+#
+# This file is intended to be the safe baseline config for production use.
+#
+# General rules:
+# - CLI flags override values from this YAML.
+# - In DEBUG, your dev config may be auto-selected instead.
+# - Leave values blank when they must be provided per-machine or per-run.
+#
+# Notes:
+# - "standard_baselines_mode: all" keeps the built-in baseline families active.
+# - Custom repositories can add extra learned baseline sources, such as Unsloth.
+# - External/custom baselines are LEARNED from, then rebuilt by MagicQuant
+#   under MagicQuant-controlled conditions before benchmarking.
+# - The old early learned-baseline pruning logic is disabled in code now,
+#   so the isolation_pruning section mainly controls later tradeoff logic.
+# ============================================================
 
 paths:
+  # Root MagicQuant working directory.
+  # If blank, runtime may fall back to current working directory logic.
   magic_quant_root:
+
+  # REQUIRED for real runs.
+  # This should point to the local source model folder containing safetensors.
   model_dir:
+
+  # Optional if MagicQuant auto-discovers or bootstraps llama.cpp.
   llama_root:
   llama_bin:
   convert_script:
+
+  # Folder name created under the MagicQuant root for external/custom GGUF downloads.
   external_baseline_cache_dir_name: ExternalBaselines
 
 flags:
+  # Whether MagicQuant should use an imatrix when supported and configured.
   use_imatrix: false
+
+  # Force rebuilding the active imatrix artifact even if one already exists.
   force_imatrix_rebuild: false
+
+  # Force relearning baseline tensor mappings even if learned truth already exists in SQLite.
   force_relearn_baseline_tensor_mappings: false
+
+  # Force rerunning hardware execution-plan probing.
   force_refresh_hardware_probe: false
+
+  # Whether exact high-precision hybrid aliases (BF16/F16-style explicit overrides)
+  # are allowed in hybrid generation logic.
   allow_high_precision_hybrids: false
 
 imatrix:
+  # Optional remote imatrix URL if your flow supports fetching one.
   imatrix_url:
+
+  # Optional dataset repo for building an imatrix from a dataset source.
   dataset_repo:
+
+  # Optional dataset split, for example: text, train, validation
   dataset_split:
+
+  # Optional dataset config / subset name.
   dataset_config:
+
+  # Optional local dataset file path for imatrix generation.
+  # Example:
+  # dataset_local_file: /data/datasets/imatrix-general-v1-1m.jsonl
   dataset_local_file:
 
 evolution:
+  # Maximum saved benchmark datapoints per category during survival/evolution stages.
   max_data_collected_per_category: 5
+
+  # Maximum survival rounds for evolution narrowing.
   max_survival_rounds: 4
+
+  # Collapse multiplier used in evolution logic.
   collapse_multiplier: 1.5
+
+  # If remaining combinations are <= this number, brute-force the end.
   brute_force_final_combination_threshold: 2000
 
 isolation_pruning:
+  # NOTE:
+  # Early learned-baseline pruning has been removed from the code path.
+  # These values still matter for later isolation / bad-trade reasoning,
+  # not for the old "skip candidate because learned tensor usage looked redundant" path.
+
+  # Minimum isolation reduction ratio required to continue considering the result meaningful.
   minimum_isolation_reduction_to_continue_ratio: 0.04
+
+  # Minimum reduction ratio before BF16 suppression logic is allowed to kick in.
   minimum_isolation_reduction_to_suppress_bf16_ratio: 0.10
+
+  # Maximum allowed isolation PPL delta percent before considering the trade poor.
   maximum_isolation_ppl_delta_percent: 5.0
+
+  # Maximum allowed isolation KLD before considering the trade poor.
   maximum_isolation_kld: 0.1
+
+  # If size savings are below this percent, the trade may be treated as bad.
   bad_trade_max_size_delta_percent: 4.0
+
+  # Multiplier thresholds for bad-trade reasoning.
   bad_trade_kld_multiplier: 2.5
   bad_trade_ppl_multiplier: 3.5
+
+  # Float comparison tolerance.
   floating_point_epsilon: 1.0e-8
+
+  # Minimum meaningful reduction ratio for base-only comparisons.
   minimum_meaningful_base_only_reduction_ratio: 0.01
 
 prediction:
+  # 0 = automatic size ceiling behavior using current built-in logic.
+  #
+  # If > 0, this becomes a hard manual predicted-size ceiling in bytes.
+  # Any predicted combo larger than this is pruned out.
+  #
+  # Example for ~4 GiB:
+  # manual_max_predicted_size_bytes: 4294967296
   manual_max_predicted_size_bytes: 0
 
 baselines:
+  # ----------------------------------------------------------
+  # standard_baselines_mode options
+  # ----------------------------------------------------------
+  # all
+  #   Keep built-in standard baselines active AND allow custom repositories.
+  #
+  # standard_only
+  #   Use only built-in baselines. Ignore custom repositories.
+  #
+  # custom_only
+  #   Use only custom repositories for learning/carrier/explicit-group roles,
+  #   except for any internal anchors the runtime still requires.
   standard_baselines_mode: all
+
+  # If empty, runtime uses normal built-in defaults for that category.
+  #
+  # Example:
+  # enabled_standard_learning_baselines: [Q8_0, Q6_K, Q5_K, Q4_K_M]
   enabled_standard_learning_baselines: []
+
+  # Example:
+  # enabled_standard_combination_carriers: [Q8_0, Q6_K, Q5_K]
   enabled_standard_combination_carriers: []
+
+  # Example:
+  # enabled_standard_explicit_group_candidates: [Q8_0, Q6_K, Q5_K, Q4_K_M, IQ4_NL, IQ4_XS]
   enabled_standard_explicit_group_candidates: []
+
   custom_repositories:
-    # - repo_id: unsloth/Qwen3.6-35B-A3B-GGUF
-    #   short_source_name: Unsloth
+    # ========================================================
+    # Example custom repository entry
+    # ========================================================
+    #
+    # This is for external/custom GGUF baselines such as Unsloth.
+    #
+    # Flow:
+    # 1. MagicQuant resolves included files from the repo
+    # 2. downloads the external GGUF
+    # 3. validates tensor-name parity against the local source model
+    # 4. learns tensor behavior from that external GGUF
+    # 5. rebuilds a MagicQuant-controlled equivalent from the local source model
+    # 6. benchmarks the rebuilt version instead of trusting the original external artifact
+    #
+    # Important:
+    # - "includes" must be plural
+    # - "baseline_family" is the internal MagicQuant family being attached to
+    # - "quantize_base_name" is the quant/base family name used in rebuild logic
+    #
+    # - repo_id: unsloth/Qwen3-4B-Instruct-2507-GGUF
     #   enabled: true
+    #   short_source_name: Unsloth
+    #   source_kind: huggingface_gguf_repository
+    #
+    #   # Repository-level defaults:
     #   allow_as_learning_baseline: true
-    #   allow_as_combination_carrier: true
-    #   allow_as_explicit_group_candidate: true
+    #   allow_as_combination_carrier: false
+    #   allow_as_explicit_group_candidate: false
+    #
+    #   # Validation / download behavior:
+    #   require_all_includes_to_resolve: true
+    #   validate_tensor_names_against_source_model: true
+    #   delete_partial_or_dirty_downloads: true
+    #   resume_or_retry_downloads: true
+    #
     #   includes:
-    #     - baseline_family: Q4_K
-    #       file_name: Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
-    #       display_name: Unsloth-Q4_K_XL
-    #       quantize_base_name: Q4_K
+    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf
+    #       baseline_family: Q4_K_M
+    #       quantize_base_name: Q4_K_M
+    #       display_name: Unsloth_Q4_K_XL
+    #       allow_as_learning_baseline: true
+    #       allow_as_combination_carrier: true
+    #       allow_as_explicit_group_candidate: true
     #       requires_imatrix: false
     #       banned_group_ids: []
+    #
+    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q5_K_XL.gguf
+    #       baseline_family: Q5_K
+    #       quantize_base_name: Q5_K
+    #       display_name: Unsloth_Q5_K_XL
+    #       allow_as_learning_baseline: true
+    #       allow_as_combination_carrier: true
+    #       allow_as_explicit_group_candidate: true
+    #
+    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q6_K_XL.gguf
+    #       baseline_family: Q6_K
+    #       quantize_base_name: Q6_K
+    #       display_name: Unsloth_Q6_K_XL
+    #       allow_as_learning_baseline: true
+    #       allow_as_combination_carrier: true
+    #       allow_as_explicit_group_candidate: true
+    #
+    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q3_K_XL.gguf
+    #       baseline_family: IQ3_S
+    #       quantize_base_name: IQ3_S
+    #       display_name: Unsloth_Q3_K_XL
+    #       allow_as_learning_baseline: true
+    #       allow_as_combination_carrier: false
+    #       allow_as_explicit_group_candidate: true
+    #
+    #     # Example note:
+    #     # If the repo does not actually contain IQ3_XS, do not reference it.
+    #     # Use only filenames that truly exist in the repository.
+    #
+    []
