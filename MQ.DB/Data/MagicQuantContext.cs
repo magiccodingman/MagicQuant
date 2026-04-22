@@ -88,8 +88,6 @@ public class MagicQuantContext : DbContext
             .ToList();
 
         var current = BaselineQuantDefinitions
-            .AsNoTracking()
-            .OrderBy(x => x.BaselineQuantId)
             .ToList();
 
         if (current.Count == 0)
@@ -99,33 +97,88 @@ public class MagicQuantContext : DbContext
             return;
         }
 
-        var mismatch = current.Count != expected.Count ||
-                       current.Zip(expected, (a, b) =>
-                           a.BaselineQuantId == b.BaselineQuantId &&
-                           a.DefaultTensorSchemeId == b.DefaultTensorSchemeId &&
-                           a.IsCustomBaseline == b.IsCustomBaseline &&
-                           a.IsLearningBaseline == b.IsLearningBaseline &&
-                           a.IsCombinationCarrierCandidate == b.IsCombinationCarrierCandidate &&
-                           a.IsExplicitGroupCombinationCandidate == b.IsExplicitGroupCombinationCandidate &&
-                           a.RequiresImatrix == b.RequiresImatrix &&
-                           a.ExplicitCandidateSortOrder == b.ExplicitCandidateSortOrder &&
-                           string.Equals(a.CanonicalKey, b.CanonicalKey, StringComparison.Ordinal) &&
-                           string.Equals(a.BaselineName, b.BaselineName, StringComparison.Ordinal) &&
-                           string.Equals(a.QuantizeBaseArgumentName, b.QuantizeBaseArgumentName, StringComparison.Ordinal) &&
-                           string.Equals(a.DefaultTensorSchemeName, b.DefaultTensorSchemeName, StringComparison.Ordinal) &&
-                           string.Equals(a.SourceKind, b.SourceKind, StringComparison.Ordinal) &&
-                           string.Equals(a.SourceOwner, b.SourceOwner, StringComparison.Ordinal) &&
-                           string.Equals(a.SourceRepository, b.SourceRepository, StringComparison.Ordinal) &&
-                           string.Equals(a.SourceFileName, b.SourceFileName, StringComparison.Ordinal) &&
-                           string.Equals(a.ShortSourceName, b.ShortSourceName, StringComparison.Ordinal))
-                           .Any(equal => !equal);
+        var currentByCanonicalKey = current
+            .Where(x => !string.IsNullOrWhiteSpace(x.CanonicalKey))
+            .GroupBy(x => x.CanonicalKey, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderBy(x => x.BaselineQuantId).First(),
+                StringComparer.Ordinal);
 
-        if (mismatch)
+        var currentById = current.ToDictionary(x => x.BaselineQuantId);
+        var changed = false;
+
+        foreach (var expectedRow in expected)
         {
-            throw new InvalidOperationException(
-                "BaselineQuantDefinitions table is out of sync with the runtime baseline registry. " +
-                "Delete the SQLite DB, recreate migrations, and let MagicQuant reseed baseline definitions.");
+            BaselineQuantDefinition? target = null;
+
+            if (!string.IsNullOrWhiteSpace(expectedRow.CanonicalKey) &&
+                currentByCanonicalKey.TryGetValue(expectedRow.CanonicalKey, out var byCanonicalKey))
+            {
+                target = byCanonicalKey;
+            }
+            else if (currentById.TryGetValue(expectedRow.BaselineQuantId, out var byId))
+            {
+                target = byId;
+            }
+
+            if (target == null)
+            {
+                BaselineQuantDefinitions.Add(expectedRow);
+                changed = true;
+                continue;
+            }
+
+            if (!BaselineDefinitionEquals(target, expectedRow))
+            {
+                ApplyBaselineDefinitionUpdate(target, expectedRow);
+                changed = true;
+            }
         }
+
+        if (changed)
+            SaveChanges();
+    }
+
+    private static bool BaselineDefinitionEquals(BaselineQuantDefinition a, BaselineQuantDefinition b)
+    {
+        return a.BaselineQuantId == b.BaselineQuantId &&
+               a.DefaultTensorSchemeId == b.DefaultTensorSchemeId &&
+               a.IsCustomBaseline == b.IsCustomBaseline &&
+               a.IsLearningBaseline == b.IsLearningBaseline &&
+               a.IsCombinationCarrierCandidate == b.IsCombinationCarrierCandidate &&
+               a.IsExplicitGroupCombinationCandidate == b.IsExplicitGroupCombinationCandidate &&
+               a.RequiresImatrix == b.RequiresImatrix &&
+               a.ExplicitCandidateSortOrder == b.ExplicitCandidateSortOrder &&
+               string.Equals(a.CanonicalKey, b.CanonicalKey, StringComparison.Ordinal) &&
+               string.Equals(a.BaselineName, b.BaselineName, StringComparison.Ordinal) &&
+               string.Equals(a.QuantizeBaseArgumentName, b.QuantizeBaseArgumentName, StringComparison.Ordinal) &&
+               string.Equals(a.DefaultTensorSchemeName, b.DefaultTensorSchemeName, StringComparison.Ordinal) &&
+               string.Equals(a.SourceKind, b.SourceKind, StringComparison.Ordinal) &&
+               string.Equals(a.SourceOwner, b.SourceOwner, StringComparison.Ordinal) &&
+               string.Equals(a.SourceRepository, b.SourceRepository, StringComparison.Ordinal) &&
+               string.Equals(a.SourceFileName, b.SourceFileName, StringComparison.Ordinal) &&
+               string.Equals(a.ShortSourceName, b.ShortSourceName, StringComparison.Ordinal);
+    }
+
+    private static void ApplyBaselineDefinitionUpdate(BaselineQuantDefinition target, BaselineQuantDefinition source)
+    {
+        target.CanonicalKey = source.CanonicalKey;
+        target.BaselineName = source.BaselineName;
+        target.QuantizeBaseArgumentName = source.QuantizeBaseArgumentName;
+        target.DefaultTensorSchemeId = source.DefaultTensorSchemeId;
+        target.DefaultTensorSchemeName = source.DefaultTensorSchemeName;
+        target.SourceKind = source.SourceKind;
+        target.SourceOwner = source.SourceOwner;
+        target.SourceRepository = source.SourceRepository;
+        target.SourceFileName = source.SourceFileName;
+        target.ShortSourceName = source.ShortSourceName;
+        target.IsCustomBaseline = source.IsCustomBaseline;
+        target.IsLearningBaseline = source.IsLearningBaseline;
+        target.IsCombinationCarrierCandidate = source.IsCombinationCarrierCandidate;
+        target.IsExplicitGroupCombinationCandidate = source.IsExplicitGroupCombinationCandidate;
+        target.RequiresImatrix = source.RequiresImatrix;
+        target.ExplicitCandidateSortOrder = source.ExplicitCandidateSortOrder;
     }
 
     private static bool IsDesignTime()

@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using MQ.DB.Data;
 using System.Text.Json;
 using MagicQuant.Configuration;
 using MagicQuant.Helpers;
@@ -34,6 +36,14 @@ public sealed class HuggingFaceBaselineService
             BaselineQuants.ValidateIntegrityOrThrow();
             return resolved;
         }
+
+        var existingDynamicIdsByCanonicalKey = LoadExistingDynamicBaselineIds();
+        var reservedIds = BaselineQuants.GetAllRecognizedBaselines()
+            .Select(x => x.UniqueId)
+            .ToHashSet();
+
+        foreach (var persistedId in existingDynamicIdsByCanonicalKey.Values)
+            reservedIds.Add(persistedId);
 
         byte nextId = BaselineQuants.GetFirstAvailableDynamicBaselineId();
 
@@ -85,8 +95,14 @@ public sealed class HuggingFaceBaselineService
                     ? include.BannedGroupIds.ToArray()
                     : standardFamily.BannedGroupIds.ToArray();
 
+                byte dynamicBaselineId = ResolveDynamicBaselineId(
+                    canonicalKey,
+                    existingDynamicIdsByCanonicalKey,
+                    reservedIds,
+                    ref nextId);
+
                 var dynamicBaseline = BaselineQuants.CreateDynamicCustomBaseline(
-                    uniqueId: nextId,
+                    uniqueId: dynamicBaselineId,
                     displayName: displayName,
                     quantizeBaseArgumentName: quantizeBaseName,
                     sourceRepository: repo.RepoId,
@@ -102,6 +118,7 @@ public sealed class HuggingFaceBaselineService
                     isLearningBaseline: allowAsLearning,
                     isCombinationCarrierCandidate: allowAsCarrier,
                     isExplicitGroupCombinationCandidate: allowAsExplicit,
+                    bitRange: standardFamily.BitRange,
                     explicitCandidateSortOrder: standardFamily.ExplicitCandidateSortOrder);
 
                 BaselineQuants.RegisterDynamicCustomBaseline(dynamicBaseline);
@@ -127,8 +144,6 @@ public sealed class HuggingFaceBaselineService
                 resolved.Add(spec);
                 AnsiConsole.MarkupLine(
                     $"  [green]Resolved:[/] id=[cyan]{dynamicBaseline.UniqueId}[/] family=[yellow]{Markup.Escape(standardFamily.Names[0])}[/] file=[blue]{Markup.Escape(resolvedFileName)}[/] learning={allowAsLearning} carrier={allowAsCarrier} explicit={allowAsExplicit}");
-
-                checked { nextId++; }
             }
         }
 
@@ -140,6 +155,54 @@ public sealed class HuggingFaceBaselineService
 
         AnsiConsole.MarkupLine($"[green]Custom baseline precheck complete:[/] [cyan]{resolved.Count:N0}[/] resolved custom baseline(s).");
         return resolved;
+    }
+
+    private static Dictionary<string, byte> LoadExistingDynamicBaselineIds()
+    {
+        try
+        {
+            using var db = new MagicQuantContext();
+
+            return db.BaselineQuantDefinitions
+                .AsNoTracking()
+                .Where(x => x.IsCustomBaseline && !string.IsNullOrWhiteSpace(x.CanonicalKey))
+                .OrderBy(x => x.BaselineQuantId)
+                .ToDictionary(x => x.CanonicalKey, x => x.BaselineQuantId, StringComparer.Ordinal);
+        }
+        catch
+        {
+            return new Dictionary<string, byte>(StringComparer.Ordinal);
+        }
+    }
+
+    private static byte ResolveDynamicBaselineId(
+        string canonicalKey,
+        IReadOnlyDictionary<string, byte> existingDynamicIdsByCanonicalKey,
+        HashSet<byte> reservedIds,
+        ref byte nextId)
+    {
+        if (!string.IsNullOrWhiteSpace(canonicalKey) &&
+            existingDynamicIdsByCanonicalKey.TryGetValue(canonicalKey, out var existingId))
+        {
+            reservedIds.Add(existingId);
+            return existingId;
+        }
+
+        while (reservedIds.Contains(nextId))
+        {
+            if (nextId >= 199)
+                throw new InvalidOperationException("No free dynamic baseline ids remain in the configured range.");
+
+            nextId++;
+        }
+
+        var allocated = nextId;
+        reservedIds.Add(allocated);
+
+        if (nextId < 199)
+            nextId++;
+
+        return allocated;
     }
 
     public async Task<string> DownloadBaselineAsync(BaselineQuants baseline, string destinationPath, bool forceRedownload = false, CancellationToken ct = default)

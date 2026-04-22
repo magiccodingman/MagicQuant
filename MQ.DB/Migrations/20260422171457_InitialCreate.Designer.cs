@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace MQ.DB.Migrations
 {
     [DbContext(typeof(MagicQuantContext))]
-    [Migration("20260421190835_InitialCreate")]
+    [Migration("20260422171457_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />

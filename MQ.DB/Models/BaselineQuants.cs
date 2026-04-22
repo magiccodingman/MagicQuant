@@ -15,6 +15,7 @@ public record BaselineQuants(
     bool IsCombinationCarrierCandidate,
     bool IsExplicitGroupCombinationCandidate,
     bool IsHighPrecisionExactAlias,
+    byte BitRange,
     bool IsCustomBaseline = false,
     string CanonicalKey = "",
     string SourceKind = "standard",
@@ -37,6 +38,7 @@ public record BaselineQuants(
     public ImmutableArray<TensorWeightScheme> TensorWeightSchemes => LearnedMatchTensorWeightSchemes;
     public bool IsPureBaselineCandidate => IsLearningBaseline;
     public bool IsHighPrecisionExplicitCandidate => IsHighPrecisionExactAlias;
+
     public bool IsExternalRepositoryBaseline =>
         IsCustomBaseline &&
         !string.IsNullOrWhiteSpace(SourceRepository) &&
@@ -54,6 +56,7 @@ public record BaselineQuants(
         bool isCombinationCarrierCandidate,
         bool isExplicitGroupCombinationCandidate,
         bool isHighPrecisionExactAlias,
+        byte bitRange,
         int explicitCandidateSortOrder = int.MaxValue,
         bool isCustomBaseline = false,
         string? canonicalKey = null,
@@ -75,6 +78,7 @@ public record BaselineQuants(
             isCombinationCarrierCandidate,
             isExplicitGroupCombinationCandidate,
             isHighPrecisionExactAlias,
+            bitRange,
             isCustomBaseline,
             canonicalKey ?? $"standard:{name.ToLowerInvariant()}",
             sourceKind,
@@ -86,47 +90,46 @@ public record BaselineQuants(
     }
 
     public static readonly BaselineQuants Q8_0 =
-        Create(0, false, "Q8_0", "Q8_0", TensorWeightScheme.Q8_0, [TensorWeightScheme.Q8_0], [], true, true, true, false, 11);
+        Create(0, false, "Q8_0", "Q8_0", TensorWeightScheme.Q8_0, [TensorWeightScheme.Q8_0], [], true, true, true, false, 8, 11);
 
     public static readonly BaselineQuants Q6_K =
-        Create(1, false, "Q6_K", "Q6_K", TensorWeightScheme.Q6_K, [TensorWeightScheme.Q6_K], [], true, true, true, false, 10);
+        Create(1, false, "Q6_K", "Q6_K", TensorWeightScheme.Q6_K, [TensorWeightScheme.Q6_K], [], true, true, true, false, 6, 10);
 
     public static readonly BaselineQuants Q5_K =
-        Create(2, false, "Q5_K", "Q5_K", TensorWeightScheme.Q5_K, [TensorWeightScheme.Q5_K], [TReg.MoeRouter.UniqueId], true, true, true, false, 9);
+        Create(2, false, "Q5_K", "Q5_K", TensorWeightScheme.Q5_K, [TensorWeightScheme.Q5_K], [TReg.MoeRouter.UniqueId], true, true, true, false, 5, 9);
 
     public static readonly BaselineQuants Q4_K_M =
-        Create(3, false, "Q4_K_M", "Q4_K_M", TensorWeightScheme.Q4_K, [TensorWeightScheme.Q4_K], [TReg.MoeRouter.UniqueId], true, true, true, false, 8);
+        Create(3, false, "Q4_K_M", "Q4_K_M", TensorWeightScheme.Q4_K, [TensorWeightScheme.Q4_K], [TReg.MoeRouter.UniqueId], true, true, true, false, 4, 8);
 
     public static readonly BaselineQuants IQ4_NL =
-        Create(5, false, "IQ4_NL", "IQ4_NL", TensorWeightScheme.IQ4_NL, [TensorWeightScheme.IQ4_NL], [TReg.MoeRouter.UniqueId], true, true, true, false, 7);
+        Create(5, false, "IQ4_NL", "IQ4_NL", TensorWeightScheme.IQ4_NL, [TensorWeightScheme.IQ4_NL], [TReg.MoeRouter.UniqueId], true, true, true, false, 4, 7);
 
     public static readonly BaselineQuants IQ4_XS =
-        Create(6, false, "IQ4_XS", "IQ4_XS", TensorWeightScheme.IQ4_XS, [TensorWeightScheme.IQ4_XS], [TReg.MoeRouter.UniqueId], true, true, true, false, 6);
+        Create(6, false, "IQ4_XS", "IQ4_XS", TensorWeightScheme.IQ4_XS, [TensorWeightScheme.IQ4_XS], [TReg.MoeRouter.UniqueId], true, true, true, false, 4, 6);
 
     public static readonly BaselineQuants IQ3_S =
-        Create(7, true, "IQ3_S", "IQ3_S", TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 5);
+        Create(7, true, "IQ3_S", "IQ3_S", TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 5);
 
     public static readonly BaselineQuants IQ3_XS =
-        Create(8, true, "IQ3_XS", "IQ3_XS", TensorWeightScheme.IQ3_XS, [TensorWeightScheme.IQ3_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 4);
+        Create(8, true, "IQ3_XS", "IQ3_XS", TensorWeightScheme.IQ3_XS, [TensorWeightScheme.IQ3_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 4);
 
     public static readonly BaselineQuants IQ3_XXS =
-        Create(9, true, "IQ3_XXS", "IQ3_XXS", TensorWeightScheme.IQ3_XXS, [TensorWeightScheme.IQ3_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3);
+        Create(9, true, "IQ3_XXS", "IQ3_XXS", TensorWeightScheme.IQ3_XXS, [TensorWeightScheme.IQ3_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 3);
 
     public static readonly BaselineQuants IQ2_S =
-        Create(10, true, "IQ2_S", "IQ2_S", TensorWeightScheme.IQ2_S, [TensorWeightScheme.IQ2_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId], true, false, true, false, 2);
+        Create(10, true, "IQ2_S", "IQ2_S", TensorWeightScheme.IQ2_S, [TensorWeightScheme.IQ2_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId], true, false, true, false, 2, 2);
 
     public static readonly BaselineQuants IQ2_XS =
-        Create(11, true, "IQ2_XS", "IQ2_XS", TensorWeightScheme.IQ2_XS, [TensorWeightScheme.IQ2_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId], true, false, true, false, 1);
+        Create(11, true, "IQ2_XS", "IQ2_XS", TensorWeightScheme.IQ2_XS, [TensorWeightScheme.IQ2_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId], true, false, true, false, 2, 1);
 
     public static readonly BaselineQuants IQ2_XXS =
-        Create(12, true, "IQ2_XXS", "IQ2_XXS", TensorWeightScheme.IQ2_XXS, [TensorWeightScheme.IQ2_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId, TReg.AttnKV.UniqueId], true, false, true, false, 0);
-
+        Create(12, true, "IQ2_XXS", "IQ2_XXS", TensorWeightScheme.IQ2_XXS, [TensorWeightScheme.IQ2_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId, TReg.AttnKV.UniqueId], true, false, true, false, 2, 0);
 
     public static readonly BaselineQuants BF16_Hybrid =
-        Create(201, false, "BF16", "BF16", TensorWeightScheme.BF16, [TensorWeightScheme.BF16], [], false, false, false, true, int.MaxValue, false, "alias:bf16", "exact_alias", null, null, null, null);
+        Create(201, false, "BF16", "BF16", TensorWeightScheme.BF16, [TensorWeightScheme.BF16], [], false, false, false, true, 16, int.MaxValue, false, "alias:bf16", "exact_alias", null, null, null, null);
 
     public static readonly BaselineQuants F16_Hybrid =
-        Create(202, false, "F16", "F16", TensorWeightScheme.F16, [TensorWeightScheme.F16], [], false, false, false, true, int.MaxValue, false, "alias:f16", "exact_alias", null, null, null, null);
+        Create(202, false, "F16", "F16", TensorWeightScheme.F16, [TensorWeightScheme.F16], [], false, false, false, true, 16, int.MaxValue, false, "alias:f16", "exact_alias", null, null, null, null);
 
     private static readonly ImmutableArray<BaselineQuants> StandardBaselines =
     [
@@ -169,6 +172,7 @@ public record BaselineQuants(
         bool isLearningBaseline,
         bool isCombinationCarrierCandidate,
         bool isExplicitGroupCombinationCandidate,
+        byte bitRange,
         int explicitCandidateSortOrder)
     {
         return new BaselineQuants(
@@ -183,6 +187,7 @@ public record BaselineQuants(
             isCombinationCarrierCandidate,
             isExplicitGroupCombinationCandidate,
             false,
+            bitRange,
             true,
             canonicalKey,
             sourceKind,
@@ -304,6 +309,7 @@ public record BaselineQuants(
         public bool AddAsLearningBaseline { get; set; }
         public bool AddAsCombinationCarrier { get; set; }
         public bool AddAsGroupCandidate { get; set; }
+        public byte BitRange { get; set; }
         public IReadOnlyCollection<byte> BannedGroupIds { get; set; } = Array.Empty<byte>();
     }
 
@@ -330,6 +336,7 @@ public record BaselineQuants(
             registration.AddAsLearningBaseline,
             registration.AddAsCombinationCarrier,
             registration.AddAsGroupCandidate,
+            registration.BitRange,
             sortOrder);
 
         RegisterDynamicCustomBaseline(baseline);
@@ -352,6 +359,7 @@ public record BaselineQuants(
             false,
             false,
             true,
+            16,
             false,
             $"native:{nativeScheme.Names[0].ToLowerInvariant()}",
             "native_exact_alias",
@@ -434,7 +442,8 @@ public record BaselineQuants(
 
     public static IReadOnlyList<BaselineQuants> GetGroupCombinationCandidatesSmallestFirst(bool hasUsableImatrix, bool allowHighPrecisionHybrids) =>
         GetGroupCombinationCandidates(hasUsableImatrix, allowHighPrecisionHybrids)
-            .OrderBy(x => x.ExplicitCandidateSortOrder)
+            .OrderBy(x => x.BitRange)
+            .ThenBy(x => x.ExplicitCandidateSortOrder)
             .ThenBy(x => x.UniqueId)
             .ToList();
 
