@@ -1,4 +1,16 @@
-# Dev config. This is auto-selected in DEBUG when --config is not supplied.
+# Dev config. Auto-selected in DEBUG when --config is not supplied.
+# CLI flags should override values here when both are present.
+#
+# IMPORTANT:
+# - standard_baselines_mode: all
+#     Keeps built-in llama.cpp learning baselines + allows custom repository baselines too.
+# - custom repositories below are additional learned baseline sources.
+# - include entries are explicit and safest because file naming can vary by repo.
+# - attached_to_baseline tells MagicQuant which internal learned baseline identity this file should behave as.
+# - display_name is just a friendly name for logs / DB / troubleshooting.
+# - quantize_base_argument_name should normally be the internal baseline family name you want it associated with.
+# - short_source_name is what can show up in naming/logic as the short source marker.
+# - source_kind is just a source label so this is clearly not a normal llama.cpp-built baseline.
 
 paths:
   magic_quant_root:
@@ -40,6 +52,7 @@ isolation_pruning:
   minimum_meaningful_base_only_reduction_ratio: 0.01
 
 prediction:
+  # 0 = automatic current logic based on learned/default threshold behavior.
   manual_max_predicted_size_bytes: 0
 
 baselines:
@@ -47,4 +60,54 @@ baselines:
   enabled_standard_learning_baselines: []
   enabled_standard_combination_carriers: []
   enabled_standard_explicit_group_candidates: []
-  custom_repositories: []
+
+  custom_repositories:
+    - repo_id: unsloth/Qwen3-4B-Instruct-2507-GGUF
+      enabled: true
+      short_source_name: Unsloth
+      source_kind: huggingface_gguf_repository
+      require_all_includes_to_resolve: true
+      validate_tensor_names_against_source_model: true
+      delete_partial_or_dirty_downloads: true
+      resume_or_retry_downloads: true
+
+      include:
+        - file_name: Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf
+          attached_to_baseline: Q4_K_M
+          quantize_base_argument_name: Q4_K_M
+          display_name: Unsloth_Q4_K_XL
+          enabled_for_learning: true
+          enabled_for_combination_carrier: true
+          enabled_for_explicit_group_candidate: true
+
+        - file_name: Qwen3-4B-Instruct-2507-UD-Q5_K_XL.gguf
+          attached_to_baseline: Q5_K
+          quantize_base_argument_name: Q5_K
+          display_name: Unsloth_Q5_K_XL
+          enabled_for_learning: true
+          enabled_for_combination_carrier: true
+          enabled_for_explicit_group_candidate: true
+
+        - file_name: Qwen3-4B-Instruct-2507-UD-Q6_K_XL.gguf
+          attached_to_baseline: Q6_K
+          quantize_base_argument_name: Q6_K
+          display_name: Unsloth_Q6_K_XL
+          enabled_for_learning: true
+          enabled_for_combination_carrier: true
+          enabled_for_explicit_group_candidate: true
+
+        - file_name: Qwen3-4B-Instruct-2507-UD-Q3_K_XL.gguf
+          attached_to_baseline: IQ3_S
+          quantize_base_argument_name: IQ3_S
+          display_name: Unsloth_Q3_K_XL
+          enabled_for_learning: true
+          enabled_for_combination_carrier: false
+          enabled_for_explicit_group_candidate: true
+
+        - file_name: Qwen3-4B-Instruct-2507-UD-IQ3_XS.gguf
+          attached_to_baseline: IQ3_XS
+          quantize_base_argument_name: IQ3_XS
+          display_name: Unsloth_IQ3_XS
+          enabled_for_learning: true
+          enabled_for_combination_carrier: false
+          enabled_for_explicit_group_candidate: true

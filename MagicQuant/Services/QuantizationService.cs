@@ -1674,7 +1674,24 @@ private Dictionary<string, string> TryLoadAllLearnedTensorMappings(
         rows = rows.Where(x => x.TensorWeightSchemeId == dominantSchemeId).ToList();
     }
 
-    return rows.ToDictionary(x => x.TensorName, x => x.FinalQuantType, StringComparer.Ordinal);
+    var result = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    foreach (var row in rows)
+    {
+        var appliedSchemeName =
+            NativePrecisionNormalization.NormalizeLearnedFinalQuantTypeForApplication(row.FinalQuantType);
+
+        if (string.IsNullOrWhiteSpace(appliedSchemeName))
+        {
+            throw new InvalidOperationException(
+                $"Learned tensor mapping for tensor '{row.TensorName}' on baseline key '{canonicalBaselineKey}' " +
+                $"returned an empty normalized scheme name. Observed FinalQuantType='{row.FinalQuantType}'.");
+        }
+
+        result[row.TensorName] = appliedSchemeName;
+    }
+
+    return result;
 }
 
 private Dictionary<string, string> TryLoadLearnedTensorMapping(
@@ -1739,7 +1756,24 @@ private Dictionary<string, string> TryLoadLearnedTensorMapping(
             rows = rows.Where(x => x.TensorWeightSchemeId == dominantSchemeId).ToList();
         }
 
-        return rows.ToDictionary(x => x.TensorName, x => x.FinalQuantType, StringComparer.Ordinal);
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var row in rows)
+        {
+            var appliedSchemeName =
+                NativePrecisionNormalization.NormalizeLearnedFinalQuantTypeForApplication(row.FinalQuantType);
+
+            if (string.IsNullOrWhiteSpace(appliedSchemeName))
+            {
+                throw new InvalidOperationException(
+                    $"Learned tensor mapping for tensor '{row.TensorName}' in group '{targetGroup.Name}' " +
+                    $"returned an empty normalized scheme name. Observed FinalQuantType='{row.FinalQuantType}'.");
+            }
+
+            result[row.TensorName] = appliedSchemeName;
+        }
+
+        return result;
     }
 
 
