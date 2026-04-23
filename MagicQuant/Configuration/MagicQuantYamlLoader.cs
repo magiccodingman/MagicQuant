@@ -83,6 +83,17 @@ public static class MagicQuantYamlLoader
         
         Cache.CurrentArchitectureFamilyId = null;
 
+        config.Output.OutputDir = string.IsNullOrWhiteSpace(config.Output.OutputDir)
+            ? null
+            : config.Output.OutputDir.Trim();
+
+        config.Output.OutputNamePrefix = string.IsNullOrWhiteSpace(config.Output.OutputNamePrefix)
+            ? "model"
+            : config.Output.OutputNamePrefix.Trim();
+
+        if (config.Survival.MaxSelectedChoicesPerBucket <= 0)
+            throw new InvalidOperationException("survival.max_selected_choices_per_bucket must be greater than 0.");
+
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
     }
@@ -161,6 +172,31 @@ public static class MagicQuantYamlLoader
 
         if (ulong.TryParse(Get("manual-max-predicted-size-bytes"), out var manualBytes))
             config.Prediction.ManualMaxPredictedSizeBytes = manualBytes;
+
+        config.Output.OutputDir = Prefer(Get("output-dir"), config.Output.OutputDir);
+        config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);
+        if (Has("export-external-learned-baselines")) config.Output.ExportExternalLearnedBaselines = true;
+
+        if (int.TryParse(Get("max-selected-choices-per-bucket"), out var maxSelectedChoicesPerBucket) && maxSelectedChoicesPerBucket > 0)
+            config.Survival.MaxSelectedChoicesPerBucket = maxSelectedChoicesPerBucket;
+
+        if (double.TryParse(Get("survival-meaningful-size-bias-percent"), out var sizeBiasPercent) && sizeBiasPercent >= 0d)
+            config.Survival.MeaningfulSizeBiasPercent = sizeBiasPercent;
+
+        if (double.TryParse(Get("survival-kld-close-call-absolute-epsilon"), out var kldCloseCallAbs) && kldCloseCallAbs >= 0d)
+            config.Survival.KldCloseCallAbsoluteEpsilon = kldCloseCallAbs;
+
+        if (double.TryParse(Get("survival-kld-close-call-relative-fraction"), out var kldCloseCallRelative) && kldCloseCallRelative >= 0d)
+            config.Survival.KldCloseCallRelativeFraction = kldCloseCallRelative;
+
+        if (double.TryParse(Get("survival-ppl-large-difference-percent"), out var pplLargeDiff) && pplLargeDiff >= 0d)
+            config.Survival.PplLargeDifferencePercent = pplLargeDiff;
+
+        if (double.TryParse(Get("survival-trade-score-size-bias-weight"), out var sizeWeight) && sizeWeight >= 0d)
+            config.Survival.TradeScoreSizeBiasWeight = sizeWeight;
+
+        if (double.TryParse(Get("survival-trade-score-ppl-weight"), out var pplWeight) && pplWeight >= 0d)
+            config.Survival.TradeScorePplWeight = pplWeight;
 
         config.Identity.ArchitectureFamilyName = Prefer(Get("architecture-family"), config.Identity.ArchitectureFamilyName);
         if (Has("allow-architecture-family-alias-override")) config.Identity.AllowArchitectureFamilyAliasOverride = true;

@@ -13,16 +13,14 @@ public class BuildHybrids : ICommand
             return;
         }
 
-        await Task.Yield();
-
-        throw new NotImplementedException(
-            "The build-hybrids command is currently disabled. Use `evolution` for active hybrid generation workflows.");
+        AnsiConsole.MarkupLine("[grey]build-hybrids now routes through the centralized evolution/survival/export pipeline.[/]");
+        await new Evolution().Run(args);
     }
 
     private static void ShowHelp()
     {
         AnsiConsole.MarkupLine("[bold yellow]Command: build-hybrids[/]");
-        AnsiConsole.MarkupLine("Builds/benchmarks remaining hybrid combinations from the current candidate-based search space.");
-        AnsiConsole.MarkupLine("Usage: mq build-hybrids --model-dir \"<path>\" [--use-imatrix] [--allow-high-precision-hybrids]");
+        AnsiConsole.MarkupLine("Runs the centralized survival/export flow over the active MagicQuant evolution pipeline.");
+        AnsiConsole.MarkupLine("Usage: mq build-hybrids --model-dir \"<path>\" [--output-dir \"<path>\"] [--output-name-prefix \"model\"] [--export-external-learned-baselines]");
     }
 }

@@ -72,10 +72,13 @@ RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPre
         if (!Directory.Exists(Cache.ModelMagicQuantDirectory))
             Directory.CreateDirectory(Cache.ModelMagicQuantDirectory);
 
+        Cache.OutputDirectory = ResolveAndValidateOutputDirectory();
+
         AnsiConsole.MarkupLine("[green]✔ Model Directory Validated[/]");
         AnsiConsole.Write(new Rule("[yellow]Evolution Configuration[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"Model Path:   [blue]{Markup.Escape(Cache.ModelDirectory)}[/]");
-        AnsiConsole.MarkupLine($"Output Path:  [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
+        AnsiConsole.MarkupLine($"Work Path:    [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
+        AnsiConsole.MarkupLine($"Export Path:  [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
         AnsiConsole.MarkupLine($"Files Found:  [green]{safeTensorFiles.Length:N0}[/] safe tensors");
 
         if (string.IsNullOrEmpty(Cache.LlamaBin))
@@ -316,40 +319,16 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
 
         long finalRemainingCombinationCount = await dbService.GetRemainingCombinationCountAsync();
 
-        AnsiConsole.MarkupLine($"[green]Final surviving combinations:[/] {finalRemainingCombinationCount:N0}");
+        AnsiConsole.MarkupLine($"[green]Final surviving combinations after stage-1 pruning:[/] {finalRemainingCombinationCount:N0}");
 
-        int bruteForceFinalCombinationThreshold = Config.BruteForceFinalCombinationThreshold;
+        var survivalPipeline = new CombinationSurvivalPipelineService(quantizationService);
+        var finalizationResult = await survivalPipeline.RunAsync(ct: default);
 
-        if (finalRemainingCombinationCount <= bruteForceFinalCombinationThreshold)
-        {
-            AnsiConsole.Write(new Rule("[yellow]Final Brute Force Benchmark Phase[/]") { Justification = Justify.Left });
-
-            AnsiConsole.MarkupLine(
-                $"[green]Final combination count[/] [cyan]{finalRemainingCombinationCount:N0}[/] " +
-                $"is at or below the brute-force threshold of [yellow]{bruteForceFinalCombinationThreshold:N0}[/].");
-
-            var finalConfigs = await dbService.GetRemainingTensorConfigsAsync();
-            var finalQuants = finalConfigs
-                .Select(x => (HybridQuant)x)
-                .ToList();
-
-            var finalSummary = await quantizationService.ProcessHybridBatchAsync(finalQuants);
-
-            AnsiConsole.MarkupLine("[bold green]Final brute force benchmarking complete.[/]");
-            AnsiConsole.MarkupLine($"  [green]Requested:[/] {finalSummary.Requested:N0}");
-            AnsiConsole.MarkupLine($"  [green]Completed:[/] {finalSummary.Completed:N0}");
-            AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {finalSummary.Skipped:N0}");
-            AnsiConsole.MarkupLine($"  [red]Failed:[/] {finalSummary.Failed:N0}");
-            AnsiConsole.MarkupLine("[yellow]Note:[/] Final model creation/export functionality is still being implemented.");
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("[yellow]Note:[/] Final model creation/export functionality is still being implemented.");
-
-            throw new InvalidOperationException(
-                $"Prediction engine not created yet. Final surviving combinations were {finalRemainingCombinationCount:N0}, " +
-                $"which is above the brute-force threshold of {bruteForceFinalCombinationThreshold:N0}.");
-        }
+        AnsiConsole.Write(new Rule("[yellow]Export Summary[/]") { Justification = Justify.Left });
+        AnsiConsole.MarkupLine($"[green]Export directory:[/] [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
+        AnsiConsole.MarkupLine($"[green]Final brutal survivors:[/] [cyan]{finalizationResult.BrutalSurvivors.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[green]Selected survivors:[/] [cyan]{finalizationResult.SelectedRows.Count(x => x.Enabled):N0}[/]");
+        AnsiConsole.MarkupLine($"[green]Exported/linkable artifacts:[/] [cyan]{finalizationResult.ExportedArtifacts.Count:N0}[/]");
     }
 
     private static void PrintIsolationGroupDecisions(IEnumerable<IsolationGroupDecision> decisions)
@@ -428,10 +407,39 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-config[/]    Optional dataset config name for HF datasets (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-local-file[/]    Full path to local .json/.jsonl dataset source (Optional)");
         AnsiConsole.MarkupLine("  [green]--manual-max-predicted-size-bytes[/]    Override late predicted-size pruning ceiling (Optional; 0 = auto Q8 ceiling)");
+        AnsiConsole.MarkupLine("  [green]--output-dir[/]    Final export/output directory for selected survivor artifacts (Optional; default = <model>/MagicQuant/Final_Outputs)");
+        AnsiConsole.MarkupLine("  [green]--output-name-prefix[/]    Output filename prefix for exported GGUF files (Optional; default = model)");
+        AnsiConsole.MarkupLine("  [green]--export-external-learned-baselines[/]    Also locally rebuild/export pure learned external baselines such as Unsloth (Optional; default false)");
+        AnsiConsole.MarkupLine("  [green]--max-selected-choices-per-bucket[/]    Hard cap for survivors retained per BitRange bucket before brute force (Optional; default = 5)");
         AnsiConsole.MarkupLine("  [green]--config[/]    Path to YAML runtime config. CLI flags override YAML values.");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Example:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");
+    }
+
+
+    private static string ResolveAndValidateOutputDirectory()
+    {
+        string resolved;
+
+        if (!string.IsNullOrWhiteSpace(Config.Current.Output.OutputDir))
+        {
+            resolved = Path.IsPathRooted(Config.Current.Output.OutputDir)
+                ? Path.GetFullPath(Config.Current.Output.OutputDir)
+                : Path.GetFullPath(Path.Combine(Cache.ModelMagicQuantDirectory!, Config.Current.Output.OutputDir));
+        }
+        else
+        {
+            resolved = Path.Combine(Cache.ModelMagicQuantDirectory!, "Final_Outputs");
+        }
+
+        Directory.CreateDirectory(resolved);
+
+        string probe = Path.Combine(resolved, $".write_test_{Guid.NewGuid():N}.tmp");
+        File.WriteAllText(probe, "ok");
+        File.Delete(probe);
+
+        return resolved;
     }
 
     private static async Task EnsureSqliteReadyAsync(CancellationToken ct = default)

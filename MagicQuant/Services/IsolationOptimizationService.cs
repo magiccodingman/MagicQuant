@@ -290,24 +290,31 @@ public class IsolationOptimizationService
             .Where(x => x.Key.StartsWith("baseonly:", StringComparison.Ordinal))
             .ToList();
 
+        var baseBaselineCandidates = new List<BaseBaselineEvaluation>();
+
         foreach (var item in baseOnlyPlans)
         {
             var snap = await LoadSnapshotAsync(item.Quant, ct);
             if (snap == null)
                 continue;
 
-            double reduction = ComputeReductionRatio(nativeBaseline.SizeBytes, snap.SizeBytes);
-            if (reduction < options.MinMeaningfulBaseOnlyReductionRatio)
+            var baseline = BaselineQuants.FromId(item.TestedBaselineId!.Value);
+            if (!baseline.IsCombinationCarrierCandidate)
+                continue;
+
+            baseBaselineCandidates.Add(new BaseBaselineEvaluation
             {
-                var baseline = BaselineQuants.FromId(item.TestedBaselineId!.Value);
-                if (RuntimeSearchSpace.DisableCombinationBaseline(baseline))
-                {
-                    result.DisabledBaselines++;
-                    result.Notes.Add(
-                        $"Disabled combination baseline '{baseline.Names[0]}' because uncovered-tensor reduction was only {reduction:P2}.");
-                }
-            }
+                Baseline = baseline,
+                SizeBytes = snap.SizeBytes,
+                SavingsRatio = ComputeReductionRatio(nativeBaseline.SizeBytes, snap.SizeBytes),
+                Kld = GetAggregateKld(snap),
+                PplDeltaPercent = GetAggregatePplDeltaPercent(snap, nativeBaseline)
+            });
         }
+
+        ApplyBaseBaselineReductionPruning(baseBaselineCandidates, options, result);
+        ApplyBaseBaselineDominanceElimination(baseBaselineCandidates, result);
+        ApplyBaseBaselineBadTradeElimination(baseBaselineCandidates, result);
 
         result.ExplicitQuantBannedGroups = RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned().Count;
         result.Bf16SuppressedGroups = result.GroupDetails.Count(x => x.Bf16Suppressed);
@@ -586,6 +593,231 @@ public class IsolationOptimizationService
         return delta / baselineBytes;
     }
 
+
+    private static void ApplyBaseBaselineReductionPruning(
+        List<BaseBaselineEvaluation> candidates,
+        IsolationOptimizationOptions options,
+        IsolationOptimizationResult result)
+    {
+        var activeCandidates = GetActiveBaseBaselineCandidates(candidates);
+        if (activeCandidates.Count <= 1)
+            return;
+
+        var belowThreshold = activeCandidates
+            .Where(x => x.SavingsRatio < options.MinMeaningfulBaseOnlyReductionRatio)
+            .OrderBy(x => x.Baseline.BitRange)
+            .ThenBy(x => x.SizeBytes)
+            .ThenBy(x => x.Baseline.Names[0], StringComparer.Ordinal)
+            .ToList();
+
+        if (belowThreshold.Count == 0)
+            return;
+
+        if (belowThreshold.Count == activeCandidates.Count)
+        {
+            result.Notes.Add(
+                $"All active combination baselines had uncovered-tensor reduction below the meaningful threshold of {options.MinMeaningfulBaseOnlyReductionRatio:P2}. " +
+                "Deferring carrier pruning to tie/dominance/bad-trade comparison so the safest surviving carrier can be preserved.");
+            return;
+        }
+
+        foreach (var candidate in belowThreshold)
+        {
+            if (!RuntimeSearchSpace.DisableCombinationBaseline(candidate.Baseline))
+                continue;
+
+            result.DisabledBaselines++;
+            result.Notes.Add(
+                $"Disabled combination baseline '{candidate.Baseline.Names[0]}' because uncovered-tensor reduction was only {candidate.SavingsRatio:P2}.");
+        }
+    }
+
+    private static void ApplyBaseBaselineDominanceElimination(
+        List<BaseBaselineEvaluation> candidates,
+        IsolationOptimizationResult result)
+    {
+        var activeCandidates = GetActiveBaseBaselineCandidates(candidates);
+        if (activeCandidates.Count <= 1)
+            return;
+
+        for (int i = 0; i < activeCandidates.Count; i++)
+        {
+            for (int j = 0; j < activeCandidates.Count; j++)
+            {
+                if (i == j)
+                    continue;
+
+                var a = activeCandidates[i];
+                var b = activeCandidates[j];
+
+                bool sameSize = a.SizeBytes == b.SizeBytes;
+                bool sameOrSmaller = a.SizeBytes <= b.SizeBytes;
+                bool kldNoWorse = a.Kld <= b.Kld + IsolationPruningConfig.FloatingPointEpsilon;
+                bool pplNoWorse = Math.Abs(a.PplDeltaPercent) <= Math.Abs(b.PplDeltaPercent) + IsolationPruningConfig.FloatingPointEpsilon;
+
+                bool effectivelyTied =
+                    sameSize &&
+                    Math.Abs(a.Kld - b.Kld) <= IsolationPruningConfig.FloatingPointEpsilon &&
+                    Math.Abs(Math.Abs(a.PplDeltaPercent) - Math.Abs(b.PplDeltaPercent)) <= IsolationPruningConfig.FloatingPointEpsilon;
+
+                bool saferTieWinner = effectivelyTied && a.Baseline.BitRange > b.Baseline.BitRange;
+
+                bool strictlyBetter =
+                    a.Kld + IsolationPruningConfig.FloatingPointEpsilon < b.Kld ||
+                    Math.Abs(a.PplDeltaPercent) + IsolationPruningConfig.FloatingPointEpsilon < Math.Abs(b.PplDeltaPercent) ||
+                    a.SizeBytes < b.SizeBytes ||
+                    saferTieWinner;
+
+                if (!sameOrSmaller || !kldNoWorse || !pplNoWorse || !strictlyBetter)
+                    continue;
+
+                if (!RuntimeSearchSpace.DisableCombinationBaseline(b.Baseline))
+                    continue;
+
+                result.DisabledBaselines++;
+
+                if (saferTieWinner)
+                {
+                    result.Notes.Add(
+                        $"Disabled combination baseline '{b.Baseline.Names[0]}' because it tied '{a.Baseline.Names[0]}' on measured size/KLD/PPL, so the safer higher BitRange carrier was kept.");
+                }
+                else
+                {
+                    result.Notes.Add(
+                        $"Disabled combination baseline '{b.Baseline.Names[0]}' because '{a.Baseline.Names[0]}' was same-size-or-smaller and no worse on KLD/PPL.");
+                }
+            }
+        }
+    }
+
+    private static void ApplyBaseBaselineBadTradeElimination(
+        List<BaseBaselineEvaluation> candidates,
+        IsolationOptimizationResult result)
+    {
+        var activeCandidates = GetActiveBaseBaselineCandidates(candidates);
+        if (activeCandidates.Count <= 1)
+            return;
+
+        var sizeBuckets = BuildBaseBaselineSizeBuckets(activeCandidates);
+        if (sizeBuckets.Count == 0)
+            return;
+
+        var acceptedAnchor = SelectBestBaseBaselineBucketSurvivor(sizeBuckets[0]);
+        if (acceptedAnchor == null)
+            return;
+
+        for (int i = 1; i < sizeBuckets.Count; i++)
+        {
+            var bucketSurvivors = new List<BaseBaselineEvaluation>();
+
+            foreach (var candidate in sizeBuckets[i])
+            {
+                if (RuntimeSearchSpace.IsCombinationBaselineDisabled(candidate.Baseline))
+                    continue;
+
+                if (ShouldEliminateBaseBaselineAsBadTrade(acceptedAnchor, candidate, out var reason))
+                {
+                    if (RuntimeSearchSpace.DisableCombinationBaseline(candidate.Baseline))
+                    {
+                        result.DisabledBaselines++;
+                        result.Notes.Add(
+                            $"Disabled combination baseline '{candidate.Baseline.Names[0]}' vs accepted carrier anchor '{acceptedAnchor.Baseline.Names[0]}'. {reason}");
+                    }
+
+                    continue;
+                }
+
+                bucketSurvivors.Add(candidate);
+            }
+
+            var promotedAnchor = SelectBestBaseBaselineBucketSurvivor(bucketSurvivors);
+            if (promotedAnchor != null)
+                acceptedAnchor = promotedAnchor;
+        }
+    }
+
+    private static List<BaseBaselineEvaluation> GetActiveBaseBaselineCandidates(List<BaseBaselineEvaluation> candidates)
+    {
+        return candidates
+            .Where(x => !RuntimeSearchSpace.IsCombinationBaselineDisabled(x.Baseline))
+            .OrderByDescending(x => x.Baseline.BitRange)
+            .ThenBy(x => x.SizeBytes)
+            .ThenBy(x => x.Kld)
+            .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+            .ToList();
+    }
+
+    private static List<List<BaseBaselineEvaluation>> BuildBaseBaselineSizeBuckets(List<BaseBaselineEvaluation> candidates)
+    {
+        return candidates
+            .GroupBy(x => x.SizeBytes)
+            .OrderByDescending(x => x.Key)
+            .Select(x => x
+                .OrderBy(c => c.Kld)
+                .ThenBy(c => Math.Abs(c.PplDeltaPercent))
+                .ThenByDescending(c => c.Baseline.BitRange)
+                .ThenBy(c => c.Baseline.Names[0], StringComparer.Ordinal)
+                .ToList())
+            .ToList();
+    }
+
+    private static BaseBaselineEvaluation? SelectBestBaseBaselineBucketSurvivor(List<BaseBaselineEvaluation> survivors)
+    {
+        return survivors
+            .OrderBy(x => x.Kld)
+            .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+            .ThenByDescending(x => x.Baseline.BitRange)
+            .ThenBy(x => x.Baseline.Names[0], StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    private static bool ShouldEliminateBaseBaselineAsBadTrade(
+        BaseBaselineEvaluation anchor,
+        BaseBaselineEvaluation candidate,
+        out string reason)
+    {
+        reason = string.Empty;
+
+        if (anchor.SizeBytes <= candidate.SizeBytes)
+            return false;
+
+        double sizeDeltaPercent = ((double)anchor.SizeBytes - candidate.SizeBytes) / anchor.SizeBytes * 100.0;
+        if (sizeDeltaPercent > IsolationPruningConfig.BadTradeMaxSizeDeltaPercent)
+            return false;
+
+        double anchorPplAbs = Math.Abs(anchor.PplDeltaPercent);
+        double candidatePplAbs = Math.Abs(candidate.PplDeltaPercent);
+
+        double kldRatio = anchor.Kld <= IsolationPruningConfig.FloatingPointEpsilon
+            ? double.PositiveInfinity
+            : candidate.Kld / anchor.Kld;
+
+        double pplRatio = anchorPplAbs <= IsolationPruningConfig.FloatingPointEpsilon
+            ? double.PositiveInfinity
+            : candidatePplAbs / anchorPplAbs;
+
+        bool kldBadTrade = candidate.Kld > anchor.Kld * IsolationPruningConfig.BadTradeKldMultiplier;
+        bool pplBadTrade = candidatePplAbs > anchorPplAbs * IsolationPruningConfig.BadTradePplMultiplier;
+
+        bool candidateMeaningfullyBetterKld =
+            candidate.Kld + IsolationPruningConfig.FloatingPointEpsilon < anchor.Kld * 0.90;
+
+        bool candidateMeaningfullyBetterPpl =
+            candidatePplAbs + IsolationPruningConfig.FloatingPointEpsilon < anchorPplAbs * 0.90;
+
+        bool mixedTradeoff =
+            (kldBadTrade && candidateMeaningfullyBetterPpl) ||
+            (pplBadTrade && candidateMeaningfullyBetterKld);
+
+        if (mixedTradeoff || (!kldBadTrade && !pplBadTrade))
+            return false;
+
+        reason =
+            $"Reason: small size gain ({sizeDeltaPercent:F2}%) but disproportionate damage (KLD x{kldRatio:F2}, |PPL| x{pplRatio:F2}).";
+
+        return true;
+    }
+
     private static double GetAggregateKld(BenchmarkSnapshot snapshot)
     {
         return snapshot.Benchmarks
@@ -619,6 +851,15 @@ public class IsolationOptimizationService
     {
         public TensorGroup Group { get; set; } = default!;
         public BaselineQuants CandidateBaseline { get; set; } = default!;
+        public ulong SizeBytes { get; set; }
+        public double SavingsRatio { get; set; }
+        public double Kld { get; set; }
+        public double PplDeltaPercent { get; set; }
+    }
+
+    private sealed class BaseBaselineEvaluation
+    {
+        public BaselineQuants Baseline { get; set; } = default!;
         public ulong SizeBytes { get; set; }
         public double SavingsRatio { get; set; }
         public double Kld { get; set; }

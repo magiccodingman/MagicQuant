@@ -95,4 +95,10 @@ public class Cache
     public static string? ActiveImatrixPath { get; set; }
 
     public static string? ActiveImatrixIdentityHash { get; set; }
+
+
+    /// <summary>
+    /// Final export/output directory for selected survivor artifacts.
+    /// </summary>
+    public static string? OutputDirectory { get; set; }
 }

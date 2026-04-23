@@ -12,6 +12,8 @@ public sealed class MagicQuantYamlConfig
     public RuntimePredictionConfig Prediction { get; set; } = new();
     public RuntimeIdentityConfig Identity { get; set; } = new();
     public RuntimeBaselineConfig Baselines { get; set; } = new();
+    public RuntimeOutputConfig Output { get; set; } = new();
+    public RuntimeSurvivalConfig Survival { get; set; } = new();
 
     public List<string> SensitivityProbeGroups { get; set; } =
     [
@@ -135,6 +137,24 @@ public sealed class RuntimeIdentityConfig
     public bool AllowArchitectureFamilyAliasOverride { get; set; }
 }
 
+public sealed class RuntimeOutputConfig
+{
+    public string? OutputDir { get; set; }
+    public string OutputNamePrefix { get; set; } = "model";
+    public bool ExportExternalLearnedBaselines { get; set; } = false;
+}
+
+public sealed class RuntimeSurvivalConfig
+{
+    public int MaxSelectedChoicesPerBucket { get; set; } = 5;
+    public double MeaningfulSizeBiasPercent { get; set; } = 1.0d;
+    public double KldCloseCallAbsoluteEpsilon { get; set; } = 0.00075d;
+    public double KldCloseCallRelativeFraction { get; set; } = 0.02d;
+    public double PplLargeDifferencePercent { get; set; } = 0.75d;
+    public double TradeScoreSizeBiasWeight { get; set; } = 1.25d;
+    public double TradeScorePplWeight { get; set; } = 0.15d;
+}
+
 public sealed class RuntimeBaselineConfig
 {
     public string StandardBaselinesMode { get; set; } = "all";
@@ -151,7 +171,12 @@ public sealed class CustomBaselineRepositoryConfig
 {
     public string RepoId { get; set; } = string.Empty;
     public string? ShortSourceName { get; set; }
+    public string SourceKind { get; set; } = "huggingface_gguf_repository";
     public bool Enabled { get; set; } = true;
+    public bool RequireAllIncludesToResolve { get; set; } = true;
+    public bool ValidateTensorNamesAgainstSourceModel { get; set; } = true;
+    public bool DeletePartialOrDirtyDownloads { get; set; } = true;
+    public bool ResumeOrRetryDownloads { get; set; } = true;
     public bool AllowAsCombinationCarrier { get; set; }
     public bool AllowAsExplicitGroupCandidate { get; set; } = true;
     public bool AllowAsLearningBaseline { get; set; } = true;

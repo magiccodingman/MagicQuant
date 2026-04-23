@@ -81,7 +81,7 @@ evolution:
   collapse_multiplier: 1.5
 
   # If remaining combinations are <= this number, brute-force the end.
-  brute_force_final_combination_threshold: 2000
+  brute_force_final_combination_threshold: 100
 
 isolation_pruning:
   # NOTE:
@@ -123,6 +123,45 @@ prediction:
   # Example for ~4 GiB:
   # manual_max_predicted_size_bytes: 4294967296
   manual_max_predicted_size_bytes: 0
+
+output:
+  # Optional explicit output directory.
+  # If blank, MagicQuant will default to:
+  #   <model>/MagicQuant/Final_Outputs
+  output_dir:
+
+  # Prefix used when generating exported GGUF file names.
+  output_name_prefix: model
+
+  # By default MagicQuant will not locally export pure learned external/custom baselines
+  # such as Unsloth. They remain upstream references in the README/output unless enabled.
+  #
+  # Set true if you explicitly want MagicQuant to rebuild/export those external learned
+  # baselines locally under MagicQuant-controlled conditions (for example when testing a
+  # modified model where the upstream artifact does not really exist for your case).
+  export_external_learned_baselines: false
+
+survival:
+  # Hard cap for survivors retained per BitRange bucket before brute-force benchmarking.
+  max_selected_choices_per_bucket: 5
+
+  # Size advantage percentage used as a meaningful tie-bias during bucket-local trade scoring.
+  meaningful_size_bias_percent: 1.0
+
+  # Absolute and relative KLD closeness thresholds for close-call handling.
+  kld_close_call_absolute_epsilon: 0.00075
+  kld_close_call_relative_fraction: 0.02
+
+  # PPL only matters more strongly when the difference is actually meaningful.
+  ppl_large_difference_percent: 0.75
+
+  # Centralized trade scoring weights.
+  trade_score_size_bias_weight: 1.25
+  trade_score_ppl_weight: 0.15
+
+identity:
+  architecture_family_name:
+  allow_architecture_family_alias_override: false
 
 baselines:
   # ----------------------------------------------------------
@@ -227,5 +266,4 @@ baselines:
     #     # Example note:
     #     # If the repo does not actually contain IQ3_XS, do not reference it.
     #     # Use only filenames that truly exist in the repository.
-    #
     []

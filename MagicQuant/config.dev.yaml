@@ -24,7 +24,7 @@ evolution:
   max_data_collected_per_category: 5
   max_survival_rounds: 4
   collapse_multiplier: 1.5
-  brute_force_final_combination_threshold: 2000
+  brute_force_final_combination_threshold: 100
 
 isolation_pruning:
   minimum_isolation_reduction_to_continue_ratio: 0.04
@@ -39,6 +39,25 @@ isolation_pruning:
 
 prediction:
   manual_max_predicted_size_bytes: 0
+
+output:
+  # Leave blank to default to <model>/MagicQuant/Final_Outputs
+  output_dir:
+  output_name_prefix: model
+  export_external_learned_baselines: false
+
+survival:
+  max_selected_choices_per_bucket: 5
+  meaningful_size_bias_percent: 1.0
+  kld_close_call_absolute_epsilon: 0.00075
+  kld_close_call_relative_fraction: 0.02
+  ppl_large_difference_percent: 0.75
+  trade_score_size_bias_weight: 1.25
+  trade_score_ppl_weight: 0.15
+
+identity:
+  architecture_family_name: Qwen3-4B-Instruct-2507
+  allow_architecture_family_alias_override: false
 
 baselines:
   standard_baselines_mode: all

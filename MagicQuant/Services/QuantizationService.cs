@@ -1047,6 +1047,74 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         }
     }
 
+    public async Task<string> BuildExportArtifactAsync(
+        HybridQuant quant,
+        string outputPath,
+        bool forceRebuild = false,
+        CancellationToken ct = default)
+    {
+        if (quant == null)
+            throw new ArgumentNullException(nameof(quant));
+
+        if (string.IsNullOrWhiteSpace(outputPath))
+            throw new InvalidOperationException("Export output path is required.");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+
+        if (!forceRebuild && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
+            return outputPath;
+
+        if (forceRebuild && File.Exists(outputPath))
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
+
+        await _cpuQuantLock.WaitAsync(ct);
+        try
+        {
+            string nativeBasePath = await EnsureBaseModelFileAsync();
+            HybridQuant quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
+                ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
+                : quant;
+
+            IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
+
+            if (quant.BaseQuant.IsExternalRepositoryBaseline)
+            {
+                string downloadedExternalBaselinePath = GetExternalBaselineCachePath(quant.BaseQuant);
+                await _huggingFaceBaselineService.DownloadBaselineAsync(
+                    quant.BaseQuant,
+                    downloadedExternalBaselinePath,
+                    forceRedownload: false,
+                    ct: ct);
+
+                temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
+                    canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                    preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                    allowDominantFallback: true);
+
+                if (temporaryCarrierOverrides.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
+                        "MagicQuant cannot export a hybrid from an external baseline until that baseline has been learned.");
+                }
+            }
+
+            await RunLlamaQuantizeAsync(
+                inputFile: nativeBasePath,
+                outputFile: outputPath,
+                quant: quantToExecute,
+                temporaryCarrierOverrides: temporaryCarrierOverrides);
+
+            await File.WriteAllTextAsync(outputPath + ".success.json", "{\"status\":\"success\"}", ct);
+            return outputPath;
+        }
+        finally
+        {
+            _cpuQuantLock.Release();
+        }
+    }
+
+
     public async Task<string> EnsurePureQ8ModelAsync()
     {
         string basePath = await EnsureBaseModelFileAsync();
