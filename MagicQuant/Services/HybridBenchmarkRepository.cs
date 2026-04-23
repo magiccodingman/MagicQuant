@@ -108,6 +108,37 @@ public sealed class HybridBenchmarkRepository
             .ToList();
     }
 
+
+    public async Task<List<BenchmarkSnapshotRecord>> LoadBaseOnlyCarrierSnapshotsAsync(CancellationToken ct = default)
+    {
+        var result = new List<BenchmarkSnapshotRecord>();
+        var activeGroups = TReg.All
+            .Where(x => !Cache.UnusedTensorGroups.Any(u => u.UniqueId == x.UniqueId))
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+        var nativeExactScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
+        foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
+        {
+            var quant = HybridQuant.CreateExactBlanket(
+                baseQuant: baseline,
+                groups: activeGroups,
+                exactScheme: nativeExactScheme);
+
+            var snapshot = await LoadBenchmarkSnapshotAsync((TensorConfig)quant, ct);
+            if (snapshot != null)
+                result.Add(snapshot);
+        }
+
+        return result
+            .GroupBy(x => TensorConfigIdentity.ToKey(x.Config), StringComparer.Ordinal)
+            .Select(g => g.First())
+            .OrderByDescending(x => x.Quant.BaseQuant.BitRange)
+            .ThenBy(x => x.Kld)
+            .ThenBy(x => x.SizeBytes)
+            .ToList();
+    }
+
     public async Task<string?> FindLatestSuccessfulOutputPathAsync(TensorConfig config, CancellationToken ct = default)
     {
         await using var db = new MagicQuantContext();

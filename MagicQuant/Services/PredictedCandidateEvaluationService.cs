@@ -81,6 +81,14 @@ public sealed class PredictedCandidateEvaluationService
         if (!pureByBaselineId.TryGetValue(BaselineQuants.Q8_0.UniqueId, out var pureQ8))
             throw new InvalidOperationException("Prediction requires a learned pure Q8_0 benchmark anchor.");
 
+        var baseOnlySnapshots = await _repository.LoadBaseOnlyCarrierSnapshotsAsync(ct);
+        var baseOnlyByBaselineId = baseOnlySnapshots
+            .GroupBy(x => x.Quant.BaseQuant.UniqueId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Kld).ThenBy(x => Math.Abs(x.Ppl)).ThenByDescending(x => x.Quant.BaseQuant.BitRange).First());
+
+        if (!baseOnlyByBaselineId.TryGetValue(BaselineQuants.Q8_0.UniqueId, out var q8BaseOnly))
+            throw new InvalidOperationException("Prediction requires a carrier base-only Q8_0 benchmark anchor.");
+
         var isolationCache = new Dictionary<string, BenchmarkSnapshotRecord?>(StringComparer.Ordinal);
 
         foreach (var config in configs)
@@ -90,15 +98,41 @@ public sealed class PredictedCandidateEvaluationService
             var notes = new List<string>(effective.Warnings);
 
             byte normalizedBaseId = NormalizeBaselineIdForIsolation(quant.BaseQuant.UniqueId);
-            BenchmarkSnapshotRecord baselineAnchor = pureByBaselineId.TryGetValue(quant.BaseQuant.UniqueId, out var baselineSnap)
-                ? baselineSnap
-                : pureByBaselineId.TryGetValue(normalizedBaseId, out var normalizedSnap)
-                    ? normalizedSnap
-                    : pureQ8;
+            bool usedPureFallback = false;
+
+            BenchmarkSnapshotRecord baselineAnchor;
+            if (baseOnlyByBaselineId.TryGetValue(quant.BaseQuant.UniqueId, out var baselineSnap))
+            {
+                baselineAnchor = baselineSnap;
+            }
+            else if (baseOnlyByBaselineId.TryGetValue(normalizedBaseId, out var normalizedSnap))
+            {
+                baselineAnchor = normalizedSnap;
+            }
+            else if (pureByBaselineId.TryGetValue(quant.BaseQuant.UniqueId, out var pureDirect))
+            {
+                usedPureFallback = true;
+                baselineAnchor = pureDirect;
+            }
+            else if (pureByBaselineId.TryGetValue(normalizedBaseId, out var pureNormalized))
+            {
+                usedPureFallback = true;
+                baselineAnchor = pureNormalized;
+            }
+            else
+            {
+                usedPureFallback = true;
+                baselineAnchor = q8BaseOnly;
+            }
 
             ulong predictedSize = baselineAnchor.SizeBytes;
             double predictedKld = baselineAnchor.Kld;
             double predictedPpl = baselineAnchor.Ppl;
+
+            if (usedPureFallback)
+            {
+                notes.Add($"Base-only carrier anchor was missing for '{quant.BaseQuant.Names[0]}'. Prediction fell back to pure-baseline context for the starting anchor.");
+            }
 
             foreach (var tensor in quant.Tensors)
             {

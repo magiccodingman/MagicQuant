@@ -217,6 +217,20 @@ public class QuantDatabaseService
             return 0;
         }
 
+        if (Config.ManualMaxPredictedSizeBytes <= 0 && predictionContext.ShouldSkipPureQ8CeilingPruning)
+        {
+            if (!string.IsNullOrWhiteSpace(predictionContext.SkipPureQ8CeilingReason))
+            {
+                AnsiConsole.MarkupLine($"[green]Predicted-size pruning removed 0 combinations.[/] [grey]{Markup.Escape(predictionContext.SkipPureQ8CeilingReason!)}[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine("[green]Predicted-size pruning removed 0 combinations.[/]");
+            }
+
+            return 0;
+        }
+
         var rows = new List<TensorConfig>();
 
         using (var select = connection.CreateCommand())
@@ -568,17 +582,54 @@ public class QuantDatabaseService
             HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0),
             ct);
 
-        var carrierBaseOnlyPlan = fullPlan.Plans.FirstOrDefault(x =>
-            x.Kind == RequiredSampleKind.BaseOnlyIsolation &&
-            x.TestedBaselineId == BaselineQuants.Q8_0.UniqueId &&
-            x.Key.StartsWith("carrier-baseonly:", StringComparison.Ordinal));
-
-        if (pureQ8 == null || carrierBaseOnlyPlan == null)
+        if (pureQ8 == null)
             return null;
 
-        var carrier = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, carrierBaseOnlyPlan.Quant, ct);
-        if (carrier == null)
-            return null;
+        var activeCombinationBaselines = RuntimeSearchSpace.GetActiveCombinationBaselines().ToList();
+
+        var carrierBaseOnlyPlans = fullPlan.Plans
+            .Where(x => x.Kind == RequiredSampleKind.BaseOnlyIsolation)
+            .Where(x => x.TestedBaselineId.HasValue)
+            .Where(x => x.Key.StartsWith("carrier-baseonly:", StringComparison.Ordinal) ||
+                        x.Key.StartsWith("baseonly:", StringComparison.Ordinal))
+            .Where(x =>
+            {
+                var baseline = BaselineQuants.FromId(x.TestedBaselineId!.Value);
+                return baseline.IsCombinationCarrierCandidate;
+            })
+            .GroupBy(x => x.TestedBaselineId!.Value)
+            .Select(g => g.First())
+            .ToList();
+
+        var loadedCarrierSnapshots = new List<(byte BaselineId, BenchmarkRow Snapshot)>();
+        foreach (var plan in carrierBaseOnlyPlans)
+        {
+            var snap = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, plan.Quant, ct);
+            if (snap != null)
+                loadedCarrierSnapshots.Add((plan.TestedBaselineId!.Value, snap));
+        }
+
+        ulong representativeCarrierBaseOnlySize = loadedCarrierSnapshots.Count > 0
+            ? loadedCarrierSnapshots
+                .OrderByDescending(x => BaselineQuants.FromId(x.BaselineId).BitRange)
+                .ThenByDescending(x => BaselineQuants.FromId(x.BaselineId).ExplicitCandidateSortOrder)
+                .Select(x => x.Snapshot.SizeBytes)
+                .First()
+            : pureQ8.SizeBytes;
+
+        bool carrierBaseOnlyTruthCollapsed = loadedCarrierSnapshots.Count > 1 &&
+                                             loadedCarrierSnapshots
+                                                 .Select(x => x.Snapshot.SizeBytes)
+                                                 .Distinct()
+                                                 .Count() == 1;
+
+        string? skipPureQ8PruneReason = null;
+        if (carrierBaseOnlyTruthCollapsed && activeCombinationBaselines.Count == 1 && Config.ManualMaxPredictedSizeBytes <= 0)
+        {
+            var safeCarrier = activeCombinationBaselines[0];
+            skipPureQ8PruneReason =
+                $"Skipped pure-Q8 size pruning because base-carrier isolation truth collapsed across carriers and the search already resolved to the single deterministic safe carrier '{safeCarrier.Names[0]}'.";
+        }
 
         var pureBaselineSizes = new Dictionary<byte, ulong>();
         foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
@@ -612,8 +663,10 @@ public class QuantDatabaseService
         return new PredictionContext(
             pureQ8BaseSize: pureQ8.SizeBytes,
             pureBaselineSizes: pureBaselineSizes,
-            carrierBaseOnlySize: carrier.SizeBytes,
-            sizesByGroupAndCandidate: sizeByGroupAndCandidate);
+            carrierBaseOnlySize: representativeCarrierBaseOnlySize,
+            sizesByGroupAndCandidate: sizeByGroupAndCandidate,
+            shouldSkipPureQ8CeilingPruning: !string.IsNullOrWhiteSpace(skipPureQ8PruneReason),
+            skipPureQ8CeilingReason: skipPureQ8PruneReason);
     }
 
     private static async Task<BenchmarkRow?> LoadSnapshotByQuantAsync(
@@ -673,15 +726,21 @@ public class QuantDatabaseService
 
         public ulong PureQ8BaseSize { get; }
         public ulong CarrierBaseOnlySize { get; }
+        public bool ShouldSkipPureQ8CeilingPruning { get; }
+        public string? SkipPureQ8CeilingReason { get; }
 
         public PredictionContext(
             ulong pureQ8BaseSize,
             Dictionary<byte, ulong> pureBaselineSizes,
             ulong carrierBaseOnlySize,
-            Dictionary<(byte GroupId, byte CandidateId), ulong> sizesByGroupAndCandidate)
+            Dictionary<(byte GroupId, byte CandidateId), ulong> sizesByGroupAndCandidate,
+            bool shouldSkipPureQ8CeilingPruning,
+            string? skipPureQ8CeilingReason)
         {
             PureQ8BaseSize = pureQ8BaseSize;
             CarrierBaseOnlySize = carrierBaseOnlySize;
+            ShouldSkipPureQ8CeilingPruning = shouldSkipPureQ8CeilingPruning;
+            SkipPureQ8CeilingReason = skipPureQ8CeilingReason;
             _pureBaselineSizes = pureBaselineSizes;
             _sizesByGroupAndCandidate = sizesByGroupAndCandidate;
         }

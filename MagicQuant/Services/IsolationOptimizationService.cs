@@ -299,19 +299,23 @@ public class IsolationOptimizationService
                 continue;
 
             // IMPORTANT:
-            // Combination carrier pruning must reason from the pure baseline artifact first,
-            // not the base-only isolation blanket. The blanket is useful to detect uncovered
-            // tensors, but when all meaningful tensors are covered by groups it will often tie
-            // across multiple carriers and collapse the entire search upward into Q8.
+            // Base-combination carrier isolation must primarily reason from the base-only blanket
+            // snapshot for the tested carrier, where known groups are forced back to native/BF16
+            // and only uncovered tensors remain exposed to the base quant choice.
             //
-            // For carrier dominance / bad-trade we therefore prefer the real pure-baseline
-            // benchmark, and only fall back to the base-only isolation snapshot if the pure
-            // artifact benchmark is missing for some reason.
-            var pureSnap = await LoadSnapshotAsync(HybridQuant.CreatePureBaseline(baseline), ct);
+            // If a model's group coverage effectively captures everything meaningful, these
+            // base-only snapshots should tie or nearly tie across carriers. Pure fully-quantized
+            // baseline artifacts are still useful as reference context, but they must not be used
+            // as the primary pruning metric here because that would conflate fully-quantized
+            // baseline quality/size with uncovered-tensor-only carrier isolation truth.
             var baseOnlySnap = await LoadSnapshotAsync(item.Quant, ct);
-            var snap = pureSnap ?? baseOnlySnap;
+            var pureSnap = await LoadSnapshotAsync(HybridQuant.CreatePureBaseline(baseline), ct);
+            var snap = baseOnlySnap ?? pureSnap;
             if (snap == null)
                 continue;
+
+            var usedBaseOnly = baseOnlySnap != null;
+            var usedPureFallback = !usedBaseOnly && pureSnap != null;
 
             baseBaselineCandidates.Add(new BaseBaselineEvaluation
             {
@@ -319,19 +323,30 @@ public class IsolationOptimizationService
                 SizeBytes = snap.SizeBytes,
                 SavingsRatio = ComputeReductionRatio(nativeBaseline.SizeBytes, snap.SizeBytes),
                 Kld = GetAggregateKld(snap),
-                PplDeltaPercent = GetAggregatePplDeltaPercent(snap, nativeBaseline)
+                PplDeltaPercent = GetAggregatePplDeltaPercent(snap, nativeBaseline),
+                UsedBaseOnlySnapshot = usedBaseOnly,
+                UsedPureFallback = usedPureFallback,
+                PureBaselineSizeBytes = pureSnap?.SizeBytes,
+                PureBaselineKld = pureSnap == null ? null : GetAggregateKld(pureSnap),
+                PureBaselinePplDeltaPercent = pureSnap == null ? null : GetAggregatePplDeltaPercent(pureSnap, nativeBaseline)
             });
 
-            if (pureSnap == null && baseOnlySnap != null)
+            if (usedPureFallback)
             {
                 result.Notes.Add(
-                    $"Carrier '{baseline.Names[0]}' fell back to base-only isolation metrics because a pure baseline benchmark snapshot was not found.");
+                    $"Carrier '{baseline.Names[0]}' fell back to pure-baseline metrics because a base-only isolation snapshot was not found.");
+            }
+            else if (pureSnap != null)
+            {
+                result.Notes.Add(
+                    $"Carrier '{baseline.Names[0]}' is using base-only isolation metrics for pruning/display; pure-baseline metrics are retained only as reference context.");
             }
         }
 
         ApplyBaseBaselineReductionPruning(baseBaselineCandidates, options, result);
         ApplyBaseBaselineDominanceElimination(baseBaselineCandidates, result);
         ApplyBaseBaselineBadTradeElimination(baseBaselineCandidates, result);
+        AppendBaseCombinationCarrierDecision(baseBaselineCandidates, result);
 
         result.ExplicitQuantBannedGroups = RuntimeSearchSpace.GetGroupsWithExplicitQuantBanned().Count;
         result.Bf16SuppressedGroups = result.GroupDetails.Count(x => x.Bf16Suppressed);
@@ -351,6 +366,67 @@ public class IsolationOptimizationService
                 $"[pruned-early] {ban.Candidate.Names[0]} removed by learned-baseline mapping for this group " +
                 $"(no matching tensor weights in baseline(s): {FormatSchemeNames(ban.ExpectedTensorWeightSchemeIds)})." );
         }
+    }
+
+    private static void AppendBaseCombinationCarrierDecision(
+        List<BaseBaselineEvaluation> candidates,
+        IsolationOptimizationResult result)
+    {
+        if (candidates.Count == 0)
+            return;
+
+        var decision = new IsolationGroupDecision
+        {
+            GroupName = "base_combination_carriers"
+        };
+
+        var ordered = candidates
+            .OrderByDescending(x => x.SavingsRatio)
+            .ThenBy(x => x.Kld)
+            .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+            .ThenByDescending(x => x.Baseline.BitRange)
+            .ThenBy(x => x.Baseline.Names[0], StringComparer.Ordinal)
+            .ToList();
+
+        var winner = ordered
+            .Where(x => !RuntimeSearchSpace.IsCombinationBaselineDisabled(x.Baseline))
+            .OrderBy(x => x.Kld)
+            .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+            .ThenByDescending(x => x.Baseline.BitRange)
+            .ThenBy(x => x.Baseline.Names[0], StringComparer.Ordinal)
+            .FirstOrDefault();
+
+        if (winner != null)
+        {
+            decision.BestReductionRatio = winner.SavingsRatio;
+            decision.WinningCandidate = winner.Baseline.Names[0];
+            decision.WinningSizeBytes = winner.SizeBytes;
+            decision.WinningKld = winner.Kld;
+            decision.WinningPplDelta = winner.PplDeltaPercent;
+        }
+
+        foreach (var candidate in ordered)
+        {
+            var state = RuntimeSearchSpace.IsCombinationBaselineDisabled(candidate.Baseline) ? "DISABLED" : "ACTIVE";
+            var source = candidate.UsedBaseOnlySnapshot ? "base-only" : (candidate.UsedPureFallback ? "pure-fallback" : "unknown");
+            var line =
+                $"{candidate.Baseline.Names[0]} | size={(candidate.SizeBytes / 1024.0 / 1024.0):F2}MB | savings={candidate.SavingsRatio:P2} | kld={candidate.Kld:G6} | pplΔ={candidate.PplDeltaPercent:F4}% | source={source} | state={state}";
+
+            if (candidate.PureBaselineSizeBytes.HasValue && candidate.UsedBaseOnlySnapshot)
+            {
+                line +=
+                    $" | pure-ref={(candidate.PureBaselineSizeBytes.Value / 1024.0 / 1024.0):F2}MB / kld={candidate.PureBaselineKld:G6} / pplΔ={candidate.PureBaselinePplDeltaPercent:F4}%";
+            }
+
+            decision.Candidates.Add(line);
+        }
+
+        foreach (var note in result.Notes.Where(x => x.Contains("combination baseline", StringComparison.OrdinalIgnoreCase) || x.Contains("carrier anchor", StringComparison.OrdinalIgnoreCase)).Distinct())
+        {
+            decision.Candidates.Add($"[pruned-final] {note}");
+        }
+
+        result.GroupDetails.Add(decision);
     }
 
     private static string FormatSchemeNames(IEnumerable<byte> schemeIds)
@@ -606,8 +682,8 @@ public class IsolationOptimizationService
         if (baselineBytes == 0)
             return 0d;
 
-        double delta = baselineBytes - candidateBytes;
-        return delta / baselineBytes;
+        double delta = (double)baselineBytes - (double)candidateBytes;
+        return delta / (double)baselineBytes;
     }
 
 
@@ -632,9 +708,30 @@ public class IsolationOptimizationService
 
         if (belowThreshold.Count == activeCandidates.Count)
         {
+            var keeper = activeCandidates
+                .OrderBy(x => x.Kld)
+                .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+                .ThenByDescending(x => x.Baseline.BitRange)
+                .ThenBy(x => x.Baseline.Names[0], StringComparer.Ordinal)
+                .First();
+
             result.Notes.Add(
                 $"All active combination baselines had uncovered-tensor reduction below the meaningful threshold of {options.MinMeaningfulBaseOnlyReductionRatio:P2}. " +
-                "Deferring carrier pruning to tie/dominance/bad-trade comparison so the safest surviving carrier can be preserved.");
+                $"Base-carrier influence was therefore treated as negligible, and the search was collapsed to the deterministic safe carrier '{keeper.Baseline.Names[0]}'.");
+
+            foreach (var candidate in activeCandidates)
+            {
+                if (candidate.Baseline.UniqueId == keeper.Baseline.UniqueId)
+                    continue;
+
+                if (!RuntimeSearchSpace.DisableCombinationBaseline(candidate.Baseline))
+                    continue;
+
+                result.DisabledBaselines++;
+                result.Notes.Add(
+                    $"Disabled combination baseline '{candidate.Baseline.Names[0]}' because all surviving carriers were below the meaningful uncovered-tensor threshold and '{keeper.Baseline.Names[0]}' was selected as the deterministic safe representative.");
+            }
+
             return;
         }
 
@@ -890,6 +987,11 @@ public class IsolationOptimizationService
         public double SavingsRatio { get; set; }
         public double Kld { get; set; }
         public double PplDeltaPercent { get; set; }
+        public bool UsedBaseOnlySnapshot { get; set; }
+        public bool UsedPureFallback { get; set; }
+        public ulong? PureBaselineSizeBytes { get; set; }
+        public double? PureBaselineKld { get; set; }
+        public double? PureBaselinePplDeltaPercent { get; set; }
     }
 
     private sealed class BenchmarkSnapshot

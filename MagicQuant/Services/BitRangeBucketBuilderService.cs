@@ -23,13 +23,13 @@ public sealed class BitRangeBucketBuilderService
         IReadOnlyCollection<PredictedCandidateEvaluation> candidates,
         CancellationToken ct = default)
     {
-        var pureBaselines = await _repository.LoadPureBaselineSnapshotsAsync(ct);
-        var baselineAnchors = pureBaselines
+        var baseOnlyCarriers = await _repository.LoadBaseOnlyCarrierSnapshotsAsync(ct);
+        var baselineAnchors = baseOnlyCarriers
             .GroupBy(x => x.Quant.BaseQuant.BitRange)
             .Select(g => new
             {
                 BitRange = g.Key,
-                Snapshot = g.OrderBy(x => x.SizeBytes).ThenBy(x => x.Kld).First()
+                Snapshot = g.OrderBy(x => x.Kld).ThenBy(x => Math.Abs(x.Ppl)).ThenByDescending(x => x.Quant.BaseQuant.BitRange).First()
             })
             .OrderBy(x => x.BitRange)
             .ToList();

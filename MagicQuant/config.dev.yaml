@@ -85,7 +85,7 @@ baselines:
           quantize_base_name: Q4_K_M
           display_name: Unsloth_Q4_K_XL
           allow_as_learning_baseline: true
-          allow_as_combination_carrier: true
+          allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
         - file_name: Qwen3-4B-Instruct-2507-UD-Q5_K_XL.gguf
@@ -93,7 +93,7 @@ baselines:
           quantize_base_name: Q5_K
           display_name: Unsloth_Q5_K_XL
           allow_as_learning_baseline: true
-          allow_as_combination_carrier: true
+          allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
         - file_name: Qwen3-4B-Instruct-2507-UD-Q6_K_XL.gguf
