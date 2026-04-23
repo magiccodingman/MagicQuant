@@ -24,7 +24,7 @@ evolution:
   max_data_collected_per_category: 5
   max_survival_rounds: 4
   collapse_multiplier: 1.5
-  brute_force_final_combination_threshold: 100
+  brute_force_final_combination_threshold: 12000
 
 isolation_pruning:
   minimum_isolation_reduction_to_continue_ratio: 0.04
