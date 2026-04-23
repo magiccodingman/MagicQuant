@@ -14,6 +14,13 @@ public sealed class IsolationPlanningService
     public RequiredSampleGenerationResult BuildContinuationPlan(IEnumerable<byte> groupIdsToContinue, List<TensorGroup>? missingTensorGroups = null)
         => TensorConfigGenerator.GenerateContinuationIsolationSamplePlan(groupIdsToContinue, missingTensorGroups);
 
+
+    public RequiredSampleGenerationResult BuildArchivalCoveragePlan(
+        IEnumerable<byte>? groupIdsToArchive = null,
+        IEnumerable<string>? existingPlanKeys = null,
+        List<TensorGroup>? missingTensorGroups = null)
+        => TensorConfigGenerator.GenerateArchivalIsolationCoverageSamplePlan(groupIdsToArchive, existingPlanKeys, missingTensorGroups);
+
     public List<HybridQuant> BuildRequiredStartupCombos(List<TensorGroup>? missingTensorGroups = null)
         => TensorConfigGenerator.GenerateRequiredDataSampleCombos(missingTensorGroups);
 }

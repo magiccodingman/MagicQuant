@@ -136,9 +136,72 @@ public static class TensorConfigGenerator
             .OrderBy(x => x.UniqueId)
             .ToList();
 
+        var result = BuildIsolationCoverageContinuationPlan(activeGroups, missingIds);
+
+        AnsiConsole.MarkupLine($"[bold green]Continuation isolation samples required:[/] {result.GroupIsolationCount:N0}");
+        return result;
+    }
+
+    /// <summary>
+    /// Builds archival-only isolation coverage for any continuation-style samples that were not part
+    /// of the live startup+continuation pruning plan. This is intentionally kept separate from the
+    /// current run's pruning inputs so search-space behavior stays unchanged while the database still
+    /// gains full isolated-sample coverage for future prediction/reporting flows.
+    /// </summary>
+    public static RequiredSampleGenerationResult GenerateArchivalIsolationCoverageSamplePlan(
+        IEnumerable<byte>? groupIdsToArchive = null,
+        IEnumerable<string>? existingPlanKeys = null,
+        List<TensorGroup>? missingTensorGroups = null)
+    {
+        if (missingTensorGroups != null && !missingTensorGroups.Any())
+            missingTensorGroups = null;
+
+        var missingIds = missingTensorGroups?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
+        var archiveIds = groupIdsToArchive?
+            .Distinct()
+            .ToHashSet()
+            ?? new HashSet<byte>();
+
+        var existingKeys = existingPlanKeys?
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToHashSet(StringComparer.Ordinal)
+            ?? new HashSet<string>(StringComparer.Ordinal);
+
+        var activeGroups = TReg.All
+            .Where(x => !missingIds.Contains(x.UniqueId))
+            .Where(x => archiveIds.Count == 0 || archiveIds.Contains(x.UniqueId))
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+
+        var result = BuildIsolationCoverageContinuationPlan(activeGroups, missingIds);
+
+        if (existingKeys.Count > 0)
+        {
+            result.Plans = result.Plans
+                .Where(x => !existingKeys.Contains(x.Key))
+                .ToList();
+        }
+
+        result.GroupIsolationCount = result.Plans.Count(x =>
+            x.Kind == RequiredSampleKind.GroupIsolationProbe ||
+            x.Kind == RequiredSampleKind.GroupIsolationContinuation);
+
+        return result;
+    }
+
+    private static RequiredSampleGenerationResult BuildIsolationCoverageContinuationPlan(
+        IReadOnlyCollection<TensorGroup> activeGroups,
+        HashSet<byte> missingIds)
+    {
         var result = new RequiredSampleGenerationResult();
+        if (activeGroups.Count == 0)
+            return result;
+
         var carrier = BaselineQuants.Q8_0;
         var nativeExactScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+        var blanketGroups = TReg.All
+            .Where(x => !missingIds.Contains(x.UniqueId))
+            .ToList();
 
         var candidates = BaselineQuants.GetGroupCombinationCandidatesSmallestFirst(
                 RuntimeSearchSpace.HasUsableImatrix(),
@@ -156,7 +219,7 @@ public static class TensorConfigGenerator
 
                 var quant = HybridQuant.CreateExactBlanket(
                     baseQuant: carrier,
-                    groups: TReg.All.Where(x => !missingIds.Contains(x.UniqueId)),
+                    groups: blanketGroups,
                     exactScheme: nativeExactScheme);
 
                 quant.SetLearnedCandidateOverride(group, candidate);
@@ -178,7 +241,6 @@ public static class TensorConfigGenerator
             }
         }
 
-        AnsiConsole.MarkupLine($"[bold green]Continuation isolation samples required:[/] {result.GroupIsolationCount:N0}");
         return result;
     }
 

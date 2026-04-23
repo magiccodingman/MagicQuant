@@ -269,6 +269,12 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         }
 
         var mergedPlan = initialPlan.MergeWith(continuationPlan);
+        var archivalGroupIds = TReg.All
+            .Where(x => !Cache.UnusedTensorGroups.Any(u => u.UniqueId == x.UniqueId))
+            .Select(x => x.UniqueId)
+            .Except(initialAnalysis.GroupsToContinue)
+            .OrderBy(x => x)
+            .ToList();
 
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Final Isolation Optimization");
 
@@ -320,6 +326,39 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         long finalRemainingCombinationCount = await dbService.GetRemainingCombinationCountAsync();
 
         AnsiConsole.MarkupLine($"[green]Final surviving combinations after stage-1 pruning:[/] {finalRemainingCombinationCount:N0}");
+
+        AnsiConsole.Write(new Rule("[yellow]Archival Isolation Coverage[/]") { Justification = Justify.Left });
+
+        var archivalCoveragePlan = isolationPlanner.BuildArchivalCoveragePlan(
+            groupIdsToArchive: archivalGroupIds,
+            existingPlanKeys: mergedPlan.Plans.Select(x => x.Key),
+            missingTensorGroups: Cache.UnusedTensorGroups);
+
+        var archivalCoverageGroups = archivalCoveragePlan.Plans
+            .Where(x => x.TargetGroupId.HasValue)
+            .Select(x => x.TargetGroupId!.Value)
+            .Distinct()
+            .Count();
+
+        AnsiConsole.MarkupLine($"[grey]Groups queued for archival coverage:[/] [cyan]{archivalCoverageGroups:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]Non-continuing groups targeted for archival fill:[/] [cyan]{archivalGroupIds.Count:N0}[/]");
+        AnsiConsole.MarkupLine("[grey]This pass does not feed current-run pruning; it only fills missing isolated-sample coverage in the database for groups that were fixed/collapsed out of combo exploration.[/]");
+
+        if (archivalCoveragePlan.TotalCount > 0)
+        {
+            AnsiConsole.MarkupLine($"[grey]Queued archival isolation samples:[/] [cyan]{archivalCoveragePlan.TotalCount:N0}[/]");
+
+            var archivalCoverageSummary = await quantizationService.ProcessHybridBatchAsync(archivalCoveragePlan.Plans);
+
+            AnsiConsole.MarkupLine("[bold green]Archival isolation coverage complete.[/]");
+            AnsiConsole.MarkupLine($"  [green]Completed:[/] {archivalCoverageSummary.Completed:N0}");
+            AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {archivalCoverageSummary.Skipped:N0}");
+            AnsiConsole.MarkupLine($"  [red]Failed:[/] {archivalCoverageSummary.Failed:N0}");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]No archival isolation coverage samples were required.[/]");
+        }
 
         var survivalPipeline = new CombinationSurvivalPipelineService(quantizationService);
         var finalizationResult = await survivalPipeline.RunAsync(ct: default);
