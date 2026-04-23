@@ -73,12 +73,12 @@ public sealed class PredictedCandidateEvaluationService
     {
         var result = new List<PredictedCandidateEvaluation>(configs.Count);
 
-        var pureSnapshots = (await _repository.LoadPureBaselineSnapshotsAsync(ct))
-            .GroupBy(x => x.BaselineFamily, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.SizeBytes).First(), StringComparer.Ordinal);
+        var pureSnapshots = await _repository.LoadPureBaselineSnapshotsAsync(ct);
+        var pureByBaselineId = pureSnapshots
+            .GroupBy(x => x.Quant.BaseQuant.UniqueId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.SizeBytes).ThenBy(x => x.Kld).First());
 
-        var pureQ8 = pureSnapshots.TryGetValue(BaselineQuants.Q8_0.Names[0], out var q8Snap) ? q8Snap : null;
-        if (pureQ8 == null)
+        if (!pureByBaselineId.TryGetValue(BaselineQuants.Q8_0.UniqueId, out var pureQ8))
             throw new InvalidOperationException("Prediction requires a learned pure Q8_0 benchmark anchor.");
 
         var isolationCache = new Dictionary<string, BenchmarkSnapshotRecord?>(StringComparer.Ordinal);
@@ -89,9 +89,12 @@ public sealed class PredictedCandidateEvaluationService
             var effective = await _effectiveResolver.ResolveAsync(config, ct);
             var notes = new List<string>(effective.Warnings);
 
-            BenchmarkSnapshotRecord baselineAnchor = pureSnapshots.TryGetValue(quant.BaseQuant.Names[0], out var baselineSnap)
+            byte normalizedBaseId = NormalizeBaselineIdForIsolation(quant.BaseQuant.UniqueId);
+            BenchmarkSnapshotRecord baselineAnchor = pureByBaselineId.TryGetValue(quant.BaseQuant.UniqueId, out var baselineSnap)
                 ? baselineSnap
-                : pureQ8;
+                : pureByBaselineId.TryGetValue(normalizedBaseId, out var normalizedSnap)
+                    ? normalizedSnap
+                    : pureQ8;
 
             ulong predictedSize = baselineAnchor.SizeBytes;
             double predictedKld = baselineAnchor.Kld;
@@ -101,44 +104,43 @@ public sealed class PredictedCandidateEvaluationService
             {
                 tensor.ValidateOrThrow();
 
-                string isolationKey = $"{tensor.TGroup.UniqueId}:{tensor.OverrideMode}:{tensor.CandidateBaseline?.CanonicalKey}:{tensor.ExactTensorScheme?.Names[0]}";
-                if (!isolationCache.TryGetValue(isolationKey, out var isolation))
+                BenchmarkSnapshotRecord? targetIsolation = await LoadIsolationSnapshotAsync(tensor, isolationCache, ct);
+                if (targetIsolation == null)
                 {
-                    var isolationQuant = HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0);
-
-                    if (tensor.OverrideMode == HybridTensorOverrideMode.ExactTensorScheme)
-                        isolationQuant.SetExactOverride(tensor.TGroup, tensor.ExactTensorScheme!);
-                    else
-                        isolationQuant.SetLearnedCandidateOverride(tensor.TGroup, tensor.CandidateBaseline!);
-
-                    isolation = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)isolationQuant, ct);
-                    isolationCache[isolationKey] = isolation;
-                }
-
-                if (isolation == null)
-                {
-                    notes.Add($"Isolation benchmark missing for group '{tensor.TGroup.Name}'. Applied conservative penalty.");
+                    notes.Add($"Isolation benchmark missing for target override on group '{tensor.TGroup.Name}'. Applied conservative penalty.");
                     predictedKld += 0.005d;
                     predictedPpl += 0.25d;
                     continue;
                 }
 
-                long sizeDelta = (long)isolation.SizeBytes - (long)pureQ8.SizeBytes;
+                BenchmarkSnapshotRecord? baseIsolation = await LoadBaseIsolationSnapshotAsync(quant.BaseQuant, tensor.TGroup, isolationCache, ct);
+                if (baseIsolation == null)
+                {
+                    notes.Add($"Base-family isolation benchmark missing for '{quant.BaseQuant.Names[0]}' on group '{tensor.TGroup.Name}'. Using target isolation without relative improvement credit.");
+                    baseIsolation = targetIsolation;
+                }
+
+                long sizeDelta = (long)targetIsolation.SizeBytes - (long)baseIsolation.SizeBytes;
                 if (sizeDelta >= 0)
                     predictedSize += (ulong)sizeDelta;
                 else
                     predictedSize = predictedSize > (ulong)(-sizeDelta) ? predictedSize - (ulong)(-sizeDelta) : 0;
 
-                predictedKld += Math.Max(0d, isolation.Kld - pureQ8.Kld);
-                predictedPpl += Math.Max(0d, isolation.Ppl - pureQ8.Ppl);
+                predictedKld += (targetIsolation.Kld - baseIsolation.Kld);
+                predictedPpl += (targetIsolation.Ppl - baseIsolation.Ppl);
+
+                ApplyProportionalTradeWeighting(baseIsolation, targetIsolation, ref predictedKld, ref predictedPpl);
             }
+
+            if (predictedKld < 0d)
+                predictedKld = 0d;
 
             if (Config.ManualMaxPredictedSizeBytes > 0 && predictedSize > Config.ManualMaxPredictedSizeBytes)
                 notes.Add($"Predicted size {predictedSize:N0} bytes exceeds configured manual ceiling {Config.ManualMaxPredictedSizeBytes:N0} bytes.");
 
             double sizeGb = predictedSize / 1024d / 1024d / 1024d;
             double composite = (predictedKld * 10000d) +
-                               (predictedPpl * Config.SurvivalTradeScorePplWeight) +
+                               (Math.Max(0d, predictedPpl) * Config.SurvivalTradeScorePplWeight) +
                                (sizeGb / Math.Max(0.01d, Config.SurvivalTradeScoreSizeBiasWeight));
 
             result.Add(new PredictedCandidateEvaluation
@@ -157,7 +159,148 @@ public sealed class PredictedCandidateEvaluationService
             });
         }
 
-        AnsiConsole.MarkupLine($"[grey]Prediction evaluation completed for[/] [cyan]{result.Count:N0}[/] [grey]remaining combinations.[/]");
+        PrintPredictionDiagnostics(result);
         return result;
     }
+
+    private async Task<BenchmarkSnapshotRecord?> LoadBaseIsolationSnapshotAsync(
+        BaselineQuants baseQuant,
+        TensorGroup group,
+        Dictionary<string, BenchmarkSnapshotRecord?> cache,
+        CancellationToken ct)
+    {
+        byte normalizedId = NormalizeBaselineIdForIsolation(baseQuant.UniqueId);
+        var normalizedBaseline = BaselineQuants.FromId(normalizedId);
+        return await LoadLearnedCandidateIsolationAsync(group, normalizedBaseline, cache, ct);
+    }
+
+    private async Task<BenchmarkSnapshotRecord?> LoadIsolationSnapshotAsync(
+        HybridTensor tensor,
+        Dictionary<string, BenchmarkSnapshotRecord?> cache,
+        CancellationToken ct)
+    {
+        return tensor.OverrideMode switch
+        {
+            HybridTensorOverrideMode.ExactTensorScheme => await LoadExactIsolationAsync(tensor.TGroup, tensor.ExactTensorScheme!, cache, ct),
+            _ => await LoadLearnedCandidateIsolationAsync(tensor.TGroup, tensor.CandidateBaseline!, cache, ct)
+        };
+    }
+
+    private async Task<BenchmarkSnapshotRecord?> LoadLearnedCandidateIsolationAsync(
+        TensorGroup group,
+        BaselineQuants baseline,
+        Dictionary<string, BenchmarkSnapshotRecord?> cache,
+        CancellationToken ct)
+    {
+        string cacheKey = $"learned:{group.UniqueId}:{baseline.CanonicalKey}";
+        if (cache.TryGetValue(cacheKey, out var existing))
+            return existing;
+
+        var isolationQuant = HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0);
+        isolationQuant.SetLearnedCandidateOverride(group, baseline);
+
+        var snapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)isolationQuant, ct);
+        cache[cacheKey] = snapshot;
+        return snapshot;
+    }
+
+    private async Task<BenchmarkSnapshotRecord?> LoadExactIsolationAsync(
+        TensorGroup group,
+        TensorWeightScheme exactScheme,
+        Dictionary<string, BenchmarkSnapshotRecord?> cache,
+        CancellationToken ct)
+    {
+        string cacheKey = $"exact:{group.UniqueId}:{exactScheme.Names[0]}";
+        if (cache.TryGetValue(cacheKey, out var existing))
+            return existing;
+
+        var isolationQuant = HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0);
+        isolationQuant.SetExactOverride(group, exactScheme);
+
+        var snapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)isolationQuant, ct);
+        cache[cacheKey] = snapshot;
+        return snapshot;
+    }
+
+    private static byte NormalizeBaselineIdForIsolation(byte baselineId)
+    {
+        var baseline = BaselineQuants.FromId(baselineId);
+        if (!baseline.IsExternalRepositoryBaseline)
+            return baselineId;
+
+        var builtIn = BaselineQuants.ResolveBuiltInStandardBaseline(baseline.QuantizeBaseArgumentName)
+                      ?? BaselineQuants.ResolveBuiltInStandardBaseline(baseline.Names[0]);
+
+        return builtIn?.UniqueId ?? baselineId;
+    }
+
+    private static void ApplyProportionalTradeWeighting(
+        BenchmarkSnapshotRecord baseIsolation,
+        BenchmarkSnapshotRecord targetIsolation,
+        ref double predictedKld,
+        ref double predictedPpl)
+    {
+        if (targetIsolation.SizeBytes >= baseIsolation.SizeBytes)
+            return;
+
+        double savingsPercent = ((double)baseIsolation.SizeBytes - targetIsolation.SizeBytes) / baseIsolation.SizeBytes * 100d;
+        if (savingsPercent <= 0d)
+            return;
+
+        double kldDelta = targetIsolation.Kld - baseIsolation.Kld;
+        double pplDelta = targetIsolation.Ppl - baseIsolation.Ppl;
+
+        if (kldDelta <= 0d && pplDelta <= 0d)
+            return;
+
+        double damage = Math.Max(0d, kldDelta) * 1000d + Math.Max(0d, pplDelta);
+        double damagePerSavings = damage / Math.Max(0.10d, savingsPercent);
+
+        if (damagePerSavings <= 1.0d)
+            return;
+
+        double multiplier = Math.Min(2.75d, 1.0d + ((damagePerSavings - 1.0d) * 0.20d));
+        predictedKld += Math.Max(0d, kldDelta) * (multiplier - 1.0d);
+        predictedPpl += Math.Max(0d, pplDelta) * (multiplier - 1.0d);
+    }
+
+    private static void PrintPredictionDiagnostics(IReadOnlyList<PredictedCandidateEvaluation> evaluations)
+    {
+        int pureCount = evaluations.Count(x => x.IsPureBaseline);
+        int hybridCount = evaluations.Count - pureCount;
+        AnsiConsole.MarkupLine($"[grey]Prediction composition:[/] [cyan]{pureCount:N0}[/] [grey]pure[/] / [cyan]{hybridCount:N0}[/] [grey]hybrid[/]");
+
+        if (evaluations.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey]Prediction evaluation completed for[/] [cyan]0[/] [grey]remaining combinations.[/]");
+            return;
+        }
+
+        ulong min = evaluations.Min(x => x.PredictedSizeBytes);
+        ulong max = evaluations.Max(x => x.PredictedSizeBytes);
+        AnsiConsole.MarkupLine($"[grey]Prediction size spread:[/] [cyan]{ToGb(min):F2}[/] [grey]GB ..[/] [cyan]{ToGb(max):F2}[/] [grey]GB[/]");
+
+        foreach (var byBitRange in evaluations.GroupBy(x => x.BaseBitRange).OrderBy(x => x.Key))
+        {
+            ulong bitMin = byBitRange.Min(x => x.PredictedSizeBytes);
+            ulong bitMax = byBitRange.Max(x => x.PredictedSizeBytes);
+            AnsiConsole.MarkupLine(
+                $"[grey]Base BitRange {byBitRange.Key} prediction spread:[/] [cyan]{byBitRange.Count():N0}[/] [grey]candidate(s),[/] [cyan]{ToGb(bitMin):F2}[/] [grey]GB ..[/] [cyan]{ToGb(bitMax):F2}[/] [grey]GB[/]");
+
+            foreach (var sample in byBitRange.OrderBy(x => x.PredictedSizeBytes).ThenBy(x => x.PredictedKldCost).Take(3))
+            {
+                AnsiConsole.MarkupLine(
+                    $"  [grey]- sample:[/] {Markup.Escape(sample.Quant.BaseQuant.Names[0])} [grey]| predicted[/] [cyan]{ToGb(sample.PredictedSizeBytes):F2}[/] [grey]GB | KLD[/] [cyan]{sample.PredictedKldCost:G6}[/] [grey]| PPL[/] [cyan]{sample.PredictedPplCost:F4}[/]");
+            }
+        }
+
+        if (min == max && evaluations.Select(x => x.BaseBitRange).Distinct().Count() > 1)
+        {
+            AnsiConsole.MarkupLine("[yellow]Prediction diagnostic warning:[/] all candidates resolved to the same predicted size even though multiple base BitRanges remain. This usually means the relative size predictor is still collapsing too aggressively.[/]");
+        }
+
+        AnsiConsole.MarkupLine($"[grey]Prediction evaluation completed for[/] [cyan]{evaluations.Count:N0}[/] [grey]remaining combinations.[/]");
+    }
+
+    private static double ToGb(ulong bytes) => bytes / 1024d / 1024d / 1024d;
 }

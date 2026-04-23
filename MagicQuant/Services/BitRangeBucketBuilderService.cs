@@ -51,6 +51,19 @@ public sealed class BitRangeBucketBuilderService
             });
         }
 
+        if (candidates.Count > 0)
+        {
+            ulong minPredicted = candidates.Min(x => x.PredictedSizeBytes);
+            ulong maxPredicted = candidates.Max(x => x.PredictedSizeBytes);
+            AnsiConsole.MarkupLine($"[grey]Predicted size spread:[/] [cyan]{FormatBytes(minPredicted)}[/] [grey]..[/] [cyan]{FormatBytes(maxPredicted)}[/]");
+
+            foreach (var baseBitRange in candidates.GroupBy(x => x.BaseBitRange).OrderBy(x => x.Key))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[grey]Predicted candidates using base BitRange {baseBitRange.Key}:[/] [cyan]{baseBitRange.Count():N0}[/]");
+            }
+        }
+
         if (buckets.Count == 0)
         {
             AnsiConsole.MarkupLine("[yellow]No usable BitRange buckets could be built. Survival will fall back to global predicted sorting if required.[/]");
@@ -60,6 +73,12 @@ public sealed class BitRangeBucketBuilderService
                 BucketedCandidates = Array.Empty<BucketedCandidate>(),
                 UnbucketedCandidates = candidates.ToList()
             };
+        }
+
+        foreach (var bucket in buckets)
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]BitRange bucket {bucket.Key} -> lower_anchor={bucket.LowerAnchorSizeBytes:N0} upper_anchor={bucket.UpperAnchorSizeBytes:N0}[/]");
         }
 
         var bucketed = new List<BucketedCandidate>();
@@ -97,11 +116,39 @@ public sealed class BitRangeBucketBuilderService
             });
         }
 
+        int populatedBucketCount = 0;
+        foreach (var bucket in buckets)
+        {
+            int count = bucketed.Count(x => x.Bucket.Key == bucket.Key);
+            if (count > 0)
+                populatedBucketCount++;
+
+            AnsiConsole.MarkupLine(
+                $"[grey]Bucket assignment {bucket.Key}:[/] [cyan]{count:N0}[/] [grey]candidate(s)[/]");
+        }
+
+        if (unbucketed.Count > 0)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Unbucketed predicted candidates:[/] [cyan]{unbucketed.Count:N0}[/]");
+        }
+
+        if (candidates.Count > 0 && populatedBucketCount <= 1)
+        {
+            AnsiConsole.MarkupLine(
+                "[bold yellow]Bucket diagnostic warning:[/] [grey]Only one BitRange bucket received predicted candidates. This usually means carrier pruning or predicted-size anchoring collapsed the search into one neighborhood.[/]");
+        }
+
         return new BitRangeBucketBuildResult
         {
             Buckets = buckets,
             BucketedCandidates = bucketed,
             UnbucketedCandidates = unbucketed
         };
+    }
+
+    private static string FormatBytes(ulong bytes)
+    {
+        double gb = bytes / 1024d / 1024d / 1024d;
+        return $"{gb:F2} GB ({bytes:N0} bytes)";
     }
 }

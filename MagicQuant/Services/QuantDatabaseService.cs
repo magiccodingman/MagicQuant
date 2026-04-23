@@ -244,6 +244,7 @@ public class QuantDatabaseService
         }
 
         var kept = new List<TensorConfig>(rows.Count);
+        var predictedByBase = new Dictionary<byte, List<ulong>>();
 
         ulong sizeCeilingBytes = Config.ManualMaxPredictedSizeBytes > 0
             ? Config.ManualMaxPredictedSizeBytes
@@ -252,8 +253,33 @@ public class QuantDatabaseService
         foreach (var row in rows)
         {
             ulong predicted = predictionContext.Predict(row);
+
+            if (!predictedByBase.TryGetValue(row.BaseQuant, out var bucket))
+            {
+                bucket = new List<ulong>();
+                predictedByBase[row.BaseQuant] = bucket;
+            }
+
+            bucket.Add(predicted);
+
             if (predicted <= sizeCeilingBytes)
                 kept.Add(row);
+        }
+
+        if (predictedByBase.Count > 0)
+        {
+            ulong globalMin = predictedByBase.Values.SelectMany(x => x).Min();
+            ulong globalMax = predictedByBase.Values.SelectMany(x => x).Max();
+            AnsiConsole.MarkupLine($"[grey]Stage-1 predicted size spread:[/] [cyan]{globalMin / 1024d / 1024d / 1024d:F2}[/] [grey]GB ..[/] [cyan]{globalMax / 1024d / 1024d / 1024d:F2}[/] [grey]GB[/]");
+
+            foreach (var kv in predictedByBase.OrderBy(x => BaselineQuants.FromId(x.Key).BitRange).ThenBy(x => x.Key))
+            {
+                var baseline = BaselineQuants.FromId(kv.Key);
+                ulong min = kv.Value.Min();
+                ulong max = kv.Value.Max();
+                AnsiConsole.MarkupLine(
+                    $"[grey]Stage-1 base {Markup.Escape(baseline.Names[0])} (BitRange {baseline.BitRange}) ->[/] [cyan]{kv.Value.Count:N0}[/] [grey]candidate(s),[/] [cyan]{min / 1024d / 1024d / 1024d:F2}[/] [grey]GB ..[/] [cyan]{max / 1024d / 1024d / 1024d:F2}[/] [grey]GB[/]");
+            }
         }
 
         long removed = rows.Count - kept.Count;
@@ -554,7 +580,17 @@ public class QuantDatabaseService
         if (carrier == null)
             return null;
 
-        var deltaByGroupAndCandidate = new Dictionary<(byte GroupId, byte CandidateId), long>();
+        var pureBaselineSizes = new Dictionary<byte, ulong>();
+        foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
+        {
+            var snap = await LoadSnapshotByQuantAsync(db, model.Id, imatrixDefinitionId, HybridQuant.CreatePureBaseline(baseline), ct);
+            if (snap != null)
+                pureBaselineSizes[baseline.UniqueId] = snap.SizeBytes;
+        }
+
+        pureBaselineSizes[BaselineQuants.Q8_0.UniqueId] = pureQ8.SizeBytes;
+
+        var sizeByGroupAndCandidate = new Dictionary<(byte GroupId, byte CandidateId), ulong>();
 
         var groupPlans = fullPlan.Plans
             .Where(x => x.Kind == RequiredSampleKind.GroupIsolationProbe || x.Kind == RequiredSampleKind.GroupIsolationContinuation)
@@ -570,14 +606,14 @@ public class QuantDatabaseService
             if (snap == null)
                 continue;
 
-            long delta = (long)snap.SizeBytes - (long)carrier.SizeBytes;
-            deltaByGroupAndCandidate[(plan.TargetGroupId!.Value, plan.TestedCandidateId!.Value)] = delta;
+            sizeByGroupAndCandidate[(plan.TargetGroupId!.Value, plan.TestedCandidateId!.Value)] = snap.SizeBytes;
         }
 
         return new PredictionContext(
             pureQ8BaseSize: pureQ8.SizeBytes,
+            pureBaselineSizes: pureBaselineSizes,
             carrierBaseOnlySize: carrier.SizeBytes,
-            deltas: deltaByGroupAndCandidate);
+            sizesByGroupAndCandidate: sizeByGroupAndCandidate);
     }
 
     private static async Task<BenchmarkRow?> LoadSnapshotByQuantAsync(
@@ -632,34 +668,42 @@ public class QuantDatabaseService
 
     private sealed class PredictionContext
     {
-        private readonly Dictionary<(byte GroupId, byte CandidateId), long> _deltas;
+        private readonly Dictionary<byte, ulong> _pureBaselineSizes;
+        private readonly Dictionary<(byte GroupId, byte CandidateId), ulong> _sizesByGroupAndCandidate;
 
         public ulong PureQ8BaseSize { get; }
         public ulong CarrierBaseOnlySize { get; }
 
         public PredictionContext(
             ulong pureQ8BaseSize,
+            Dictionary<byte, ulong> pureBaselineSizes,
             ulong carrierBaseOnlySize,
-            Dictionary<(byte GroupId, byte CandidateId), long> deltas)
+            Dictionary<(byte GroupId, byte CandidateId), ulong> sizesByGroupAndCandidate)
         {
             PureQ8BaseSize = pureQ8BaseSize;
             CarrierBaseOnlySize = carrierBaseOnlySize;
-            _deltas = deltas;
+            _pureBaselineSizes = pureBaselineSizes;
+            _sizesByGroupAndCandidate = sizesByGroupAndCandidate;
         }
 
         public ulong Predict(TensorConfig config)
         {
-            long total = (long)CarrierBaseOnlySize;
+            byte normalizedBaseId = NormalizeBaselineIdForIsolation(config.BaseQuant);
+            long total = (long)(_pureBaselineSizes.TryGetValue(config.BaseQuant, out var directBase)
+                ? directBase
+                : _pureBaselineSizes.TryGetValue(normalizedBaseId, out var normalizedBase)
+                    ? normalizedBase
+                    : PureQ8BaseSize);
 
-            AddDelta(TReg.Embeddings.UniqueId, config.Embeddings, ref total);
-            AddDelta(TReg.LmHead.UniqueId, config.LmHead, ref total);
-            AddDelta(TReg.AttnQ.UniqueId, config.AttnQ, ref total);
-            AddDelta(TReg.AttnKV.UniqueId, config.AttnKV, ref total);
-            AddDelta(TReg.AttnOutput.UniqueId, config.AttnOutput, ref total);
-            AddDelta(TReg.FfnUpGate.UniqueId, config.FfnUpGate, ref total);
-            AddDelta(TReg.FfnDown.UniqueId, config.FfnDown, ref total);
-            AddDelta(TReg.MoeExperts.UniqueId, config.MoeExperts, ref total);
-            AddDelta(TReg.MoeRouter.UniqueId, config.MoeRouter, ref total);
+            ApplyRelativeDelta(TReg.Embeddings.UniqueId, normalizedBaseId, config.Embeddings, ref total);
+            ApplyRelativeDelta(TReg.LmHead.UniqueId, normalizedBaseId, config.LmHead, ref total);
+            ApplyRelativeDelta(TReg.AttnQ.UniqueId, normalizedBaseId, config.AttnQ, ref total);
+            ApplyRelativeDelta(TReg.AttnKV.UniqueId, normalizedBaseId, config.AttnKV, ref total);
+            ApplyRelativeDelta(TReg.AttnOutput.UniqueId, normalizedBaseId, config.AttnOutput, ref total);
+            ApplyRelativeDelta(TReg.FfnUpGate.UniqueId, normalizedBaseId, config.FfnUpGate, ref total);
+            ApplyRelativeDelta(TReg.FfnDown.UniqueId, normalizedBaseId, config.FfnDown, ref total);
+            ApplyRelativeDelta(TReg.MoeExperts.UniqueId, normalizedBaseId, config.MoeExperts, ref total);
+            ApplyRelativeDelta(TReg.MoeRouter.UniqueId, normalizedBaseId, config.MoeRouter, ref total);
 
             if (total < 0)
                 total = 0;
@@ -667,13 +711,36 @@ public class QuantDatabaseService
             return (ulong)total;
         }
 
-        private void AddDelta(byte groupId, byte candidateId, ref long total)
+        private void ApplyRelativeDelta(byte groupId, byte baseCandidateId, byte candidateId, ref long total)
         {
-            if (candidateId == BaselineQuants.BF16_Hybrid.UniqueId || candidateId == BaselineQuants.F16_Hybrid.UniqueId)
+            if (BaselineQuants.IsNullTensorConfigGroupSlot(candidateId) ||
+                candidateId == BaselineQuants.BF16_Hybrid.UniqueId ||
+                candidateId == BaselineQuants.F16_Hybrid.UniqueId)
                 return;
 
-            if (_deltas.TryGetValue((groupId, candidateId), out long delta))
-                total += delta;
+            byte normalizedCandidateId = NormalizeBaselineIdForIsolation(candidateId);
+            if (normalizedCandidateId == baseCandidateId)
+                return;
+
+            if (!_sizesByGroupAndCandidate.TryGetValue((groupId, normalizedCandidateId), out var candidateSize))
+                return;
+
+            if (!_sizesByGroupAndCandidate.TryGetValue((groupId, baseCandidateId), out var baseSize))
+                return;
+
+            total += (long)candidateSize - (long)baseSize;
+        }
+
+        private static byte NormalizeBaselineIdForIsolation(byte baselineId)
+        {
+            var baseline = BaselineQuants.FromId(baselineId);
+            if (!baseline.IsExternalRepositoryBaseline)
+                return baselineId;
+
+            var builtIn = BaselineQuants.ResolveBuiltInStandardBaseline(baseline.QuantizeBaseArgumentName)
+                          ?? BaselineQuants.ResolveBuiltInStandardBaseline(baseline.Names[0]);
+
+            return builtIn?.UniqueId ?? baselineId;
         }
     }
 }

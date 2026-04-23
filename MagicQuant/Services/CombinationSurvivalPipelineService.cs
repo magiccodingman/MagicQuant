@@ -52,7 +52,9 @@ public sealed class CombinationSurvivalPipelineService
 
             PrintBucketAnchors(bucketBuild.Buckets);
 
-            var bucketPruneResult = _bucketPruner.Prune(bucketBuild);
+            var pureBaselineSnapshots = await _benchmarkRepository.LoadPureBaselineSnapshotsAsync(ct);
+            AnsiConsole.MarkupLine($"[grey]Pure baseline context loaded for bucket pruning:[/] [cyan]{pureBaselineSnapshots.Count:N0}[/]");
+            var bucketPruneResult = _bucketPruner.Prune(bucketBuild, pureBaselineSnapshots);
             foreach (var diag in bucketPruneResult.Diagnostics)
                 report.BucketDiagnostics.Add(diag);
 
@@ -79,6 +81,9 @@ public sealed class CombinationSurvivalPipelineService
                 report.AddRemoval("stage-7-global-cut", survivors.Count - globalCut.Count);
                 survivors = globalCut;
             }
+
+            if (survivors.Count == 0)
+                AnsiConsole.MarkupLine("[yellow]Warning:[/] Survival pipeline produced zero kept candidates after bucket pruning. Check pure-baseline-shadowed / bonus-hybrid-kept diagnostics.");
 
             await _combinationStore.ReplaceAllAsync(survivors.Select(x => x.Config).ToList(), "prediction-survival", ct);
 

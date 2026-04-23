@@ -294,12 +294,23 @@ public class IsolationOptimizationService
 
         foreach (var item in baseOnlyPlans)
         {
-            var snap = await LoadSnapshotAsync(item.Quant, ct);
-            if (snap == null)
-                continue;
-
             var baseline = BaselineQuants.FromId(item.TestedBaselineId!.Value);
             if (!baseline.IsCombinationCarrierCandidate)
+                continue;
+
+            // IMPORTANT:
+            // Combination carrier pruning must reason from the pure baseline artifact first,
+            // not the base-only isolation blanket. The blanket is useful to detect uncovered
+            // tensors, but when all meaningful tensors are covered by groups it will often tie
+            // across multiple carriers and collapse the entire search upward into Q8.
+            //
+            // For carrier dominance / bad-trade we therefore prefer the real pure-baseline
+            // benchmark, and only fall back to the base-only isolation snapshot if the pure
+            // artifact benchmark is missing for some reason.
+            var pureSnap = await LoadSnapshotAsync(HybridQuant.CreatePureBaseline(baseline), ct);
+            var baseOnlySnap = await LoadSnapshotAsync(item.Quant, ct);
+            var snap = pureSnap ?? baseOnlySnap;
+            if (snap == null)
                 continue;
 
             baseBaselineCandidates.Add(new BaseBaselineEvaluation
@@ -310,6 +321,12 @@ public class IsolationOptimizationService
                 Kld = GetAggregateKld(snap),
                 PplDeltaPercent = GetAggregatePplDeltaPercent(snap, nativeBaseline)
             });
+
+            if (pureSnap == null && baseOnlySnap != null)
+            {
+                result.Notes.Add(
+                    $"Carrier '{baseline.Names[0]}' fell back to base-only isolation metrics because a pure baseline benchmark snapshot was not found.");
+            }
         }
 
         ApplyBaseBaselineReductionPruning(baseBaselineCandidates, options, result);
@@ -650,6 +667,7 @@ public class IsolationOptimizationService
                 var a = activeCandidates[i];
                 var b = activeCandidates[j];
 
+                bool sameBitRange = a.Baseline.BitRange == b.Baseline.BitRange;
                 bool sameSize = a.SizeBytes == b.SizeBytes;
                 bool sameOrSmaller = a.SizeBytes <= b.SizeBytes;
                 bool kldNoWorse = a.Kld <= b.Kld + IsolationPruningConfig.FloatingPointEpsilon;
@@ -660,13 +678,21 @@ public class IsolationOptimizationService
                     Math.Abs(a.Kld - b.Kld) <= IsolationPruningConfig.FloatingPointEpsilon &&
                     Math.Abs(Math.Abs(a.PplDeltaPercent) - Math.Abs(b.PplDeltaPercent)) <= IsolationPruningConfig.FloatingPointEpsilon;
 
-                bool saferTieWinner = effectivelyTied && a.Baseline.BitRange > b.Baseline.BitRange;
+                // Cross-BitRange ties must be preserved. Those ties are exactly what allows
+                // downstream range-aware prediction/bucketing to explore multiple size neighborhoods.
+                if (effectivelyTied && !sameBitRange)
+                    continue;
+
+                bool deterministicSameBucketTieWinner =
+                    effectivelyTied &&
+                    sameBitRange &&
+                    string.Compare(a.Baseline.CanonicalKey, b.Baseline.CanonicalKey, StringComparison.Ordinal) < 0;
 
                 bool strictlyBetter =
                     a.Kld + IsolationPruningConfig.FloatingPointEpsilon < b.Kld ||
                     Math.Abs(a.PplDeltaPercent) + IsolationPruningConfig.FloatingPointEpsilon < Math.Abs(b.PplDeltaPercent) ||
                     a.SizeBytes < b.SizeBytes ||
-                    saferTieWinner;
+                    deterministicSameBucketTieWinner;
 
                 if (!sameOrSmaller || !kldNoWorse || !pplNoWorse || !strictlyBetter)
                     continue;
@@ -676,10 +702,10 @@ public class IsolationOptimizationService
 
                 result.DisabledBaselines++;
 
-                if (saferTieWinner)
+                if (deterministicSameBucketTieWinner)
                 {
                     result.Notes.Add(
-                        $"Disabled combination baseline '{b.Baseline.Names[0]}' because it tied '{a.Baseline.Names[0]}' on measured size/KLD/PPL, so the safer higher BitRange carrier was kept.");
+                        $"Disabled same-BitRange tied combination baseline '{b.Baseline.Names[0]}' because '{a.Baseline.Names[0]}' was chosen as the deterministic representative for BitRange {a.Baseline.BitRange}.");
                 }
                 else
                 {

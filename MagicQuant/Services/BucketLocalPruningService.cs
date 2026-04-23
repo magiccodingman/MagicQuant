@@ -12,7 +12,9 @@ public sealed class BucketLocalPruningService
 {
     private readonly PredictedTradeComparisonPolicy _policy = new();
 
-    public BucketLocalPruningResult Prune(BitRangeBucketBuildResult buildResult)
+    public BucketLocalPruningResult Prune(
+        BitRangeBucketBuildResult buildResult,
+        IReadOnlyCollection<BenchmarkSnapshotRecord>? pureBaselines = null)
     {
         var diagnostics = new List<BucketPruneDiagnostics>();
         var survivors = new List<PredictedCandidateEvaluation>();
@@ -23,6 +25,8 @@ public sealed class BucketLocalPruningService
                 .Where(x => x.Bucket.Key == bucket.Key)
                 .Select(x => x.Evaluation)
                 .ToList();
+
+            var bucketPureBaselines = GetPureBaselinesForBucket(bucket, pureBaselines);
 
             var diag = new BucketPruneDiagnostics
             {
@@ -94,18 +98,63 @@ public sealed class BucketLocalPruningService
                 }
             }
 
-            var capped = keptAfterPractical
+            // Hybrids that beat a pure baseline in this bucket are bonus keeps and do not count
+            // against the configured bucket cap.
+            var bonusHybrids = keptAfterPractical
+                .Where(x => !x.IsPureBaseline)
+                .Where(x => BeatsAnyPureBaseline(x, bucketPureBaselines))
                 .OrderBy(x => x, Comparer<PredictedCandidateEvaluation>.Create(_policy.Compare))
+                .ToList();
+
+            if (bonusHybrids.Count > 0)
+                AddReasonCount(diag, "bonus-hybrid-kept", bonusHybrids.Count);
+
+            var regularPool = keptAfterPractical
+                .Where(x => !bonusHybrids.Any(b => TensorConfigIdentity.ToKey(b.Config) == TensorConfigIdentity.ToKey(x.Config)))
+                .OrderBy(x => x, Comparer<PredictedCandidateEvaluation>.Create(_policy.Compare))
+                .ToList();
+
+            var viableRegular = new List<PredictedCandidateEvaluation>();
+            var shadowedRegular = new List<PredictedCandidateEvaluation>();
+
+            foreach (var candidate in regularPool)
+            {
+                if (IsShadowedByPureBaseline(candidate, bucketPureBaselines))
+                    shadowedRegular.Add(candidate);
+                else
+                    viableRegular.Add(candidate);
+            }
+
+            var capped = viableRegular
                 .Take(Config.MaxSelectedChoicesPerBucket)
                 .ToList();
 
-            int capRemoved = keptAfterPractical.Count - capped.Count;
-            if (capRemoved > 0)
-                diag.CountReason("bucket-cap");
+            // Refill from shadowed candidates only if we still have open slots in this bucket.
+            if (capped.Count < Config.MaxSelectedChoicesPerBucket)
+            {
+                capped.AddRange(
+                    shadowedRegular
+                        .Take(Config.MaxSelectedChoicesPerBucket - capped.Count));
+            }
+            else if (shadowedRegular.Count > 0)
+            {
+                AddReasonCount(diag, "pure-baseline-shadowed", shadowedRegular.Count);
+            }
 
-            diag.KeptCount = capped.Count;
-            diag.RemovedCount = diag.IncomingCount - diag.KeptCount;
-            survivors.AddRange(capped);
+            int capRemoved = Math.Max(0, viableRegular.Count - Math.Min(viableRegular.Count, Config.MaxSelectedChoicesPerBucket));
+            if (capRemoved > 0)
+                AddReasonCount(diag, "bucket-cap", capRemoved);
+
+            var finalBucketSurvivors = bonusHybrids
+                .Concat(capped)
+                .GroupBy(x => TensorConfigIdentity.ToKey(x.Config), StringComparer.Ordinal)
+                .Select(g => g.First())
+                .OrderBy(x => x, Comparer<PredictedCandidateEvaluation>.Create(_policy.Compare))
+                .ToList();
+
+            diag.KeptCount = finalBucketSurvivors.Count;
+            diag.RemovedCount = Math.Max(0, diag.IncomingCount - diag.KeptCount);
+            survivors.AddRange(finalBucketSurvivors);
             diagnostics.Add(diag);
         }
 
@@ -121,6 +170,66 @@ public sealed class BucketLocalPruningService
             Survivors = survivors,
             Diagnostics = diagnostics
         };
+    }
+
+    private static List<BenchmarkSnapshotRecord> GetPureBaselinesForBucket(
+        BitRangeBucketDefinition bucket,
+        IReadOnlyCollection<BenchmarkSnapshotRecord>? pureBaselines)
+    {
+        if (pureBaselines == null || pureBaselines.Count == 0)
+            return new List<BenchmarkSnapshotRecord>();
+
+        ulong lowerBound = bucket.LowerAnchorSizeBytes;
+        ulong upperBound = bucket.UpperAnchorSizeBytes;
+
+        return pureBaselines
+            .Where(x => x.SizeBytes >= lowerBound && x.SizeBytes <= upperBound)
+            .OrderBy(x => x.Kld)
+            .ThenBy(x => x.SizeBytes)
+            .ToList();
+    }
+
+    private static bool BeatsAnyPureBaseline(
+        PredictedCandidateEvaluation candidate,
+        IReadOnlyCollection<BenchmarkSnapshotRecord> pureBaselines)
+    {
+        foreach (var baseline in pureBaselines)
+        {
+            bool sameOrSmaller = candidate.PredictedSizeBytes <= baseline.SizeBytes;
+            bool betterKld = candidate.PredictedKldCost + 1e-9 < baseline.Kld;
+            bool betterPpl = candidate.PredictedPplCost + 1e-9 < baseline.Ppl;
+
+            if (sameOrSmaller && (betterKld || betterPpl))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsShadowedByPureBaseline(
+        PredictedCandidateEvaluation candidate,
+        IReadOnlyCollection<BenchmarkSnapshotRecord> pureBaselines)
+    {
+        foreach (var baseline in pureBaselines)
+        {
+            bool sameOrSmaller = baseline.SizeBytes <= candidate.PredictedSizeBytes;
+            bool kldNoWorse = baseline.Kld <= candidate.PredictedKldCost + 1e-9;
+            bool pplNoWorse = baseline.Ppl <= candidate.PredictedPplCost + 1e-9;
+            bool strict = baseline.SizeBytes < candidate.PredictedSizeBytes ||
+                          baseline.Kld + 1e-9 < candidate.PredictedKldCost ||
+                          baseline.Ppl + 1e-9 < candidate.PredictedPplCost;
+
+            if (sameOrSmaller && kldNoWorse && pplNoWorse && strict)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static void AddReasonCount(BucketPruneDiagnostics diag, string reason, int count)
+    {
+        for (int i = 0; i < count; i++)
+            diag.CountReason(reason);
     }
 
     private static double PercentDifference(ulong left, ulong right)
