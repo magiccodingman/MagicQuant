@@ -74,7 +74,13 @@ public sealed class FinalRealBenchmarkEliminationService
                 if (used[j])
                     continue;
 
-                if (!AreEquivalentTruths(seed, ordered[j]))
+                if (!EquivalentTruthSelectionHelper.AreEquivalentTruths(
+                        seed.SizeBytes,
+                        seed.Kld,
+                        seed.Ppl,
+                        ordered[j].SizeBytes,
+                        ordered[j].Kld,
+                        ordered[j].Ppl))
                     continue;
 
                 tied.Add(ordered[j]);
@@ -88,7 +94,10 @@ public sealed class FinalRealBenchmarkEliminationService
             }
 
             var representative = tied
-                .OrderByDescending(GetSafetyRank)
+                .OrderByDescending(x => EquivalentTruthSelectionHelper.GetBaselineSafetyRank(
+                    x.Quant.BaseQuant,
+                    isHybrid: x.IsHybrid,
+                    isExternalPureBaseline: x.IsExternalPureBaseline))
                 .ThenBy(x => x.IsHybrid)
                 .ThenBy(x => x.IsExternalPureBaseline)
                 .ThenBy(x => x.ProviderName, StringComparer.Ordinal)
@@ -113,30 +122,5 @@ public sealed class FinalRealBenchmarkEliminationService
         bool strictlyBetterKld = better.Kld + IsolationPruningConfig.FloatingPointEpsilon < worse.Kld;
         bool strictlyBetterPpl = better.Ppl + IsolationPruningConfig.FloatingPointEpsilon < worse.Ppl;
         return sameOrSmaller && strictlyBetterKld && strictlyBetterPpl;
-    }
-
-    private static bool AreEquivalentTruths(BenchmarkSnapshotRecord left, BenchmarkSnapshotRecord right)
-    {
-        if (left.SizeBytes != right.SizeBytes)
-            return false;
-
-        return Math.Abs(left.Kld - right.Kld) <= IsolationPruningConfig.FloatingPointEpsilon &&
-               Math.Abs(left.Ppl - right.Ppl) <= IsolationPruningConfig.FloatingPointEpsilon;
-    }
-
-    private static int GetSafetyRank(BenchmarkSnapshotRecord snapshot)
-    {
-        var baseline = snapshot.Quant.BaseQuant;
-
-        // Prefer the safest / most default representative when multiple rows have identical truth.
-        // 1) Higher BitRange is safer.
-        // 2) Higher ExplicitCandidateSortOrder wins ties inside the same BitRange.
-        // 3) Pure baseline beats hybrid when the measured truth is identical.
-        // 4) Internal/non-external beats external pure reference when still tied.
-        int rank = baseline.BitRange * 10_000;
-        rank += baseline.ExplicitCandidateSortOrder * 10;
-        rank += snapshot.IsHybrid ? 0 : 2;
-        rank += snapshot.IsExternalPureBaseline ? 0 : 1;
-        return rank;
     }
 }

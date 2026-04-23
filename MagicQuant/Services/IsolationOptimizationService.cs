@@ -234,11 +234,18 @@ public class IsolationOptimizationService
             ApplyDominanceElimination(group, candidates, result);
             candidates = FilterSurvivors(group, candidates);
             ApplyBadTradeElimination(group, candidates, result);
+            candidates = FilterSurvivors(group, candidates);
+            ApplyEquivalentTruthElimination(group, candidates, result);
 
             candidates = FilterSurvivors(group, candidates)
                 .OrderBy(x => x.Kld)
-                .ThenBy(x => x.PplDeltaPercent)
+                .ThenBy(x => Math.Abs(x.PplDeltaPercent))
                 .ThenByDescending(x => x.SavingsRatio)
+                .ThenByDescending(x => EquivalentTruthSelectionHelper.GetBaselineSafetyRank(
+                    x.CandidateBaseline,
+                    isHybrid: false,
+                    isExternalPureBaseline: x.CandidateBaseline.IsExternalRepositoryBaseline))
+                .ThenBy(x => x.CandidateBaseline.Names[0], StringComparer.Ordinal)
                 .ToList();
 
             if (candidates.Count == 0)
@@ -543,6 +550,84 @@ public class IsolationOptimizationService
         }
     }
 
+
+    private static void ApplyEquivalentTruthElimination(
+        TensorGroup group,
+        List<GroupCandidateEvaluation> candidates,
+        IsolationOptimizationResult result)
+    {
+        var explicitCandidates = GetActiveExplicitCandidates(group, candidates);
+        if (explicitCandidates.Count <= 1)
+            return;
+
+        var ordered = explicitCandidates
+            .OrderBy(x => x.SizeBytes)
+            .ThenBy(x => x.Kld)
+            .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+            .ThenByDescending(x => EquivalentTruthSelectionHelper.GetBaselineSafetyRank(
+                x.CandidateBaseline,
+                isHybrid: false,
+                isExternalPureBaseline: x.CandidateBaseline.IsExternalRepositoryBaseline))
+            .ThenBy(x => x.CandidateBaseline.Names[0], StringComparer.Ordinal)
+            .ToList();
+
+        var used = new bool[ordered.Count];
+
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            if (used[i])
+                continue;
+
+            var seed = ordered[i];
+            var tied = new List<GroupCandidateEvaluation> { seed };
+            used[i] = true;
+
+            for (int j = i + 1; j < ordered.Count; j++)
+            {
+                if (used[j])
+                    continue;
+
+                if (!EquivalentTruthSelectionHelper.AreEquivalentTruths(
+                        seed.SizeBytes,
+                        seed.Kld,
+                        Math.Abs(seed.PplDeltaPercent),
+                        ordered[j].SizeBytes,
+                        ordered[j].Kld,
+                        Math.Abs(ordered[j].PplDeltaPercent)))
+                    continue;
+
+                tied.Add(ordered[j]);
+                used[j] = true;
+            }
+
+            if (tied.Count == 1)
+                continue;
+
+            var representative = tied
+                .OrderByDescending(x => EquivalentTruthSelectionHelper.GetBaselineSafetyRank(
+                    x.CandidateBaseline,
+                    isHybrid: false,
+                    isExternalPureBaseline: x.CandidateBaseline.IsExternalRepositoryBaseline))
+                .ThenBy(x => x.CandidateBaseline.Names[0], StringComparer.Ordinal)
+                .First();
+
+            foreach (var loser in tied)
+            {
+                if (ReferenceEquals(loser, representative))
+                    continue;
+
+                if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, loser.CandidateBaseline))
+                    continue;
+
+                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, loser.CandidateBaseline);
+                result.DominatedGroupCandidatesBanned++;
+
+                result.Notes.Add(
+                    $"Equivalent-truth elimination: '{loser.CandidateBaseline.Names[0]}' removed for '{group.Name}' because it had identical measured truth to safer representative '{representative.CandidateBaseline.Names[0]}'.");
+            }
+        }
+    }
+
     private static List<GroupCandidateEvaluation> GetActiveExplicitCandidates(TensorGroup group, List<GroupCandidateEvaluation> candidates)
     {
         return candidates
@@ -559,7 +644,7 @@ public class IsolationOptimizationService
             .Select(x => x
                 .OrderBy(c => c.Kld)
                 .ThenBy(c => Math.Abs(c.PplDeltaPercent))
-                .ThenByDescending(c => GetCandidateSafetyScore(c.CandidateBaseline))
+                .ThenByDescending(c => EquivalentTruthSelectionHelper.GetBaselineSafetyRank(c.CandidateBaseline, isHybrid: false, isExternalPureBaseline: c.CandidateBaseline.IsExternalRepositoryBaseline))
                 .ThenBy(c => c.CandidateBaseline.Names[0], StringComparer.Ordinal)
                 .ToList())
             .ToList();
@@ -609,23 +694,11 @@ public class IsolationOptimizationService
         return survivors
             .OrderBy(x => x.Kld)
             .ThenBy(x => Math.Abs(x.PplDeltaPercent))
-            .ThenByDescending(x => GetCandidateSafetyScore(x.CandidateBaseline))
+            .ThenByDescending(x => EquivalentTruthSelectionHelper.GetBaselineSafetyRank(x.CandidateBaseline, isHybrid: false, isExternalPureBaseline: x.CandidateBaseline.IsExternalRepositoryBaseline))
             .ThenBy(x => x.CandidateBaseline.Names[0], StringComparer.Ordinal)
             .FirstOrDefault();
     }
 
-    private static int GetCandidateSafetyScore(BaselineQuants candidate)
-    {
-        string canonical = candidate.Names[0];
-
-        for (int i = 0; i < canonical.Length - 1; i++)
-        {
-            if ((canonical[i] == 'q' || canonical[i] == 'Q') && char.IsDigit(canonical[i + 1]))
-                return canonical[i + 1] - '0';
-        }
-
-        return 0;
-    }
 
     private async Task<BenchmarkSnapshot?> LoadSnapshotAsync(HybridQuant quant, CancellationToken ct)
     {

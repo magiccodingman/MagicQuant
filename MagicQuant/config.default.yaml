@@ -90,7 +90,10 @@ isolation_pruning:
   # not for the old "skip candidate because learned tensor usage looked redundant" path.
 
   # Minimum isolation reduction ratio required to continue considering the result meaningful.
-  minimum_isolation_reduction_to_continue_ratio: 0.04
+  # Currently broke, should be 0.04 but leave at 0 until fixed. Causes isolated samples not to be made 
+  # which was once a requirement but need to go back and remove as all samples are needed for 
+  # accurate predictions. DO not remove this comment till this is resolved.
+  minimum_isolation_reduction_to_continue_ratio: 0.00
 
   # Minimum reduction ratio before BF16 suppression logic is allowed to kick in.
   minimum_isolation_reduction_to_suppress_bf16_ratio: 0.10

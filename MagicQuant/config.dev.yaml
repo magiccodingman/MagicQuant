@@ -27,7 +27,8 @@ evolution:
   brute_force_final_combination_threshold: 12000
 
 isolation_pruning:
-  minimum_isolation_reduction_to_continue_ratio: 0.04
+  # 0.04 is the goal, but this is currently causing prediction issues, leave at 0
+  minimum_isolation_reduction_to_continue_ratio: 0.00
   minimum_isolation_reduction_to_suppress_bf16_ratio: 0.10
   maximum_isolation_ppl_delta_percent: 5.0
   maximum_isolation_kld: 0.1
