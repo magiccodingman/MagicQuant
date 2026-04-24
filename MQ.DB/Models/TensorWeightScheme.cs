@@ -182,6 +182,14 @@ public sealed class TensorWeightScheme
             ["Q4_K"],
             32
         );
+    
+    public static readonly TensorWeightScheme Q2_K =
+        new(
+            13,
+            true,
+            ["Q2_K"],
+            32
+        );
 
     public static readonly TensorWeightScheme F16 =
         new(15, false, ["F16", "FLOAT16", "FP16", "HALF"], null, isEligibleForBaseline: false);
