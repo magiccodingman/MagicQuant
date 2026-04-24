@@ -164,9 +164,12 @@ public sealed class HybridBenchmarkRepository
         if (tensorComboId == null)
             return null;
 
+        int? activeImatrixId = await ResolveActiveImatrixIdAsync(db, scopedAiModelHashId.Value, ct);
+
         return await db.QuantizationRuns
             .AsNoTracking()
             .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
+            .Where(x => x.ImatrixDefinitionId == activeImatrixId)
             .Where(x => x.TensorComboId == tensorComboId.Value)
             .Where(x => x.Succeeded)
             .OrderByDescending(x => x.CompletedUtc)
@@ -231,6 +234,81 @@ public sealed class HybridBenchmarkRepository
                 return string.IsNullOrWhiteSpace(normalized) ? x.FinalQuantType : normalized;
             },
             StringComparer.Ordinal);
+    }
+
+
+    public async Task<List<BenchmarkSnapshotRecord>> LoadAllBenchmarkSnapshotsForCurrentContextAsync(
+        byte category = (byte)BenchmarkCategory.General,
+        bool strictImatrixContext = true,
+        CancellationToken ct = default)
+    {
+        await using var db = new MagicQuantContext();
+        var scopedAiModelHashId = await ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db, ct);
+        if (scopedAiModelHashId == null)
+            return new List<BenchmarkSnapshotRecord>();
+
+        int? activeImatrixId = await ResolveActiveImatrixIdAsync(db, scopedAiModelHashId.Value, ct);
+
+        var query = db.AiBenchmarks
+            .AsNoTracking()
+            .Include(x => x.TensorCombo)
+            .Include(x => x.CategorBenchmarks)
+            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value);
+
+        if (strictImatrixContext)
+            query = query.Where(x => x.ImatrixDefinitionId == activeImatrixId);
+
+        var rows = await query.ToListAsync(ct);
+        var result = new List<BenchmarkSnapshotRecord>();
+
+        foreach (var benchmark in rows)
+        {
+            var metric = benchmark.CategorBenchmarks.FirstOrDefault(x => x.Category == category)
+                         ?? benchmark.CategorBenchmarks.FirstOrDefault(x => x.Category == (byte)BenchmarkCategory.General)
+                         ?? benchmark.CategorBenchmarks.OrderBy(x => x.Category).FirstOrDefault();
+
+            if (metric == null)
+                continue;
+
+            var combo = benchmark.TensorCombo;
+            var config = new TensorConfig(
+                baseQuant: combo.BaseQuant,
+                embeddings: combo.Embeddings,
+                lmHead: combo.LmHead,
+                attnQ: combo.AttnQ,
+                attnKV: combo.AttnKV,
+                attnOutput: combo.AttnOutput,
+                ffnUpGate: combo.FfnUpGate,
+                ffnDown: combo.FfnDown,
+                moeExperts: combo.MoeExperts,
+                moeRouter: combo.MoeRouter);
+
+            var quant = (HybridQuant)config;
+            var baseQuant = quant.BaseQuant;
+
+            result.Add(new BenchmarkSnapshotRecord
+            {
+                Config = config,
+                Quant = quant,
+                DisplayName = BuildDisplayName(quant),
+                ProviderName = ResolveProviderName(quant, exportNaming: false),
+                BaselineFamily = baseQuant.Names[0],
+                IsHybrid = quant.Tensors.Count > 0,
+                IsExternalPureBaseline = quant.Tensors.Count == 0 && baseQuant.IsExternalRepositoryBaseline,
+                SizeBytes = benchmark.SizeBytes,
+                Kld = metric.Kld,
+                Ppl = metric.Ppl,
+                OutputModelPath = await FindLatestSuccessfulOutputPathAsync(config, ct),
+                ExternalRepositoryUrl = BuildExternalRepositoryUrl(baseQuant)
+            });
+        }
+
+        return result
+            .GroupBy(x => TensorConfigIdentity.ToKey(x.Config), StringComparer.Ordinal)
+            .Select(g => g.OrderBy(x => x.Kld).ThenBy(x => x.SizeBytes).First())
+            .OrderBy(x => x.Kld)
+            .ThenBy(x => x.SizeBytes)
+            .ToList();
     }
 
     public static string ResolveProviderName(HybridQuant quant, bool exportNaming)

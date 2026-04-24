@@ -11,10 +11,9 @@ public sealed class CombinationSurvivalPipelineService
     private readonly RemainingCombinationStore _combinationStore;
     private readonly HybridBenchmarkRepository _benchmarkRepository;
     private readonly EffectiveCandidateStateResolverService _effectiveResolver;
-    private readonly PredictedCandidateEvaluationService _predictionService;
-    private readonly BitRangeBucketBuilderService _bucketBuilder;
-    private readonly BucketLocalPruningService _bucketPruner;
+    private readonly RankSafeKldPredictionService _predictionService;
     private readonly FinalRealBenchmarkEliminationService _finalEliminator;
+    private readonly PredictionGuidedHybridSelectionService _selectionEngine;
     private readonly FinalSurvivorSelectionCliService _selectionCli;
     private readonly HybridArtifactExportService _exportService;
     private readonly ReadmeGenerationService _readmeService;
@@ -26,10 +25,9 @@ public sealed class CombinationSurvivalPipelineService
         _combinationStore = new RemainingCombinationStore();
         _benchmarkRepository = new HybridBenchmarkRepository();
         _effectiveResolver = new EffectiveCandidateStateResolverService(_benchmarkRepository);
-        _predictionService = new PredictedCandidateEvaluationService(_benchmarkRepository, _effectiveResolver);
-        _bucketBuilder = new BitRangeBucketBuilderService(_benchmarkRepository);
-        _bucketPruner = new BucketLocalPruningService();
+        _predictionService = new RankSafeKldPredictionService(_benchmarkRepository, _effectiveResolver);
         _finalEliminator = new FinalRealBenchmarkEliminationService();
+        _selectionEngine = new PredictionGuidedHybridSelectionService(_quantizationService, _benchmarkRepository, _finalEliminator);
         _selectionCli = new FinalSurvivorSelectionCliService();
         _exportService = new HybridArtifactExportService(_quantizationService, _effectiveResolver);
         _readmeService = new ReadmeGenerationService();
@@ -38,106 +36,46 @@ public sealed class CombinationSurvivalPipelineService
 
     public async Task<CombinationSurvivalExecutionResult> RunAsync(CancellationToken ct = default)
     {
-        var report = new SurvivalStageReport();
-        report.StartingCount = await _combinationStore.CountAsync(ct);
-
-        AnsiConsole.Write(new Rule("[yellow]Prediction / Survival Pipeline[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"[green]Starting remaining combinations:[/] {report.StartingCount:N0}");
-
-        if (report.StartingCount > Config.BruteForceFinalCombinationThreshold)
+        var report = new SurvivalStageReport
         {
-            var current = await _combinationStore.LoadAllAsync(ct);
-            var predicted = await _predictionService.EvaluateAsync(current, ct);
-            var bucketBuild = await _bucketBuilder.BuildAsync(predicted, ct);
+            StartingCount = await _combinationStore.CountAsync(ct)
+        };
 
-            PrintBucketAnchors(bucketBuild.Buckets);
+        AnsiConsole.Write(new Rule("[yellow]Rank-Safe Prediction / Hybrid Selection Pipeline[/]") { Justification = Justify.Left });
+        AnsiConsole.MarkupLine($"[green]Remaining DuckDB combinations available to score:[/] [cyan]{report.StartingCount:N0}[/]");
+        AnsiConsole.MarkupLine("[grey]Old MDA bucket survival is disabled. DuckDB now defines the allowed search space; rank-safe isolation prediction selects what deserves real benchmarking.[/]");
 
-            var pureBaselineSnapshots = await _benchmarkRepository.LoadPureBaselineSnapshotsAsync(ct);
-            AnsiConsole.MarkupLine($"[grey]Pure baseline context loaded for bucket pruning:[/] [cyan]{pureBaselineSnapshots.Count:N0}[/]");
-            var bucketPruneResult = _bucketPruner.Prune(bucketBuild, pureBaselineSnapshots);
-            foreach (var diag in bucketPruneResult.Diagnostics)
-                report.BucketDiagnostics.Add(diag);
-
-            var survivors = bucketPruneResult.Survivors
-                .DistinctBy(x => TensorConfigIdentity.ToKey(x.Config))
-                .ToList();
-
-            int beforeBalance = survivors.Count;
-            if (survivors.Count > Config.BruteForceFinalCombinationThreshold)
-            {
-                survivors = BalanceDownToThreshold(survivors, bucketBuild, Config.BruteForceFinalCombinationThreshold);
-                report.AddRemoval("bucket-balance", beforeBalance - survivors.Count);
-            }
-
-            if (survivors.Count > Config.BruteForceFinalCombinationThreshold)
-            {
-                var globalCut = survivors
-                    .OrderBy(x => x.CompositeScore)
-                    .ThenBy(x => x.PredictedKldCost)
-                    .ThenBy(x => x.PredictedSizeBytes)
-                    .Take(Config.BruteForceFinalCombinationThreshold)
-                    .ToList();
-
-                report.AddRemoval("stage-7-global-cut", survivors.Count - globalCut.Count);
-                survivors = globalCut;
-            }
-
-            if (survivors.Count == 0)
-                AnsiConsole.MarkupLine("[yellow]Warning:[/] Survival pipeline produced zero kept candidates after bucket pruning. Check pure-baseline-shadowed / bonus-hybrid-kept diagnostics.");
-
-            await _combinationStore.ReplaceAllAsync(survivors.Select(x => x.Config).ToList(), "prediction-survival", ct);
-
-            foreach (var diag in report.BucketDiagnostics)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[grey]Bucket {Markup.Escape(diag.BucketKey)}:[/] anchors=({diag.LowerAnchorSizeBytes:N0}..{diag.UpperAnchorSizeBytes:N0}) " +
-                    $"incoming=[cyan]{diag.IncomingCount:N0}[/] removed=[red]{diag.RemovedCount:N0}[/] kept=[green]{diag.KeptCount:N0}[/]");
-
-                foreach (var reason in diag.RemovalReasons.OrderByDescending(x => x.Value))
-                    AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(reason.Key)}:[/] {reason.Value:N0}");
-            }
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("[grey]Remaining combinations are already at or under threshold. Skipping additional predictive narrowing.[/]");
-        }
-
-        report.EndingCount = await _combinationStore.CountAsync(ct);
-        AnsiConsole.MarkupLine($"[green]Combinations after survival pipeline:[/] {report.EndingCount:N0}");
-
-        if (report.EndingCount > Config.BruteForceFinalCombinationThreshold)
-        {
-            throw new InvalidOperationException(
-                $"Survival pipeline completed but still left {report.EndingCount:N0} combinations, which is above the brute-force threshold of {Config.BruteForceFinalCombinationThreshold:N0}. Diagnostics were emitted above.");
-        }
-
-        AnsiConsole.Write(new Rule("[yellow]Final Brute Force Benchmark Phase[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine(
-            $"[green]Remaining combination count[/] [cyan]{report.EndingCount:N0}[/] [grey]is at or below the brute-force threshold of[/] [yellow]{Config.BruteForceFinalCombinationThreshold:N0}[/].");
-
-        var finalConfigs = await _combinationStore.LoadAllAsync(ct);
-        var finalQuants = finalConfigs.Select(x => (HybridQuant)x).ToList();
-        var finalSummary = await _quantizationService.ProcessHybridBatchAsync(finalQuants);
-
-        AnsiConsole.MarkupLine("[bold green]Final brute force benchmarking complete.[/]");
-        AnsiConsole.MarkupLine($"  [green]Requested:[/] {finalSummary.Requested:N0}");
-        AnsiConsole.MarkupLine($"  [green]Completed:[/] {finalSummary.Completed:N0}");
-        AnsiConsole.MarkupLine($"  [yellow]Skipped existing:[/] {finalSummary.Skipped:N0}");
-        AnsiConsole.MarkupLine($"  [red]Failed:[/] {finalSummary.Failed:N0}");
-
-        var benchmarkSnapshots = (await _benchmarkRepository.LoadBenchmarkSnapshotsAsync(finalConfigs, ct)).Values.ToList();
+        var remainingConfigs = await _combinationStore.LoadAllAsync(ct);
         var pureBaselines = await _benchmarkRepository.LoadPureBaselineSnapshotsAsync(ct);
 
-        var brutalInput = benchmarkSnapshots
-            .Concat(pureBaselines)
-            .GroupBy(x => TensorConfigIdentity.ToKey(x.Config), StringComparer.Ordinal)
-            .Select(g => g.First())
+        if (pureBaselines.Count == 0)
+            throw new InvalidOperationException("No pure baseline benchmark snapshots were available. Run the baseline/isolation phases before final hybrid selection.");
+
+        AnsiConsole.MarkupLine($"[green]Pure baseline snapshots loaded:[/] [cyan]{pureBaselines.Count:N0}[/]");
+
+        var predictionInput = remainingConfigs
+            .Concat(pureBaselines.Select(x => x.Config))
+            .DistinctBy(TensorConfigIdentity.ToKey)
             .ToList();
 
-        var brutal = _finalEliminator.Eliminate(brutalInput);
-        AnsiConsole.MarkupLine($"[green]Final brutal elimination removals:[/] [red]{brutal.Eliminated.Count:N0}[/]");
+        var predictions = await _predictionService.PredictAsync(predictionInput, ct);
 
-        var selectedRows = _selectionCli.Prompt(brutal.Survivors);
+        foreach (var note in predictions.Notes)
+            AnsiConsole.MarkupLine($"[grey]Prediction note:[/] {Markup.Escape(note)}");
+
+        var selection = await _selectionEngine.RunAsync(
+            predictions.PredictableRows.ToList(),
+            pureBaselines,
+            ct);
+
+        report.EndingCount = selection.Survivors.Count;
+        report.AddRemoval("prediction-guided-non-selected", Math.Max(0L, report.StartingCount - report.EndingCount));
+
+        AnsiConsole.MarkupLine($"[green]Final candidate/anchor survivors before manual enablement:[/] [cyan]{selection.Survivors.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[yellow]Recorded baseline/anchor eliminations:[/] [cyan]{selection.Eliminations.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[yellow]Prediction validation misses:[/] [cyan]{selection.ValidationFailures.Count:N0}[/]");
+
+        var selectedRows = _selectionCli.Prompt(selection.Survivors);
 
         var exportedArtifacts = await _exportService.ExportAsync(selectedRows, ct);
 
@@ -145,90 +83,35 @@ public sealed class CombinationSurvivalPipelineService
             ? "model"
             : new DirectoryInfo(Cache.ModelDirectory!).Name;
 
-        await _readmeService.GenerateAsync(Cache.OutputDirectory!, modelName, exportedArtifacts, brutalInput, ct);
+        var benchmarkOverview = selection.Survivors
+            .Concat(pureBaselines)
+            .Concat(selection.ValidationFailures.Select(x => x.Snapshot).OfType<BenchmarkSnapshotRecord>())
+            .DistinctBy(x => TensorConfigIdentity.ToKey(x.Config))
+            .OrderBy(x => x.Kld)
+            .ThenBy(x => x.SizeBytes)
+            .ToList();
+
+        await _readmeService.GenerateAsync(
+            Cache.OutputDirectory!,
+            modelName,
+            exportedArtifacts,
+            benchmarkOverview,
+            selection.Eliminations,
+            selection.ValidationFailures,
+            ct);
+
         await _hybridMapService.GenerateAsync(Cache.OutputDirectory!, exportedArtifacts, ct);
 
         return new CombinationSurvivalExecutionResult
         {
-            BenchmarkedSnapshots = benchmarkSnapshots,
-            BrutalSurvivors = brutal.Survivors,
+            BenchmarkedSnapshots = benchmarkOverview,
+            BrutalSurvivors = selection.Survivors,
             SelectedRows = selectedRows,
             ExportedArtifacts = exportedArtifacts,
-            BucketDiagnostics = report.BucketDiagnostics,
-            SurvivalReport = report
+            BucketDiagnostics = Array.Empty<BucketPruneDiagnostics>(),
+            SurvivalReport = report,
+            Eliminations = selection.Eliminations,
+            ValidationFailures = selection.ValidationFailures
         };
-    }
-
-    private static void PrintBucketAnchors(IReadOnlyList<BitRangeBucketDefinition> buckets)
-    {
-        foreach (var bucket in buckets)
-        {
-            AnsiConsole.MarkupLine(
-                $"[grey]BitRange bucket {Markup.Escape(bucket.Key)}[/] -> lower_anchor=[cyan]{bucket.LowerAnchorSizeBytes:N0}[/] upper_anchor=[cyan]{bucket.UpperAnchorSizeBytes:N0}[/]");
-        }
-    }
-
-    private static List<PredictedCandidateEvaluation> BalanceDownToThreshold(
-        IReadOnlyList<PredictedCandidateEvaluation> survivors,
-        BitRangeBucketBuildResult bucketBuild,
-        int threshold)
-    {
-        var byBucket = bucketBuild.Buckets
-            .ToDictionary(
-                bucket => bucket.Key,
-                bucket => survivors
-                    .Where(x => bucketBuild.BucketedCandidates.Any(bc => bc.Bucket.Key == bucket.Key && TensorConfigIdentity.ToKey(bc.Evaluation.Config) == TensorConfigIdentity.ToKey(x.Config)))
-                    .OrderBy(x => x.CompositeScore)
-                    .ThenBy(x => x.PredictedKldCost)
-                    .ThenBy(x => x.PredictedSizeBytes)
-                    .ToList(),
-                StringComparer.Ordinal);
-
-        var fallback = survivors
-            .Where(x => !bucketBuild.BucketedCandidates.Any(bc => TensorConfigIdentity.ToKey(bc.Evaluation.Config) == TensorConfigIdentity.ToKey(x.Config)))
-            .OrderBy(x => x.CompositeScore)
-            .ThenBy(x => x.PredictedKldCost)
-            .ThenBy(x => x.PredictedSizeBytes)
-            .ToList();
-
-        var balanced = new List<PredictedCandidateEvaluation>(threshold);
-        int pass = 0;
-        while (balanced.Count < threshold)
-        {
-            bool addedAny = false;
-
-            foreach (var bucket in byBucket.OrderBy(x => x.Key, StringComparer.Ordinal))
-            {
-                if (pass >= bucket.Value.Count)
-                    continue;
-
-                balanced.Add(bucket.Value[pass]);
-                addedAny = true;
-
-                if (balanced.Count >= threshold)
-                    break;
-            }
-
-            if (!addedAny)
-                break;
-
-            pass++;
-        }
-
-        foreach (var item in fallback)
-        {
-            if (balanced.Count >= threshold)
-                break;
-
-            if (balanced.Any(x => TensorConfigIdentity.ToKey(x.Config) == TensorConfigIdentity.ToKey(item.Config)))
-                continue;
-
-            balanced.Add(item);
-        }
-
-        return balanced
-            .DistinctBy(x => TensorConfigIdentity.ToKey(x.Config))
-            .Take(threshold)
-            .ToList();
     }
 }

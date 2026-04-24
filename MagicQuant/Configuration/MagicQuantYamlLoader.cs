@@ -92,7 +92,35 @@ public static class MagicQuantYamlLoader
             : config.Output.OutputNamePrefix.Trim();
 
         if (config.Survival.MaxSelectedChoicesPerBucket <= 0)
-            throw new InvalidOperationException("survival.max_selected_choices_per_bucket must be greater than 0.");
+            config.Survival.MaxSelectedChoicesPerBucket = 1;
+
+        if (config.Prediction.BitStressThresholdCandidates.Count == 0)
+            config.Prediction.BitStressThresholdCandidates.Add(config.Prediction.DefaultBitStressThreshold);
+
+        config.Prediction.BitStressThresholdCandidates = config.Prediction.BitStressThresholdCandidates
+            .Where(x => x > 0d)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
+        if (config.Prediction.MinimumFitRows < 2)
+            config.Prediction.MinimumFitRows = 2;
+
+        if (config.CandidateSelection.InteriorWindowFractions.Count == 0)
+        {
+            config.CandidateSelection.InteriorWindowFractions.Add(0.35d);
+            config.CandidateSelection.InteriorWindowFractions.Add(0.35d);
+        }
+
+        config.CandidateSelection.InteriorWindowFractions = config.CandidateSelection.InteriorWindowFractions
+            .Select(x => Math.Clamp(x, 0d, 1d))
+            .Where(x => x > 0d)
+            .ToList();
+
+        config.CandidateSelection.MaxCandidatesPerInteriorWindow = Math.Max(1, config.CandidateSelection.MaxCandidatesPerInteriorWindow);
+        config.CandidateSelection.MaxFallbackAttemptsPerAnchor = Math.Max(1, config.CandidateSelection.MaxFallbackAttemptsPerAnchor);
+        config.CandidateSelection.NearBaselineMaxSizeGrowthPercent = Math.Max(0d, config.CandidateSelection.NearBaselineMaxSizeGrowthPercent);
+        config.CandidateSelection.MinimumKldImprovementEpsilon = Math.Max(0d, config.CandidateSelection.MinimumKldImprovementEpsilon);
 
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
@@ -173,6 +201,41 @@ public static class MagicQuantYamlLoader
         if (ulong.TryParse(Get("manual-max-predicted-size-bytes"), out var manualBytes))
             config.Prediction.ManualMaxPredictedSizeBytes = manualBytes;
 
+        if (double.TryParse(Get("prediction-default-bit-stress-threshold"), out var defaultBitStress) && defaultBitStress > 0d)
+            config.Prediction.DefaultBitStressThreshold = defaultBitStress;
+
+        if (int.TryParse(Get("prediction-minimum-fit-rows"), out var minFitRows) && minFitRows >= 2)
+            config.Prediction.MinimumFitRows = minFitRows;
+
+        var bitStressCandidates = ParseDoubleList(Get("prediction-bit-stress-threshold-candidates"));
+        if (bitStressCandidates.Count > 0)
+            config.Prediction.BitStressThresholdCandidates = bitStressCandidates;
+
+        if (double.TryParse(Get("selection-near-baseline-max-size-growth-percent"), out var nearPct) && nearPct >= 0d)
+            config.CandidateSelection.NearBaselineMaxSizeGrowthPercent = nearPct;
+
+        var windows = ParseDoubleList(Get("selection-interior-window-fractions"));
+        if (windows.Count > 0)
+            config.CandidateSelection.InteriorWindowFractions = windows;
+
+        if (int.TryParse(Get("selection-max-candidates-per-interior-window"), out var maxInterior) && maxInterior > 0)
+            config.CandidateSelection.MaxCandidatesPerInteriorWindow = maxInterior;
+
+        if (int.TryParse(Get("selection-max-fallback-attempts-per-anchor"), out var maxFallbacks) && maxFallbacks > 0)
+            config.CandidateSelection.MaxFallbackAttemptsPerAnchor = maxFallbacks;
+
+        if (double.TryParse(Get("selection-minimum-kld-improvement-epsilon"), out var minKldEpsilon) && minKldEpsilon >= 0d)
+            config.CandidateSelection.MinimumKldImprovementEpsilon = minKldEpsilon;
+
+        if (double.TryParse(Get("selection-minimum-neighbor-gap-fraction"), out var neighborGap) && neighborGap >= 0d)
+            config.CandidateSelection.MinimumNeighborGapFractionOfGlobalSpan = neighborGap;
+
+        if (double.TryParse(Get("selection-near-lower-anchor-brutal-zone-fraction"), out var brutalZone) && brutalZone >= 0d)
+            config.CandidateSelection.NearLowerAnchorBrutalZoneFractionOfPairSpan = brutalZone;
+
+        if (double.TryParse(Get("selection-near-anchor-required-kld-gain-fraction"), out var brutalGain) && brutalGain >= 0d)
+            config.CandidateSelection.NearAnchorRequiredKldGainFractionOfPairGap = brutalGain;
+
         config.Output.OutputDir = Prefer(Get("output-dir"), config.Output.OutputDir);
         config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);
         if (Has("export-external-learned-baselines")) config.Output.ExportExternalLearnedBaselines = true;
@@ -200,6 +263,19 @@ public static class MagicQuantYamlLoader
 
         config.Identity.ArchitectureFamilyName = Prefer(Get("architecture-family"), config.Identity.ArchitectureFamilyName);
         if (Has("allow-architecture-family-alias-override")) config.Identity.AllowArchitectureFamilyAliasOverride = true;
+    }
+
+    private static List<double> ParseDoubleList(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return new List<double>();
+
+        return value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => double.TryParse(x, out var parsed) ? (double?)parsed : null)
+            .Where(x => x.HasValue)
+            .Select(x => x!.Value)
+            .ToList();
     }
 
     private static string? Prefer(string? preferred, string? fallback)

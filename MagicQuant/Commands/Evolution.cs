@@ -304,7 +304,10 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
 
         await dbService.InitializeAsync(forceRebuild: true);
 
-        long predictedSizePruned = await dbService.PrunePredictedLargerThanQ8Async(mergedPlan);
+        // The old MDA/predicted-size ceiling pass is intentionally removed.
+        // DuckDB now stays as the allowed candidate universe, and the rank-safe
+        // isolation predictor chooses which candidates deserve real validation.
+        long predictedSizePruned = 0;
         long highPrecisionPruned = await dbService.PruneHighPrecisionHybridCandidatesAsync();
 
         AnsiConsole.MarkupLine($"[green]Learned-baseline eliminations:[/] {totalLearnedPruningResult.GroupCandidateEliminations:N0} [grey](early pruning disabled)[/]");
@@ -317,7 +320,7 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine($"[green]Disabled combination baselines:[/] {isolationResult.DisabledBaselines:N0}");
         AnsiConsole.MarkupLine($"[green]Combination count before pruning:[/] {comboCountBefore:N0}");
         AnsiConsole.MarkupLine($"[green]Combination count after rule pruning:[/] {comboCountAfterRulePruning:N0}");
-        AnsiConsole.MarkupLine($"[green]Predicted-size combo removals:[/] {predictedSizePruned:N0}");
+        AnsiConsole.MarkupLine($"[green]Predicted-size combo removals:[/] {predictedSizePruned:N0} [grey](obsolete MDA ceiling pruning removed)[/]");
         AnsiConsole.MarkupLine($"[green]Late-stage high-precision combo removals:[/] {highPrecisionPruned:N0}");
 
         foreach (var note in isolationResult.Notes)
@@ -426,7 +429,7 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
     private void ShowEvolutionHelp()
     {
         AnsiConsole.MarkupLine("[bold yellow]Command: evolution[/]");
-        AnsiConsole.WriteLine("Runs the full evolutionary quantization search algorithm on a target model.");
+        AnsiConsole.WriteLine("Runs the full quantization search on a target model, then uses rank-safe isolation prediction to choose validated final hybrids.");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Usage:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"<path>\" [options]");
@@ -445,11 +448,13 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-split[/]    Dataset split for HF/local dataset source metadata/build (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-config[/]    Optional dataset config name for HF datasets (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-local-file[/]    Full path to local .json/.jsonl dataset source (Optional)");
-        AnsiConsole.MarkupLine("  [green]--manual-max-predicted-size-bytes[/]    Override late predicted-size pruning ceiling (Optional; 0 = auto Q8 ceiling)");
+        AnsiConsole.MarkupLine("  [green]--selection-near-baseline-max-size-growth-percent[/]    Phase-2 size premium for replacing a smaller/higher-damage anchor (Optional; default = 1.0)");
+        AnsiConsole.MarkupLine("  [green]--selection-interior-window-fractions[/]    Comma-separated phase-3 interior windows, e.g. 0.35,0.35 (Optional)");
+        AnsiConsole.MarkupLine("  [green]--prediction-bit-stress-threshold-candidates[/]    Comma-separated interaction-fit thresholds, e.g. 4,5,6,7,8,9,10,11,12 (Optional)");
         AnsiConsole.MarkupLine("  [green]--output-dir[/]    Final export/output directory for selected survivor artifacts (Optional; default = <model>/MagicQuant/Final_Outputs)");
         AnsiConsole.MarkupLine("  [green]--output-name-prefix[/]    Output filename prefix for exported GGUF files (Optional; default = model)");
         AnsiConsole.MarkupLine("  [green]--export-external-learned-baselines[/]    Also locally rebuild/export pure learned external baselines such as Unsloth (Optional; default false)");
-        AnsiConsole.MarkupLine("  [green]--max-selected-choices-per-bucket[/]    Hard cap for survivors retained per BitRange bucket before brute force (Optional; default = 5)");
+        AnsiConsole.MarkupLine("  [green]--selection-max-candidates-per-interior-window[/]    Candidate count retained per interior window (Optional; default = 1)");
         AnsiConsole.MarkupLine("  [green]--config[/]    Path to YAML runtime config. CLI flags override YAML values.");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Example:[/]");

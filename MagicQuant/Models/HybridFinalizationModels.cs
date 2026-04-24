@@ -204,4 +204,6 @@ public sealed class CombinationSurvivalExecutionResult
     public IReadOnlyList<ExportedArtifactRecord> ExportedArtifacts { get; init; } = Array.Empty<ExportedArtifactRecord>();
     public IReadOnlyList<BucketPruneDiagnostics> BucketDiagnostics { get; init; } = Array.Empty<BucketPruneDiagnostics>();
     public SurvivalStageReport SurvivalReport { get; init; } = new();
+    public IReadOnlyList<BaselineEliminationRecord> Eliminations { get; init; } = Array.Empty<BaselineEliminationRecord>();
+    public IReadOnlyList<CandidateValidationResult> ValidationFailures { get; init; } = Array.Empty<CandidateValidationResult>();
 }

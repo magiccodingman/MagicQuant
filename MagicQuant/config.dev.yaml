@@ -20,11 +20,8 @@ imatrix:
   dataset_config:
   dataset_local_file: /home/slurp/Documents/Output_Files/Dataset/artifacts/imatrix-general-v1-1m.jsonl
 
-evolution:
-  max_data_collected_per_category: 5
-  max_survival_rounds: 4
-  collapse_multiplier: 1.5
-  brute_force_final_combination_threshold: 12000
+# Legacy evolution survivor knobs were removed from YAML.
+# Final hybrid selection is now driven by rank-safe isolation prediction plus candidate_selection.
 
 isolation_pruning:
   # 0.04 is the goal, but this is currently causing prediction issues, leave at 0
@@ -38,8 +35,62 @@ isolation_pruning:
   floating_point_epsilon: 1.0e-8
   minimum_meaningful_base_only_reduction_ratio: 0.01
 
+
 prediction:
+  # Rank-safe isolation KLD predictor.
+  #
+  # manual_max_predicted_size_bytes is retained only as an emergency compatibility
+  # field for older helper code. Leave it at 0 for the new chooser.
   manual_max_predicted_size_bytes: 0
+
+  # Candidate bit-stress thresholds for the low-bit interaction correction.
+  # The predictor fits each candidate threshold against existing category=General
+  # benchmark truth and keeps the best MAE fit for the active model/imatrix bucket.
+  bit_stress_threshold_candidates:
+    - 4.0
+    - 5.0
+    - 6.0
+    - 7.0
+    - 8.0
+    - 9.0
+    - 10.0
+    - 11.0
+    - 12.0
+
+  # Fallback threshold when too few benchmark rows exist to fit the interaction model.
+  default_bit_stress_threshold: 8.0
+
+  # Minimum benchmark rows required before fitting the interaction correction.
+  minimum_fit_rows: 12
+
+candidate_selection:
+  # Phase 2: a hybrid can replace the smaller/higher-damage anchor when it fits
+  # inside this size premium and beats the real linear KLD improvement line.
+  near_baseline_max_size_growth_percent: 1.0
+
+  # Phase 3: interior windows between adjacent final anchors.
+  # [0.35, 0.35] means test the first 35% of the size span, then the next 35%.
+  interior_window_fractions:
+    - 0.35
+    - 0.35
+
+  # Number of predicted winners to keep per interior window.
+  max_candidates_per_interior_window: 1
+
+  # If the first predicted candidate fails real validation, try this many fallbacks.
+  max_fallback_attempts_per_anchor: 5
+
+  # Strict epsilon for lower-KLD comparisons after real benchmark validation.
+  minimum_kld_improvement_epsilon: 1.0e-9
+
+  # Final spacing pass: candidates closer than this fraction of the global survivor
+  # size span are collapsed unless one genuinely earns the slot.
+  minimum_neighbor_gap_fraction_of_global_span: 0.03
+
+  # Extra-brutal zone near the smaller anchor. A candidate this close to the smaller
+  # anchor must provide a stronger KLD gain to justify its existence.
+  near_lower_anchor_brutal_zone_fraction_of_pair_span: 0.02
+  near_anchor_required_kld_gain_fraction_of_pair_gap: 0.05
 
 output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
@@ -47,14 +98,8 @@ output:
   output_name_prefix: model
   export_external_learned_baselines: false
 
-survival:
-  max_selected_choices_per_bucket: 5
-  meaningful_size_bias_percent: 1.0
-  kld_close_call_absolute_epsilon: 0.00075
-  kld_close_call_relative_fraction: 0.02
-  ppl_large_difference_percent: 0.75
-  trade_score_size_bias_weight: 1.25
-  trade_score_ppl_weight: 0.15
+# Legacy bit-range bucket survival settings were removed.
+# See candidate_selection above for the active final chooser settings.
 
 identity:
   architecture_family_name: Qwen3-4B-Instruct-2507

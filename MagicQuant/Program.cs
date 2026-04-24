@@ -22,6 +22,7 @@ else if (args.Length > 0 &&
 var commands = new Dictionary<string, (string Description, Func<ICommand> Factory)>(StringComparer.OrdinalIgnoreCase)
 {
     { "evolution", ("Run the full evolutionary quantization search", () => new Evolution()) },
+    { "validate-predictions", ("Validate rank-safe KLD predictions against existing SQLite benchmarks", () => new ValidatePredictions()) },
     { "build-hybrids", ("Export specific hybrid models with polished README", () => new BuildHybrids()) },
     { "initialize-llama-cpp", ("Initialize or update llama.cpp", () => new InitializeLlamaCpp()) }
 };

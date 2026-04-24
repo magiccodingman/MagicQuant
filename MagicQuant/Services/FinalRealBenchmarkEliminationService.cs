@@ -120,7 +120,10 @@ public sealed class FinalRealBenchmarkEliminationService
     {
         bool sameOrSmaller = better.SizeBytes <= worse.SizeBytes;
         bool strictlyBetterKld = better.Kld + IsolationPruningConfig.FloatingPointEpsilon < worse.Kld;
-        bool strictlyBetterPpl = better.Ppl + IsolationPruningConfig.FloatingPointEpsilon < worse.Ppl;
-        return sameOrSmaller && strictlyBetterKld && strictlyBetterPpl;
+
+        // Final dominance intentionally follows the new survival rule:
+        // size must be same-or-smaller and KLD must be lower. PPL remains displayed
+        // and available for manual judgment, but it no longer prevents a KLD/size win.
+        return sameOrSmaller && strictlyBetterKld;
     }
 }

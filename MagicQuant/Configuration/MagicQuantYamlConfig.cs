@@ -14,6 +14,7 @@ public sealed class MagicQuantYamlConfig
     public RuntimeBaselineConfig Baselines { get; set; } = new();
     public RuntimeOutputConfig Output { get; set; } = new();
     public RuntimeSurvivalConfig Survival { get; set; } = new();
+    public RuntimeCandidateSelectionConfig CandidateSelection { get; set; } = new();
 
     public List<string> SensitivityProbeGroups { get; set; } =
     [
@@ -128,7 +129,30 @@ public sealed class RuntimeIsolationPruningConfig
 
 public sealed class RuntimePredictionConfig
 {
+    /// <summary>
+    /// Legacy emergency ceiling. Keep at 0 for the rank-safe isolation predictor.
+    /// </summary>
     public ulong ManualMaxPredictedSizeBytes { get; set; } = 0;
+
+    /// <summary>
+    /// Candidate thresholds used while fitting the low-bit interaction correction.
+    /// The best threshold is selected by lowest MAE against existing general-category truth.
+    /// </summary>
+    public List<double> BitStressThresholdCandidates { get; set; } =
+    [
+        4.0d,
+        5.0d,
+        6.0d,
+        7.0d,
+        8.0d,
+        9.0d,
+        10.0d,
+        11.0d,
+        12.0d
+    ];
+
+    public double DefaultBitStressThreshold { get; set; } = 8.0d;
+    public int MinimumFitRows { get; set; } = 12;
 }
 
 public sealed class RuntimeIdentityConfig
@@ -153,6 +177,51 @@ public sealed class RuntimeSurvivalConfig
     public double PplLargeDifferencePercent { get; set; } = 0.75d;
     public double TradeScoreSizeBiasWeight { get; set; } = 1.25d;
     public double TradeScorePplWeight { get; set; } = 0.15d;
+}
+
+public sealed class RuntimeCandidateSelectionConfig
+{
+    /// <summary>
+    /// Phase 2 window. 1.0 means "up to one percent larger than the smaller/higher-damage anchor".
+    /// </summary>
+    public double NearBaselineMaxSizeGrowthPercent { get; set; } = 1.0d;
+
+    /// <summary>
+    /// Phase 3 windows as fractions of each adjacent anchor-pair size span.
+    /// Example [0.35, 0.35] tests the first 35% and next 35% of the span.
+    /// </summary>
+    public List<double> InteriorWindowFractions { get; set; } =
+    [
+        0.35d,
+        0.35d
+    ];
+
+    public int MaxCandidatesPerInteriorWindow { get; set; } = 1;
+    public int MaxFallbackAttemptsPerAnchor { get; set; } = 5;
+
+    /// <summary>
+    /// Strict epsilon for "lower KLD" claims. This is intentionally tiny because
+    /// the validator verifies the final relationship against real benchmark truth.
+    /// </summary>
+    public double MinimumKldImprovementEpsilon { get; set; } = 1e-9d;
+
+    /// <summary>
+    /// Final spacing pass: candidates closer than this fraction of the global survivor
+    /// size span are collapsed to a single winner.
+    /// </summary>
+    public double MinimumNeighborGapFractionOfGlobalSpan { get; set; } = 0.03d;
+
+    /// <summary>
+    /// Extra-brutal near-small-anchor zone. A candidate extremely close to the smaller
+    /// anchor must earn a larger KLD gain to survive.
+    /// </summary>
+    public double NearLowerAnchorBrutalZoneFractionOfPairSpan { get; set; } = 0.02d;
+
+    /// <summary>
+    /// Required gain fraction of the adjacent-anchor KLD gap when a candidate sits in
+    /// the near-small-anchor brutal zone.
+    /// </summary>
+    public double NearAnchorRequiredKldGainFractionOfPairGap { get; set; } = 0.05d;
 }
 
 public sealed class RuntimeBaselineConfig

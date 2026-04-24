@@ -70,18 +70,8 @@ imatrix:
   # dataset_local_file: /data/datasets/imatrix-general-v1-1m.jsonl
   dataset_local_file:
 
-evolution:
-  # Maximum saved benchmark datapoints per category during survival/evolution stages.
-  max_data_collected_per_category: 5
-
-  # Maximum survival rounds for evolution narrowing.
-  max_survival_rounds: 4
-
-  # Collapse multiplier used in evolution logic.
-  collapse_multiplier: 1.5
-
-  # If remaining combinations are <= this number, brute-force the end.
-  brute_force_final_combination_threshold: 100
+# Legacy evolution survivor knobs were removed from YAML.
+# Final hybrid selection is now driven by rank-safe isolation prediction plus candidate_selection.
 
 isolation_pruning:
   # NOTE:
@@ -117,15 +107,62 @@ isolation_pruning:
   # Minimum meaningful reduction ratio for base-only comparisons.
   minimum_meaningful_base_only_reduction_ratio: 0.01
 
+
 prediction:
-  # 0 = automatic size ceiling behavior using current built-in logic.
+  # Rank-safe isolation KLD predictor.
   #
-  # If > 0, this becomes a hard manual predicted-size ceiling in bytes.
-  # Any predicted combo larger than this is pruned out.
-  #
-  # Example for ~4 GiB:
-  # manual_max_predicted_size_bytes: 4294967296
+  # manual_max_predicted_size_bytes is retained only as an emergency compatibility
+  # field for older helper code. Leave it at 0 for the new chooser.
   manual_max_predicted_size_bytes: 0
+
+  # Candidate bit-stress thresholds for the low-bit interaction correction.
+  # The predictor fits each candidate threshold against existing category=General
+  # benchmark truth and keeps the best MAE fit for the active model/imatrix bucket.
+  bit_stress_threshold_candidates:
+    - 4.0
+    - 5.0
+    - 6.0
+    - 7.0
+    - 8.0
+    - 9.0
+    - 10.0
+    - 11.0
+    - 12.0
+
+  # Fallback threshold when too few benchmark rows exist to fit the interaction model.
+  default_bit_stress_threshold: 8.0
+
+  # Minimum benchmark rows required before fitting the interaction correction.
+  minimum_fit_rows: 12
+
+candidate_selection:
+  # Phase 2: a hybrid can replace the smaller/higher-damage anchor when it fits
+  # inside this size premium and beats the real linear KLD improvement line.
+  near_baseline_max_size_growth_percent: 1.0
+
+  # Phase 3: interior windows between adjacent final anchors.
+  # [0.35, 0.35] means test the first 35% of the size span, then the next 35%.
+  interior_window_fractions:
+    - 0.35
+    - 0.35
+
+  # Number of predicted winners to keep per interior window.
+  max_candidates_per_interior_window: 1
+
+  # If the first predicted candidate fails real validation, try this many fallbacks.
+  max_fallback_attempts_per_anchor: 5
+
+  # Strict epsilon for lower-KLD comparisons after real benchmark validation.
+  minimum_kld_improvement_epsilon: 1.0e-9
+
+  # Final spacing pass: candidates closer than this fraction of the global survivor
+  # size span are collapsed unless one genuinely earns the slot.
+  minimum_neighbor_gap_fraction_of_global_span: 0.03
+
+  # Extra-brutal zone near the smaller anchor. A candidate this close to the smaller
+  # anchor must provide a stronger KLD gain to justify its existence.
+  near_lower_anchor_brutal_zone_fraction_of_pair_span: 0.02
+  near_anchor_required_kld_gain_fraction_of_pair_gap: 0.05
 
 output:
   # Optional explicit output directory.
@@ -144,23 +181,8 @@ output:
   # modified model where the upstream artifact does not really exist for your case).
   export_external_learned_baselines: false
 
-survival:
-  # Hard cap for survivors retained per BitRange bucket before brute-force benchmarking.
-  max_selected_choices_per_bucket: 5
-
-  # Size advantage percentage used as a meaningful tie-bias during bucket-local trade scoring.
-  meaningful_size_bias_percent: 1.0
-
-  # Absolute and relative KLD closeness thresholds for close-call handling.
-  kld_close_call_absolute_epsilon: 0.00075
-  kld_close_call_relative_fraction: 0.02
-
-  # PPL only matters more strongly when the difference is actually meaningful.
-  ppl_large_difference_percent: 0.75
-
-  # Centralized trade scoring weights.
-  trade_score_size_bias_weight: 1.25
-  trade_score_ppl_weight: 0.15
+# Legacy bit-range bucket survival settings were removed.
+# See candidate_selection above for the active final chooser settings.
 
 identity:
   architecture_family_name:
