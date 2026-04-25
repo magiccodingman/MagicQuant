@@ -19,6 +19,8 @@ public sealed class CombinationSurvivalPipelineService
     private readonly ReadmeGenerationService _readmeService;
     private readonly HybridMapGenerationService _hybridMapService;
     private readonly SelectionDiagnosticsLogService _diagnosticsLogService;
+    private readonly FinalReleaseMetadataService _releaseMetadataService;
+    private readonly FinalArtifactNamingService _namingService;
 
     public CombinationSurvivalPipelineService(QuantizationService quantizationService)
     {
@@ -34,6 +36,8 @@ public sealed class CombinationSurvivalPipelineService
         _readmeService = new ReadmeGenerationService();
         _hybridMapService = new HybridMapGenerationService();
         _diagnosticsLogService = new SelectionDiagnosticsLogService();
+        _releaseMetadataService = new FinalReleaseMetadataService();
+        _namingService = new FinalArtifactNamingService();
     }
 
     public async Task<CombinationSurvivalExecutionResult> RunAsync(CancellationToken ct = default)
@@ -76,9 +80,13 @@ public sealed class CombinationSurvivalPipelineService
         AnsiConsole.MarkupLine($"[green]Final candidate/anchor survivors before manual enablement:[/] [cyan]{selection.Survivors.Count:N0}[/]");
         AnsiConsole.MarkupLine($"[yellow]Recorded baseline/anchor eliminations:[/] [cyan]{selection.Eliminations.Count:N0}[/]");
         AnsiConsole.MarkupLine($"[yellow]Prediction validation misses:[/] [cyan]{selection.ValidationFailures.Count:N0}[/]");
-        RenderEliminationSummary(selection.Eliminations);
+        RenderEliminationSummary(selection.Eliminations, pureBaselines);
 
-        var selectedRows = _selectionCli.Prompt(selection.Survivors);
+        var nativeReference = await _benchmarkRepository.LoadBenchmarkSnapshotAsync(
+            (TensorConfig)HybridQuant.CreatePureBaseline(BaselineQuants.GetNativeQuant()),
+            ct);
+
+        var selectedRows = _selectionCli.Prompt(selection.Survivors, pureBaselines, nativeReference);
 
         var exportedArtifacts = await _exportService.ExportAsync(selectedRows, pureBaselines, ct);
 
@@ -94,11 +102,17 @@ public sealed class CombinationSurvivalPipelineService
             .ThenBy(x => x.SizeBytes)
             .ToList();
 
-        var nativeReference = await _benchmarkRepository.LoadBenchmarkSnapshotAsync(
-            (TensorConfig)HybridQuant.CreatePureBaseline(BaselineQuants.GetNativeQuant()),
-            ct);
-
         await _diagnosticsLogService.WriteAsync(benchmarkOverview, selection.ValidationFailures, ct);
+
+        await _hybridMapService.GenerateAsync(Cache.OutputDirectory!, exportedArtifacts, ct);
+
+        await _releaseMetadataService.GenerateAsync(
+            Cache.OutputDirectory!,
+            exportedArtifacts,
+            selection.Eliminations,
+            pureBaselines,
+            nativeReference,
+            ct);
 
         await _readmeService.GenerateAsync(
             Cache.OutputDirectory!,
@@ -108,8 +122,6 @@ public sealed class CombinationSurvivalPipelineService
             selection.Eliminations,
             nativeReference,
             ct);
-
-        await _hybridMapService.GenerateAsync(Cache.OutputDirectory!, exportedArtifacts, ct);
 
         return new CombinationSurvivalExecutionResult
         {
@@ -124,10 +136,14 @@ public sealed class CombinationSurvivalPipelineService
         };
     }
 
-    private static void RenderEliminationSummary(IReadOnlyCollection<BaselineEliminationRecord> eliminations)
+    private void RenderEliminationSummary(
+        IReadOnlyCollection<BaselineEliminationRecord> eliminations,
+        IReadOnlyCollection<BenchmarkSnapshotRecord> pureBaselineSnapshots)
     {
         if (eliminations.Count == 0)
             return;
+
+        var namingContext = _namingService.CreateContext(pureBaselineSnapshots);
 
         AnsiConsole.Write(new Rule("[yellow]Baseline / Anchor Eliminations[/]") { Justification = Justify.Left });
 
@@ -136,7 +152,7 @@ public sealed class CombinationSurvivalPipelineService
         table.AddColumn("Winner");
         table.AddColumn("KLD Δ");
         table.AddColumn("Size Δ (GB)");
-        table.AddColumn("Reason");
+        table.AddColumn("Code");
 
         foreach (var row in eliminations
                      .DistinctBy(x => $"{TensorConfigIdentity.ToKey(x.Eliminated.Config)}::{TensorConfigIdentity.ToKey(x.Eliminator.Config)}::{x.Reason}")
@@ -146,19 +162,22 @@ public sealed class CombinationSurvivalPipelineService
         {
             double kldDelta = row.Eliminated.Kld - row.Eliminator.Kld;
             double sizeDeltaGb = (row.Eliminated.SizeBytes - (double)row.Eliminator.SizeBytes) / 1024d / 1024d / 1024d;
+            string removed = _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(row.Eliminated, namingContext));
+            string winner = _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(row.Eliminator, namingContext));
+            string code = FinalArtifactNamingService.ReasonCode(row.Reason);
 
             table.AddRow(
-                Markup.Escape(row.Eliminated.DisplayName),
-                Markup.Escape(row.Eliminator.DisplayName),
+                Markup.Escape(removed),
+                Markup.Escape(winner),
                 kldDelta.ToString("0.000000"),
                 sizeDeltaGb.ToString("0.00"),
-                Markup.Escape(row.Reason));
+                Markup.Escape(code));
         }
 
         AnsiConsole.Write(table);
 
         if (eliminations.Count > 25)
-            AnsiConsole.MarkupLine($"[grey]Showing first 25 of {eliminations.Count:N0} elimination records. Full details are in README/logs.[/]");
+            AnsiConsole.MarkupLine($"[grey]Showing first 25 of {eliminations.Count:N0} elimination records. Full details are in magicquant.replacements.json.[/]");
     }
 
 }

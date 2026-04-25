@@ -156,6 +156,14 @@ public sealed class FinalSelectionRow
     public int Id { get; set; }
     public bool Enabled { get; set; } = true;
     public BenchmarkSnapshotRecord Snapshot { get; init; } = default!;
+
+    // Planned public/export identity. The CLI previews these names and the export
+    // service reuses them, so a user never sees one name in the selection UI and
+    // a different name in the produced GGUF/README.
+    public string PlannedFileName { get; set; } = string.Empty;
+    public string PlannedDisplayName { get; set; } = string.Empty;
+    public string PlannedProviderName { get; set; } = string.Empty;
+    public string PlannedQuantFamily { get; set; } = string.Empty;
 }
 
 public sealed class ExportedArtifactRecord

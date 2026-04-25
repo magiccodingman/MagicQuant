@@ -128,7 +128,6 @@ public sealed class PredictionValidationExportResult
     public IReadOnlyList<RankSafePredictionRow> Rows { get; init; } = Array.Empty<RankSafePredictionRow>();
 }
 
-
 public sealed class PhaseValidationResult
 {
     public IReadOnlyList<BenchmarkSnapshotRecord> AcceptedSnapshots { get; init; } = Array.Empty<BenchmarkSnapshotRecord>();
@@ -141,3 +140,4 @@ public sealed class PredictionGuidedSelectionResult
     public IReadOnlyList<BaselineEliminationRecord> Eliminations { get; init; } = Array.Empty<BaselineEliminationRecord>();
     public IReadOnlyList<CandidateValidationResult> ValidationFailures { get; init; } = Array.Empty<CandidateValidationResult>();
 }
+

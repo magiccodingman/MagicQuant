@@ -20,11 +20,14 @@ public sealed class ReadmeGenerationService
         Directory.CreateDirectory(outputDirectory);
         string readmePath = Path.Combine(outputDirectory, "README.md");
 
+        var replacementMap = FinalReleaseMetadataService.BuildReplacementMap(eliminatedBaselines ?? Array.Empty<BaselineEliminationRecord>());
         var namingContext = _namingService.CreateContext(pureBaselineSnapshots);
-        double? referencePpl = ResolveReferencePpl(pplReference, pureBaselineSnapshots, exportedArtifacts);
+        var exportedByKey = exportedArtifacts
+            .GroupBy(x => TensorConfigIdentity.ToKey(x.Snapshot.Config), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var sb = new StringBuilder();
-        sb.AppendLine($"# MagicQuant Hybrids (v2.1) - {modelName}");
+        sb.AppendLine($"# MagicQuant Hybrids (v2.2) - {modelName}");
         sb.AppendLine();
         sb.AppendLine("MagicQuant is **not** a quantization technique by itself.");
         sb.AppendLine();
@@ -35,117 +38,117 @@ public sealed class ReadmeGenerationService
 
         sb.AppendLine("## Final surviving downloadable outputs");
         sb.AppendLine();
-        AppendDownloadTable(sb, exportedArtifacts, referencePpl);
-        sb.AppendLine();
-        sb.AppendLine("> **PPL Δ % note:** negative is better. Larger positive values are worse. The percentage is measured against the native/reference PPL when available; otherwise it falls back to the best available reference in this release set.");
+        AppendDownloadTable(sb, exportedArtifacts, replacementMap, exportedByKey, namingContext);
         sb.AppendLine();
 
-        if (eliminatedBaselines is { Count: > 0 })
-        {
-            sb.AppendLine("## Baselines / anchors removed from final download table");
-            sb.AppendLine();
-            sb.AppendLine("These rows are intentionally **not** part of the primary download table. They explain which pure baselines or previously-surviving anchors were beaten, collapsed, or made redundant by a validated artifact.");
-            sb.AppendLine();
-            AppendEliminationLegend(sb);
-            sb.AppendLine();
-            AppendEliminationTable(sb, eliminatedBaselines, exportedArtifacts, namingContext);
-            sb.AppendLine();
-        }
-
-        sb.AppendLine("## Method note");
+        sb.AppendLine("## Release metadata");
         sb.AppendLine();
-        sb.AppendLine("The final chooser uses rank-safe isolation prediction: Q8-carrier single-group isolation measurements provide the additive backbone, a low-bit interaction correction improves numeric KLD closeness, and an isotonic projection keeps the final predicted ordering monotone with the isolation backbone. Predicted candidates still have to validate against real benchmark truth before they can replace a baseline or remain as an interior hybrid.");
+        sb.AppendLine("- [Final survivor metrics](./../../resolve/main/magicquant.final-survivors.json?download=true) — full file names, KLD, PPL delta %, byte sizes, download targets, and replacement lineage. PPL delta % is measured against the native/reference PPL when available; negative is better and larger positive values are worse.");
+        sb.AppendLine("- [Hybrid tensor map](./../../resolve/main/magicquant.hybrid-map.json?download=true) — tensor-group assignments and effective-state details for MagicQuant hybrid GGUFs.");
+        sb.AppendLine("- [Replacement details](./../../resolve/main/magicquant.replacements.json?download=true) — structured details for baselines or anchors removed from the final download table, including reason codes, KLD deltas, PPL delta %, and size deltas.");
+        sb.AppendLine();
+        AppendReasonCodeDetails(sb);
         sb.AppendLine();
 
-        sb.AppendLine("## Dive Deeper");
-        sb.AppendLine();
-        sb.AppendLine("- Browse the project GitHub/Wiki for benchmark methodology, architecture notes, and planned pipeline improvements.");
-        sb.AppendLine("- If you spot a mistake, edge case, or a better practical trade, open an issue or share the artifact details so the comparison can be improved.");
+        AppendCollapsible(sb, "Method note", "The final chooser uses rank-safe isolation prediction: Q8-carrier single-group isolation measurements provide the additive backbone, a low-bit interaction correction improves numeric KLD closeness, and an isotonic projection keeps the final predicted ordering monotone with the isolation backbone. Predicted candidates still have to validate against real benchmark truth before they can replace a baseline or remain as an interior hybrid.");
         sb.AppendLine();
 
         AppendProviderCredits(sb, exportedArtifacts);
-
-        sb.AppendLine("## Warning");
-        sb.AppendLine();
-        sb.AppendLine("External/custom baselines are normalized into MagicQuant's controlled comparison flow. MagicQuant may rebuild a learned baseline under native-source / MagicQuant-controlled conditions, including its own imatrix handling, so hybrids can be judged on a more equal footing.");
-        sb.AppendLine();
-        sb.AppendLine("That does **not** mean MagicQuant proved the original upstream artifact or upstream imatrix was worse. These comparisons exist for internal hybrid-search consistency, not as a universal judgment of the original creator's exact release artifact.");
         sb.AppendLine();
 
-        sb.AppendLine("## Support");
+        AppendCollapsible(sb, "Warning", "External/custom baselines are normalized into MagicQuant's controlled comparison flow. MagicQuant may rebuild a learned baseline under native-source / MagicQuant-controlled conditions, including its own imatrix handling, so hybrids can be judged on a more equal footing. That does **not** mean MagicQuant proved the original upstream artifact or upstream imatrix was worse. These comparisons exist for internal hybrid-search consistency, not as a universal judgment of the original creator's exact release artifact.");
         sb.AppendLine();
-        sb.AppendLine("If this release helped you, a star, issue report, correction, or benchmark reproduction note is genuinely useful. Careful feedback matters more than hype, especially when a hybrid looks surprisingly good or surprisingly bad.");
+
+        AppendCollapsible(sb, "Dive deeper", "Browse the project GitHub/Wiki for benchmark methodology, architecture notes, and planned pipeline improvements. If you spot a mistake, edge case, or a better practical trade, open an issue or share the artifact details so the comparison can be improved.");
+        sb.AppendLine();
+
+        AppendCollapsible(sb, "Support", "If this release helped you, a star, issue report, correction, or benchmark reproduction note is genuinely useful. Careful feedback matters more than hype, especially when a hybrid looks surprisingly good or surprisingly bad.");
 
         await File.WriteAllTextAsync(readmePath, sb.ToString(), ct);
         AnsiConsole.MarkupLine($"[green]README generated:[/] {Markup.Escape(readmePath)}");
         return readmePath;
     }
 
-    private static void AppendDownloadTable(
+    private void AppendDownloadTable(
         StringBuilder sb,
         IReadOnlyCollection<ExportedArtifactRecord> artifacts,
-        double? referencePpl)
+        IReadOnlyDictionary<string, List<BaselineEliminationRecord>> replacementMap,
+        IReadOnlyDictionary<string, ExportedArtifactRecord> exportedByKey,
+        FinalArtifactNamingContext namingContext)
     {
-        sb.AppendLine("| Name | Provider | Quant Family / Baseline | KLD | PPL Δ % | Size (GB) | Download |");
-        sb.AppendLine("|---|---|---|---:|---:|---:|---|");
+        sb.AppendLine("| Name | Provider | Quant Family | KLD | Size (GB) | Download |");
+        sb.AppendLine("|---|---|---|---:|---:|---|");
 
         foreach (var artifact in artifacts.OrderBy(x => x.Snapshot.Kld).ThenBy(x => x.Snapshot.SizeBytes))
         {
+            string key = TensorConfigIdentity.ToKey(artifact.Snapshot.Config);
+            string shortName = _namingService.ToShortDisplayName(artifact.DisplayName);
+            var replacements = FinalReleaseMetadataService.ResolveTransitiveReplacements(key, replacementMap);
+            string nameCell = BuildNameCell(shortName, replacements, exportedByKey, namingContext);
             string sizeGb = ToGb(artifact.Snapshot.SizeBytes);
             string download = artifact.IsExternalReference
                 ? $"[Link]({artifact.DownloadTarget})"
                 : $"[Link](./../../resolve/main/{artifact.FileName}?download=true)";
 
             sb.AppendLine(
-                $"| {EscapePipe(artifact.DisplayName)} | {EscapePipe(artifact.ProviderName)} | {EscapePipe(artifact.BaselineFamily)} | " +
-                $"{artifact.Snapshot.Kld:0.000000} | {FormatPplDeltaPercent(artifact.Snapshot.Ppl, referencePpl)} | {sizeGb} | {download} |");
+                $"| {nameCell} | {EscapePipe(artifact.ProviderName)} | {EscapePipe(artifact.BaselineFamily)} | " +
+                $"{artifact.Snapshot.Kld:0.000000} | {sizeGb} | {download} |");
         }
     }
 
-    private static void AppendEliminationLegend(StringBuilder sb)
-    {
-        sb.AppendLine("**Reason legend:** 🏆 strict dominance, 📈 near-baseline premium, 🧩 useful interior discovery, 📏 spacing collapse, 🔪 final dominance.");
-    }
-
-    private void AppendEliminationTable(
-        StringBuilder sb,
-        IReadOnlyCollection<BaselineEliminationRecord> eliminations,
-        IReadOnlyCollection<ExportedArtifactRecord> artifacts,
+    private string BuildNameCell(
+        string shortName,
+        IReadOnlyList<BaselineEliminationRecord> replacements,
+        IReadOnlyDictionary<string, ExportedArtifactRecord> exportedByKey,
         FinalArtifactNamingContext namingContext)
     {
-        var exportedByKey = artifacts
-            .GroupBy(x => TensorConfigIdentity.ToKey(x.Snapshot.Config), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        if (replacements.Count == 0)
+            return EscapePipe(shortName);
 
-        sb.AppendLine("| Removed | Winner | KLD Δ | Size Δ (GB) | Why |");
-        sb.AppendLine("|---|---|---:|---:|---|");
+        var replacedNames = replacements
+            .Select(x => GetPublicShortName(x.Eliminated, exportedByKey, namingContext))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToList();
 
-        foreach (var row in eliminations
-                     .DistinctBy(x => $"{TensorConfigIdentity.ToKey(x.Eliminated.Config)}::{TensorConfigIdentity.ToKey(x.Eliminator.Config)}::{x.Reason}")
-                     .OrderBy(x => x.Eliminated.Kld)
-                     .ThenBy(x => x.Eliminated.SizeBytes))
-        {
-            string removed = GetPublicName(row.Eliminated, exportedByKey, namingContext);
-            string winner = GetPublicName(row.Eliminator, exportedByKey, namingContext);
+        string tooltip = replacedNames.Count == 0
+            ? "Replaced one or more dominated artifacts. See magicquant.replacements.json."
+            : $"Replaced: {string.Join(", ", replacedNames)}";
 
-            double kldDelta = row.Eliminated.Kld - row.Eliminator.Kld;
-            double sizeDeltaGb = (row.Eliminated.SizeBytes - (double)row.Eliminator.SizeBytes) / 1024d / 1024d / 1024d;
+        if (replacements.Count > replacedNames.Count)
+            tooltip += $" + {replacements.Count - replacedNames.Count} more";
 
-            sb.AppendLine(
-                $"| {EscapePipe(removed)} | {EscapePipe(winner)} | {kldDelta:0.000000} | {sizeDeltaGb:0.00} | {ReasonEmoji(row.Reason)} |");
-        }
+        return $"[<u>{EscapePipe(shortName)}</u>](#winner-notes \"{EscapeTooltip(tooltip)}\")";
     }
 
-    private static string GetPublicName(
+    private string GetPublicShortName(
         BenchmarkSnapshotRecord snapshot,
         IReadOnlyDictionary<string, ExportedArtifactRecord> exportedByKey,
         FinalArtifactNamingContext namingContext)
     {
         string key = TensorConfigIdentity.ToKey(snapshot.Config);
         if (exportedByKey.TryGetValue(key, out var artifact))
-            return artifact.DisplayName;
+            return _namingService.ToShortDisplayName(artifact.DisplayName);
 
-        return new FinalArtifactNamingService().BuildDisplayLabel(snapshot, namingContext);
+        return _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(snapshot, namingContext));
+    }
+
+    private static void AppendReasonCodeDetails(StringBuilder sb)
+    {
+        sb.AppendLine("<details>");
+        sb.AppendLine("<summary>Replacement reason codes</summary>");
+        sb.AppendLine();
+        sb.AppendLine("- `STRICT_DOMINANCE` — the winner was no larger and had lower real KLD than the removed anchor.");
+        sb.AppendLine("- `NEAR_BASELINE_PREMIUM` — the winner used only the configured near-baseline size premium and beat the real linear KLD trade line.");
+        sb.AppendLine("- `INTERIOR_DISCOVERY` — the winner was selected as a useful interior point inside a size/KLD gap between anchors.");
+        sb.AppendLine("- `SPACING_COLLAPSE` — two candidates were too close in practical output space, so the stronger one was kept.");
+        sb.AppendLine("- `FINAL_DOMINANCE` — a later validated survivor dominated this artifact in final real benchmark comparison.");
+        sb.AppendLine();
+        sb.AppendLine("<a id=\"winner-notes\"></a>");
+        sb.AppendLine("Underlined names in the table replaced or ultimately inherited the replacement of another artifact. Hover the name for the short replacement summary, or inspect `magicquant.replacements.json` for exact KLD/PPL/size deltas.");
+        sb.AppendLine();
+        sb.AppendLine("</details>");
     }
 
     private void AppendProviderCredits(StringBuilder sb, IReadOnlyCollection<ExportedArtifactRecord> artifacts)
@@ -154,8 +157,8 @@ public sealed class ReadmeGenerationService
         if (credits.Count == 0)
             return;
 
-        sb.AppendLine();
-        sb.AppendLine("### Provider credits");
+        sb.AppendLine("<details>");
+        sb.AppendLine("<summary>Provider credits</summary>");
         sb.AppendLine();
 
         foreach (var credit in credits)
@@ -170,60 +173,21 @@ public sealed class ReadmeGenerationService
         }
 
         sb.AppendLine();
+        sb.AppendLine("</details>");
     }
 
-    private static string ReasonEmoji(string reason)
+    private static void AppendCollapsible(StringBuilder sb, string summary, string body)
     {
-        if (reason.Contains("strict", StringComparison.OrdinalIgnoreCase))
-            return "🏆";
-        if (reason.Contains("near-baseline", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("size premium", StringComparison.OrdinalIgnoreCase))
-            return "📈";
-        if (reason.Contains("interior", StringComparison.OrdinalIgnoreCase))
-            return "🧩";
-        if (reason.Contains("spacing", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("collapse", StringComparison.OrdinalIgnoreCase))
-            return "📏";
-        if (reason.Contains("dominance", StringComparison.OrdinalIgnoreCase))
-            return "🔪";
-
-        return "✅";
-    }
-
-    private static double? ResolveReferencePpl(
-        BenchmarkSnapshotRecord? pplReference,
-        IReadOnlyCollection<BenchmarkSnapshotRecord> pureBaselineSnapshots,
-        IReadOnlyCollection<ExportedArtifactRecord> artifacts)
-    {
-        if (pplReference is { Ppl: > 0d })
-            return pplReference.Ppl;
-
-        var bestPure = pureBaselineSnapshots
-            .Where(x => x.Ppl > 0d)
-            .OrderBy(x => x.Kld)
-            .ThenByDescending(x => x.SizeBytes)
-            .FirstOrDefault();
-
-        if (bestPure != null)
-            return bestPure.Ppl;
-
-        return artifacts
-            .Select(x => x.Snapshot)
-            .Where(x => x.Ppl > 0d)
-            .OrderBy(x => x.Kld)
-            .FirstOrDefault()
-            ?.Ppl;
-    }
-
-    private static string FormatPplDeltaPercent(double ppl, double? referencePpl)
-    {
-        if (referencePpl is null or <= 0d || ppl <= 0d)
-            return "n/a";
-
-        double delta = ((ppl - referencePpl.Value) / referencePpl.Value) * 100d;
-        return delta.ToString("0.000");
+        sb.AppendLine("<details>");
+        sb.AppendLine($"<summary>{EscapeHtml(summary)}</summary>");
+        sb.AppendLine();
+        sb.AppendLine(body);
+        sb.AppendLine();
+        sb.AppendLine("</details>");
     }
 
     private static string ToGb(ulong bytes) => (bytes / 1024d / 1024d / 1024d).ToString("0.00");
     private static string EscapePipe(string value) => (value ?? string.Empty).Replace("|", "\\|");
+    private static string EscapeTooltip(string value) => (value ?? string.Empty).Replace("\"", "&quot;").Replace("|", " ");
+    private static string EscapeHtml(string value) => (value ?? string.Empty).Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 }

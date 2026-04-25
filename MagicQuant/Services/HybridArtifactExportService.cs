@@ -63,8 +63,10 @@ public sealed class HybridArtifactExportService
             var snap = row.Snapshot;
             bool isHybrid = snap.IsHybrid;
             bool exportLocally = isHybrid || !snap.IsExternalPureBaseline || Config.ExportExternalLearnedBaselines;
-            var name = _namingService.BuildName(snap, namingContext, reservedFileNames);
-            string provider = ResolveReadmeProviderName(snap, isHybrid);
+            var name = ResolvePlannedOrBuildName(row, snap, namingContext, reservedFileNames);
+            string provider = !string.IsNullOrWhiteSpace(row.PlannedProviderName)
+                ? row.PlannedProviderName
+                : ResolveReadmeProviderName(snap, isHybrid, name);
 
             if (!exportLocally)
             {
@@ -132,9 +134,35 @@ public sealed class HybridArtifactExportService
         return output;
     }
 
-    private static string ResolveReadmeProviderName(BenchmarkSnapshotRecord snapshot, bool isHybrid)
+    private FinalArtifactName ResolvePlannedOrBuildName(
+        FinalSelectionRow row,
+        BenchmarkSnapshotRecord snapshot,
+        FinalArtifactNamingContext namingContext,
+        ISet<string> reservedFileNames)
+    {
+        if (!string.IsNullOrWhiteSpace(row.PlannedFileName) &&
+            !string.IsNullOrWhiteSpace(row.PlannedDisplayName))
+        {
+            reservedFileNames.Add(row.PlannedFileName);
+            return new FinalArtifactName
+            {
+                FileName = row.PlannedFileName,
+                DisplayName = row.PlannedDisplayName,
+                ShortDisplayName = _namingService.ToShortDisplayName(row.PlannedDisplayName),
+                ProviderToken = row.PlannedProviderName,
+                QuantFamilyOrBaseline = row.PlannedQuantFamily
+            };
+        }
+
+        return _namingService.BuildName(snapshot, namingContext, reservedFileNames);
+    }
+
+    private static string ResolveReadmeProviderName(BenchmarkSnapshotRecord snapshot, bool isHybrid, FinalArtifactName name)
     {
         if (isHybrid)
+            return "MagicQuant";
+
+        if (string.Equals(name.ProviderToken, "MQ", StringComparison.OrdinalIgnoreCase))
             return "MagicQuant";
 
         return HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false);

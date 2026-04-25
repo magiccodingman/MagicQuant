@@ -134,7 +134,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf
           baseline_family: Q4_K_M
           quantize_base_name: Q4_K_M
-          display_name: UD_Q4_K_XL
+          display_name: UD-Q4_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
@@ -142,7 +142,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q5_K_XL.gguf
           baseline_family: Q5_K
           quantize_base_name: Q5_K
-          display_name: UD_Q5_K_XL
+          display_name: UD-Q5_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
@@ -150,7 +150,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q6_K_XL.gguf
           baseline_family: Q6_K
           quantize_base_name: Q6_K
-          display_name: UD_Q6_K_XL
+          display_name: UD-Q6_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: true
           allow_as_explicit_group_candidate: true
@@ -158,7 +158,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q3_K_XL.gguf
           baseline_family: IQ3_S
           quantize_base_name: IQ3_S
-          display_name: UD_Q3_K_XL
+          display_name: UD-Q3_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
@@ -166,7 +166,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-IQ3_XXS.gguf
           baseline_family: IQ3_XS
           quantize_base_name: IQ3_XS
-          display_name: UD_IQ3_XXS
+          display_name: UD-IQ3_XXS
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true

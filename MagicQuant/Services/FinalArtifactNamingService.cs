@@ -6,7 +6,7 @@ namespace MagicQuant.Services;
 
 /// <summary>
 /// Centralizes the public naming rules used by exported GGUF files, README rows,
-/// links, and diagnostic logs. Internal tensor-combo display names stay internal.
+/// CLI previews, links, and diagnostic logs. Internal tensor-combo display names stay internal.
 /// </summary>
 public sealed class FinalArtifactNamingService
 {
@@ -24,9 +24,7 @@ public sealed class FinalArtifactNamingService
         FinalArtifactNamingContext context,
         ISet<string>? reservedFileNames = null)
     {
-        string prefix = SanitizeToken(Config.OutputNamePrefix);
-        if (string.IsNullOrWhiteSpace(prefix))
-            prefix = "Model";
+        string prefix = ResolveModelPrefix();
 
         string tag;
         string providerToken;
@@ -41,9 +39,23 @@ public sealed class FinalArtifactNamingService
         }
         else if (snapshot.Quant.BaseQuant.IsExternalRepositoryBaseline)
         {
-            providerToken = ResolveExternalProviderToken(snapshot.Quant.BaseQuant);
-            quantFamily = NormalizeExternalDisplayName(snapshot.Quant.BaseQuant.Names[0], providerToken);
-            tag = SanitizeToken(quantFamily);
+            string externalProviderToken = ResolveExternalProviderToken(snapshot.Quant.BaseQuant);
+            string externalFamily = NormalizeExternalDisplayName(snapshot.Quant.BaseQuant.Names[0], externalProviderToken);
+
+            if (Config.ExportExternalLearnedBaselines)
+            {
+                // This is a MagicQuant rebuilt/re-uploaded copy of an external learned baseline.
+                // Keep the external source tag, but mark the artifact as MQ-owned.
+                providerToken = "MQ";
+                quantFamily = $"MQ-{SanitizeToken(externalFamily)}";
+                tag = quantFamily;
+            }
+            else
+            {
+                providerToken = externalProviderToken;
+                quantFamily = SanitizeToken(externalFamily);
+                tag = quantFamily;
+            }
         }
         else
         {
@@ -59,6 +71,7 @@ public sealed class FinalArtifactNamingService
         {
             FileName = fileName,
             DisplayName = Path.GetFileNameWithoutExtension(fileName),
+            ShortDisplayName = ToShortDisplayName(Path.GetFileNameWithoutExtension(fileName)),
             ProviderToken = providerToken,
             QuantFamilyOrBaseline = quantFamily
         };
@@ -68,9 +81,7 @@ public sealed class FinalArtifactNamingService
         BenchmarkSnapshotRecord snapshot,
         FinalArtifactNamingContext context)
     {
-        string prefix = SanitizeToken(Config.OutputNamePrefix);
-        if (string.IsNullOrWhiteSpace(prefix))
-            prefix = "Model";
+        string prefix = ResolveModelPrefix();
 
         if (snapshot.IsHybrid)
             return $"{prefix}-MQ-{SanitizeToken(ResolveHybridRangeFamily(snapshot, context))}";
@@ -78,10 +89,28 @@ public sealed class FinalArtifactNamingService
         if (snapshot.Quant.BaseQuant.IsExternalRepositoryBaseline)
         {
             string providerToken = ResolveExternalProviderToken(snapshot.Quant.BaseQuant);
-            return $"{prefix}-{SanitizeToken(NormalizeExternalDisplayName(snapshot.Quant.BaseQuant.Names[0], providerToken))}";
+            string family = SanitizeToken(NormalizeExternalDisplayName(snapshot.Quant.BaseQuant.Names[0], providerToken));
+            return Config.ExportExternalLearnedBaselines
+                ? $"{prefix}-MQ-{family}"
+                : $"{prefix}-{family}";
         }
 
         return $"{prefix}-LM-{SanitizeToken(snapshot.Quant.BaseQuant.Names[0])}";
+    }
+
+    public string ToShortDisplayName(string displayNameOrFileName)
+    {
+        if (string.IsNullOrWhiteSpace(displayNameOrFileName))
+            return string.Empty;
+
+        string value = Path.GetFileNameWithoutExtension(displayNameOrFileName.Trim());
+        string prefix = ResolveModelPrefix();
+        string fullPrefix = prefix + "-";
+
+        if (value.StartsWith(fullPrefix, StringComparison.OrdinalIgnoreCase))
+            return value[fullPrefix.Length..];
+
+        return value;
     }
 
     public IReadOnlyList<ProviderCredit> BuildProviderCredits(
@@ -129,6 +158,37 @@ public sealed class FinalArtifactNamingService
             .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(x => x.Url, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    public static string ReasonCode(string reason)
+    {
+        if (reason.Contains("strict", StringComparison.OrdinalIgnoreCase))
+            return "STRICT_DOMINANCE";
+        if (reason.Contains("near-baseline", StringComparison.OrdinalIgnoreCase) ||
+            reason.Contains("size premium", StringComparison.OrdinalIgnoreCase))
+            return "NEAR_BASELINE_PREMIUM";
+        if (reason.Contains("interior", StringComparison.OrdinalIgnoreCase))
+            return "INTERIOR_DISCOVERY";
+        if (reason.Contains("spacing", StringComparison.OrdinalIgnoreCase) ||
+            reason.Contains("collapse", StringComparison.OrdinalIgnoreCase))
+            return "SPACING_COLLAPSE";
+        if (reason.Contains("dominance", StringComparison.OrdinalIgnoreCase))
+            return "FINAL_DOMINANCE";
+
+        return "VALIDATED_REPLACEMENT";
+    }
+
+    public static string ReasonDescription(string code)
+    {
+        return code switch
+        {
+            "STRICT_DOMINANCE" => "The winner was no larger and had lower real KLD than the removed anchor.",
+            "NEAR_BASELINE_PREMIUM" => "The winner used only the configured near-baseline size premium and beat the real linear KLD trade line.",
+            "INTERIOR_DISCOVERY" => "The winner was selected as a useful interior point inside a size/KLD gap between anchors.",
+            "SPACING_COLLAPSE" => "Two candidates were too close in practical output space; the stronger one was kept.",
+            "FINAL_DOMINANCE" => "A later validated survivor dominated this artifact in final real benchmark comparison.",
+            _ => "A validated survivor replaced or made this artifact redundant."
+        };
     }
 
     private static IEnumerable<BaselineQuants> EnumerateBaselinesUsedBy(HybridQuant quant)
@@ -235,7 +295,7 @@ public sealed class FinalArtifactNamingService
             value = $"{providerToken}_{value}";
         }
 
-        return value;
+        return SanitizeToken(value);
     }
 
     private static string MakeUniqueFileName(string desiredFileName, ISet<string>? reservedFileNames)
@@ -255,6 +315,12 @@ public sealed class FinalArtifactNamingService
         }
 
         return candidate;
+    }
+
+    private static string ResolveModelPrefix()
+    {
+        string prefix = SanitizeToken(Config.OutputNamePrefix);
+        return string.IsNullOrWhiteSpace(prefix) ? "Model" : prefix;
     }
 
     public static string SanitizeToken(string value)
@@ -306,6 +372,7 @@ public sealed class FinalArtifactName
 {
     public string FileName { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
+    public string ShortDisplayName { get; init; } = string.Empty;
     public string ProviderToken { get; init; } = string.Empty;
     public string QuantFamilyOrBaseline { get; init; } = string.Empty;
 }
