@@ -1,6 +1,7 @@
-using System.Text.Json;
+using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
+using MQ.DB.Models;
 using Spectre.Console;
 
 namespace MagicQuant.Services;
@@ -23,6 +24,7 @@ public sealed class HybridArtifactExportService
 
     private readonly QuantizationService _quantizationService;
     private readonly EffectiveCandidateStateResolverService _effectiveResolver;
+    private readonly FinalArtifactNamingService _namingService;
 
     public HybridArtifactExportService(
         QuantizationService quantizationService,
@@ -30,37 +32,50 @@ public sealed class HybridArtifactExportService
     {
         _quantizationService = quantizationService;
         _effectiveResolver = effectiveResolver;
+        _namingService = new FinalArtifactNamingService();
     }
 
     public async Task<IReadOnlyList<ExportedArtifactRecord>> ExportAsync(
         IReadOnlyCollection<FinalSelectionRow> selectedRows,
+        IReadOnlyCollection<BenchmarkSnapshotRecord> pureBaselineSnapshots,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(Cache.OutputDirectory))
             throw new InvalidOperationException("Cache.OutputDirectory is not set.");
 
         Directory.CreateDirectory(Cache.OutputDirectory);
+        await CleanOutputDirectoryAsync(Cache.OutputDirectory!, ct);
 
         var output = new List<ExportedArtifactRecord>();
-        var hybridOrdinalByFamily = new Dictionary<string, int>(StringComparer.Ordinal);
+        var reservedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var namingContext = _namingService.CreateContext(pureBaselineSnapshots);
 
-        foreach (var row in selectedRows.Where(x => x.Enabled).OrderBy(x => x.Snapshot.Kld).ThenBy(x => x.Snapshot.SizeBytes))
+        var enabledRows = selectedRows
+            .Where(x => x.Enabled)
+            .OrderBy(x => x.Snapshot.Kld)
+            .ThenBy(x => x.Snapshot.SizeBytes)
+            .ToList();
+
+        var localBuilds = new List<(ExportedArtifactRecord Record, HybridQuant Quant, string FullPath, ulong ExpectedBytes)>();
+
+        foreach (var row in enabledRows)
         {
             var snap = row.Snapshot;
             bool isHybrid = snap.IsHybrid;
             bool exportLocally = isHybrid || !snap.IsExternalPureBaseline || Config.ExportExternalLearnedBaselines;
-            string provider = HybridBenchmarkRepository.ResolveProviderName(snap.Quant, exportNaming: exportLocally && isHybrid);
+            var name = _namingService.BuildName(snap, namingContext, reservedFileNames);
+            string provider = ResolveReadmeProviderName(snap, isHybrid);
 
             if (!exportLocally)
             {
-                AnsiConsole.MarkupLine($"[grey]Skipping local export for external learned baseline by default:[/] {Markup.Escape(snap.DisplayName)} [grey](enable with --export-external-learned-baselines or output.export_external_learned_baselines: true)[/]");
+                AnsiConsole.MarkupLine($"[grey]Skipping local export for external learned baseline by default:[/] {Markup.Escape(name.DisplayName)} [grey](enable with --export-external-learned-baselines or output.export_external_learned_baselines: true)[/]");
 
                 output.Add(new ExportedArtifactRecord
                 {
                     Snapshot = snap,
-                    DisplayName = snap.DisplayName,
+                    DisplayName = name.DisplayName,
                     ProviderName = provider,
-                    BaselineFamily = snap.BaselineFamily,
+                    BaselineFamily = name.QuantFamilyOrBaseline,
                     IsExternalReference = true,
                     DownloadTarget = snap.ExternalRepositoryUrl ?? string.Empty,
                     ExpectedSizeBytes = snap.SizeBytes,
@@ -71,76 +86,122 @@ public sealed class HybridArtifactExportService
             }
 
             if (snap.IsExternalPureBaseline && !snap.IsHybrid)
-                AnsiConsole.MarkupLine($"[yellow]Local export enabled for external learned baseline:[/] {Markup.Escape(snap.DisplayName)}");
+                AnsiConsole.MarkupLine($"[yellow]Local export enabled for external learned baseline:[/] {Markup.Escape(name.DisplayName)}");
 
-            string fileName = BuildFileName(snap, provider, hybridOrdinalByFamily);
-            string fullPath = Path.Combine(Cache.OutputDirectory!, fileName);
-            ulong expectedBytes = snap.SizeBytes;
-
-            bool shouldBuild = true;
-            if (File.Exists(fullPath))
-            {
-                ulong actual = (ulong)new FileInfo(fullPath).Length;
-                if (actual == expectedBytes)
-                {
-                    shouldBuild = false;
-                    AnsiConsole.MarkupLine($"[grey]Reusing existing exported artifact:[/] {Markup.Escape(fullPath)}");
-                }
-                else
-                {
-                    AnsiConsole.MarkupLine($"[yellow]Existing export byte size mismatch, rebuilding:[/] {Markup.Escape(fullPath)}");
-                    File.Delete(fullPath);
-                }
-            }
-
-            if (shouldBuild)
-                await _quantizationService.BuildExportArtifactAsync(snap.Quant, fullPath, forceRebuild: false, ct: ct);
-
-            ulong actualBytes = File.Exists(fullPath) ? (ulong)new FileInfo(fullPath).Length : 0UL;
-            if (actualBytes != expectedBytes)
-            {
-                AnsiConsole.MarkupLine($"[yellow]Export byte validation warning:[/] expected [cyan]{expectedBytes:N0}[/] but got [cyan]{actualBytes:N0}[/] for {Markup.Escape(fileName)}");
-            }
-
-            output.Add(new ExportedArtifactRecord
+            string fullPath = Path.Combine(Cache.OutputDirectory!, name.FileName);
+            var record = new ExportedArtifactRecord
             {
                 Snapshot = snap,
-                DisplayName = snap.DisplayName,
+                DisplayName = name.DisplayName,
                 ProviderName = provider,
-                BaselineFamily = snap.BaselineFamily,
+                BaselineFamily = name.QuantFamilyOrBaseline,
                 IsExternalReference = false,
-                FileName = fileName,
+                FileName = name.FileName,
                 FullPath = fullPath,
-                DownloadTarget = $"./../../resolve/main/{fileName}?download=true",
-                ExpectedSizeBytes = expectedBytes,
-                ActualSizeBytes = actualBytes,
+                DownloadTarget = $"./../../resolve/main/{name.FileName}?download=true",
+                ExpectedSizeBytes = snap.SizeBytes,
                 EffectiveState = await _effectiveResolver.ResolveAsync(snap.Config, ct)
-            });
+            };
+
+            output.Add(record);
+            localBuilds.Add((record, snap.Quant, fullPath, snap.SizeBytes));
         }
+
+        // Kick off all exports together. QuantizationService owns the real concurrency gates,
+        // so this trusts that service to self-regulate CPU/GPU/process pressure.
+        var buildTasks = localBuilds.Select(async item =>
+        {
+            await _quantizationService.BuildExportArtifactAsync(item.Quant, item.FullPath, forceRebuild: true, ct: ct);
+
+            ulong actualBytes = File.Exists(item.FullPath) ? (ulong)new FileInfo(item.FullPath).Length : 0UL;
+            item.Record.ActualSizeBytes = actualBytes;
+
+            if (actualBytes != item.ExpectedBytes)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Export byte validation warning:[/] expected [cyan]{item.ExpectedBytes:N0}[/] but got [cyan]{actualBytes:N0}[/] for {Markup.Escape(Path.GetFileName(item.FullPath))}");
+            }
+        });
+
+        await Task.WhenAll(buildTasks);
 
         await CopyModelAdjacentFilesAsync(Cache.OutputDirectory!, ct);
         await CopyImatrixArtifactsAsync(Cache.OutputDirectory!, ct);
         await CopyMmprojArtifactsAsync(Cache.OutputDirectory!, ct);
+        await CleanExportSidecarsAsync(Cache.OutputDirectory!, ct);
 
         return output;
     }
 
-    private static string BuildFileName(
-        BenchmarkSnapshotRecord snapshot,
-        string provider,
-        Dictionary<string, int> hybridOrdinalByFamily)
+    private static string ResolveReadmeProviderName(BenchmarkSnapshotRecord snapshot, bool isHybrid)
     {
-        string prefix = Sanitize(Config.OutputNamePrefix);
+        if (isHybrid)
+            return "MagicQuant";
 
-        if (!snapshot.IsHybrid)
-            return $"{prefix}-{Sanitize(provider)}-{Sanitize(snapshot.BaselineFamily)}.gguf";
+        return HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false);
+    }
 
-        hybridOrdinalByFamily.TryGetValue(snapshot.BaselineFamily, out var current);
-        current++;
-        hybridOrdinalByFamily[snapshot.BaselineFamily] = current;
+    private static async Task CleanOutputDirectoryAsync(string outputDirectory, CancellationToken ct)
+    {
+        if (!Directory.Exists(outputDirectory))
+        {
+            Directory.CreateDirectory(outputDirectory);
+            return;
+        }
 
-        string special = $"H{current}";
-        return $"{prefix}-{Sanitize(provider)}-{special}-{Sanitize(snapshot.BaselineFamily)}.gguf";
+        foreach (var file in Directory.EnumerateFiles(outputDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            ct.ThrowIfCancellationRequested();
+            await HardDeleteHelper.DeleteFileIfExistsAsync(file);
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(outputDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            ct.ThrowIfCancellationRequested();
+            await HardDeleteDirectoryAsync(directory);
+        }
+
+        AnsiConsole.MarkupLine($"[grey]Cleaned final export directory:[/] {Markup.Escape(outputDirectory)}");
+    }
+
+    private static async Task HardDeleteDirectoryAsync(string directory)
+    {
+        if (!Directory.Exists(directory))
+            return;
+
+        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+            await HardDeleteHelper.DeleteFileIfExistsAsync(file);
+
+        foreach (var sub in Directory.EnumerateDirectories(directory, "*", SearchOption.AllDirectories)
+                     .OrderByDescending(x => x.Length))
+        {
+            if (Directory.Exists(sub))
+                Directory.Delete(sub, recursive: false);
+        }
+
+        if (Directory.Exists(directory))
+            Directory.Delete(directory, recursive: false);
+    }
+
+    private static async Task CleanExportSidecarsAsync(string outputDirectory, CancellationToken ct)
+    {
+        string[] patterns =
+        [
+            "*.success.json",
+            "*.quantize.log",
+            "*.convert.log",
+            "imatrix.success.json",
+            "imatrix.metadata.json",
+            "imatrix.build.log"
+        ];
+
+        foreach (var pattern in patterns)
+        {
+            foreach (var file in Directory.EnumerateFiles(outputDirectory, pattern, SearchOption.TopDirectoryOnly))
+            {
+                ct.ThrowIfCancellationRequested();
+                await HardDeleteHelper.DeleteFileIfExistsAsync(file);
+            }
+        }
     }
 
     private static async Task CopyModelAdjacentFilesAsync(string outputDirectory, CancellationToken ct)
@@ -165,30 +226,19 @@ public sealed class HybridArtifactExportService
         }
     }
 
-    private static async Task CopyImatrixArtifactsAsync(string outputDirectory, CancellationToken ct)
+    private static Task CopyImatrixArtifactsAsync(string outputDirectory, CancellationToken ct)
     {
         if (!Cache.IsImatrixAvailable || string.IsNullOrWhiteSpace(Cache.ActiveImatrixPath))
-            return;
+            return Task.CompletedTask;
 
         string source = Cache.ActiveImatrixPath!;
         string target = Path.Combine(outputDirectory, "imatrix.dat");
         File.Copy(source, target, overwrite: true);
         AnsiConsole.MarkupLine($"[green]Copied imatrix artifact:[/] {Markup.Escape(target)}");
-
-        string imatrixDir = Path.GetDirectoryName(source)!;
-        foreach (var optional in new[] { "imatrix.success.json", "imatrix.metadata.json", "imatrix.build.log" })
-        {
-            string optionalSource = Path.Combine(imatrixDir, optional);
-            if (!File.Exists(optionalSource))
-                continue;
-
-            File.Copy(optionalSource, Path.Combine(outputDirectory, optional), overwrite: true);
-            await Task.Yield();
-            AnsiConsole.MarkupLine($"[green]Copied imatrix sidecar:[/] {Markup.Escape(optional)}");
-        }
+        return Task.CompletedTask;
     }
 
-    private static async Task CopyMmprojArtifactsAsync(string outputDirectory, CancellationToken ct)
+    private static Task CopyMmprojArtifactsAsync(string outputDirectory, CancellationToken ct)
     {
         var searchRoots = new List<string>();
         if (!string.IsNullOrWhiteSpace(Cache.ModelDirectory))
@@ -205,13 +255,13 @@ public sealed class HybridArtifactExportService
             string target = Path.Combine(outputDirectory, Path.GetFileName(mmproj));
             File.Copy(mmproj, target, overwrite: true);
             AnsiConsole.MarkupLine($"[green]Copied mmproj artifact:[/] {Markup.Escape(target)}");
-            return;
+            return Task.CompletedTask;
         }
 
         if (!LooksVisionCapableModel())
         {
             AnsiConsole.MarkupLine("[grey]No mmproj artifact was present, but no vision capability hints were detected. Continuing.[/]");
-            return;
+            return Task.CompletedTask;
         }
 
         throw new InvalidOperationException(
@@ -232,17 +282,5 @@ public sealed class HybridArtifactExportService
                json.Contains("vision_tower", StringComparison.OrdinalIgnoreCase) ||
                json.Contains("mm_vision_tower", StringComparison.OrdinalIgnoreCase) ||
                json.Contains("projector", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string Sanitize(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return "model";
-
-        var cleaned = value.Trim();
-        foreach (char c in Path.GetInvalidFileNameChars())
-            cleaned = cleaned.Replace(c, '-');
-
-        return cleaned.Replace(" ", "-");
     }
 }

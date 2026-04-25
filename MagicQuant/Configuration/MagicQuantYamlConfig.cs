@@ -164,7 +164,7 @@ public sealed class RuntimeIdentityConfig
 public sealed class RuntimeOutputConfig
 {
     public string? OutputDir { get; set; }
-    public string OutputNamePrefix { get; set; } = "model";
+    public string OutputNamePrefix { get; set; } = "Model";
     public bool ExportExternalLearnedBaselines { get; set; } = false;
 }
 
@@ -222,6 +222,13 @@ public sealed class RuntimeCandidateSelectionConfig
     /// the near-small-anchor brutal zone.
     /// </summary>
     public double NearAnchorRequiredKldGainFractionOfPairGap { get; set; } = 0.05d;
+
+    /// <summary>
+    /// When false, the prediction selector does not spend build/benchmark attempts trying
+    /// to replace 8-bit anchors such as Q8_0 during strict dominance or near-anchor checks.
+    /// Q8 remains the highest-fidelity practical anchor unless this is explicitly enabled.
+    /// </summary>
+    public bool AllowEightBitAnchorReplacements { get; set; } = false;
 }
 
 public sealed class RuntimeBaselineConfig

@@ -314,7 +314,7 @@ public sealed class HybridBenchmarkRepository
     public static string ResolveProviderName(HybridQuant quant, bool exportNaming)
     {
         if (exportNaming && quant.Tensors.Count > 0)
-            return "MagicHybrid";
+            return "MQ";
 
         var baseline = quant.BaseQuant;
         if (baseline.IsExternalRepositoryBaseline)

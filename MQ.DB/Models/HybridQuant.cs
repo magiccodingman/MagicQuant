@@ -3,7 +3,7 @@ namespace MQ.DB.Models;
 public enum HybridTensorOverrideMode
 {
     LearnedBaselineCandidate = 1,
-    ExactTensorScheme = 2
+    ExactTensorScheme = 2,
 }
 
 public class HybridQuant

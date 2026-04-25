@@ -452,7 +452,8 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine("  [green]--selection-interior-window-fractions[/]    Comma-separated phase-3 interior windows, e.g. 0.35,0.35 (Optional)");
         AnsiConsole.MarkupLine("  [green]--prediction-bit-stress-threshold-candidates[/]    Comma-separated interaction-fit thresholds, e.g. 4,5,6,7,8,9,10,11,12 (Optional)");
         AnsiConsole.MarkupLine("  [green]--output-dir[/]    Final export/output directory for selected survivor artifacts (Optional; default = <model>/MagicQuant/Final_Outputs)");
-        AnsiConsole.MarkupLine("  [green]--output-name-prefix[/]    Output filename prefix for exported GGUF files (Optional; default = model)");
+        AnsiConsole.MarkupLine("  [green]--allow-eight-bit-anchor-replacements[/]    Permit final prediction to try replacing 8-bit anchors like Q8_0 (Optional; default false)");
+        AnsiConsole.MarkupLine("  [green]--output-name-prefix[/]    Output filename prefix for exported GGUF files (Optional; default = Model)");
         AnsiConsole.MarkupLine("  [green]--export-external-learned-baselines[/]    Also locally rebuild/export pure learned external baselines such as Unsloth (Optional; default false)");
         AnsiConsole.MarkupLine("  [green]--selection-max-candidates-per-interior-window[/]    Candidate count retained per interior window (Optional; default = 1)");
         AnsiConsole.MarkupLine("  [green]--config[/]    Path to YAML runtime config. CLI flags override YAML values.");

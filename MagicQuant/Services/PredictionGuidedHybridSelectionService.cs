@@ -95,6 +95,12 @@ public sealed class PredictionGuidedHybridSelectionService
 
         foreach (var anchor in currentAnchors.OrderBy(x => x.Kld).ThenBy(x => x.SizeBytes))
         {
+            if (ShouldSkipAnchorReplacement(anchor))
+            {
+                AnsiConsole.MarkupLine($"[grey]Skipping 8-bit anchor replacement attempts:[/] {Markup.Escape(anchor.DisplayName)}");
+                continue;
+            }
+
             var candidates = hybridPredictions
                 .Where(x => x.PredictedSizeBytes <= anchor.SizeBytes)
                 .Where(x => x.PredictedKld + Config.SelectionMinimumKldImprovementEpsilon < anchor.Kld)
@@ -170,6 +176,9 @@ public sealed class PredictionGuidedHybridSelectionService
         {
             var lowerSizeHigherDamage = pair.HigherDamageSmaller;
             var upperSizeLowerDamage = pair.LowerDamageLarger;
+
+            if (ShouldSkipAnchorReplacement(lowerSizeHigherDamage))
+                continue;
 
             ulong min = lowerSizeHigherDamage.SizeBytes;
             ulong max = AddPercent(min, Config.SelectionNearBaselineMaxSizeGrowthPercent);
@@ -334,7 +343,7 @@ public sealed class PredictionGuidedHybridSelectionService
         CancellationToken ct)
     {
         AnsiConsole.MarkupLine(
-            $"[grey]Validating candidate:[/] {Markup.Escape(candidate.Prediction.Quant.BaseQuant.Names[0])} " +
+            $"[grey]Validating candidate:[/] {Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(candidate.Prediction.Quant))} " +
             $"[grey]| reason=[/] {candidate.Reason} [grey]| window=[/] {Markup.Escape(candidate.WindowLabel)}");
 
         var summary = await _quantizationService.ProcessHybridBatchAsync(new[] { candidate.Prediction.Quant }, ct);
@@ -554,6 +563,13 @@ public sealed class PredictionGuidedHybridSelectionService
         }
 
         return result.Survivors.ToList();
+    }
+
+    private static bool ShouldSkipAnchorReplacement(BenchmarkSnapshotRecord anchor)
+    {
+        return !Config.SelectionAllowEightBitAnchorReplacements &&
+               anchor.Quant.BaseQuant.BitRange >= 8 &&
+               !anchor.Quant.BaseQuant.IsHighPrecisionExactAlias;
     }
 
     private static List<AdjacentAnchorPair> BuildAdjacentPairs(IReadOnlyList<BenchmarkSnapshotRecord> anchors)

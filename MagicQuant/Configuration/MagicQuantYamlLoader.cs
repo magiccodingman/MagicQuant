@@ -88,7 +88,7 @@ public static class MagicQuantYamlLoader
             : config.Output.OutputDir.Trim();
 
         config.Output.OutputNamePrefix = string.IsNullOrWhiteSpace(config.Output.OutputNamePrefix)
-            ? "model"
+            ? "Model"
             : config.Output.OutputNamePrefix.Trim();
 
         if (config.Survival.MaxSelectedChoicesPerBucket <= 0)
@@ -235,6 +235,9 @@ public static class MagicQuantYamlLoader
 
         if (double.TryParse(Get("selection-near-anchor-required-kld-gain-fraction"), out var brutalGain) && brutalGain >= 0d)
             config.CandidateSelection.NearAnchorRequiredKldGainFractionOfPairGap = brutalGain;
+
+        if (Has("allow-eight-bit-anchor-replacements"))
+            config.CandidateSelection.AllowEightBitAnchorReplacements = true;
 
         config.Output.OutputDir = Prefer(Get("output-dir"), config.Output.OutputDir);
         config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);

@@ -92,10 +92,15 @@ candidate_selection:
   near_lower_anchor_brutal_zone_fraction_of_pair_span: 0.02
   near_anchor_required_kld_gain_fraction_of_pair_gap: 0.05
 
+  # Default false: do not spend final prediction/build attempts trying to replace
+  # 8-bit anchors such as Q8_0 during strict dominance or near-anchor replacement.
+  # Q8 is treated as the highest-fidelity practical anchor unless this is enabled.
+  allow_eight_bit_anchor_replacements: false
+
 output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
   output_dir:
-  output_name_prefix: model
+  output_name_prefix: Model
   export_external_learned_baselines: false
 
 # Legacy bit-range bucket survival settings were removed.
@@ -129,7 +134,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf
           baseline_family: Q4_K_M
           quantize_base_name: Q4_K_M
-          display_name: Unsloth_Q4_K_XL
+          display_name: UD_Q4_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
@@ -137,7 +142,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q5_K_XL.gguf
           baseline_family: Q5_K
           quantize_base_name: Q5_K
-          display_name: Unsloth_Q5_K_XL
+          display_name: UD_Q5_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
@@ -145,7 +150,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q6_K_XL.gguf
           baseline_family: Q6_K
           quantize_base_name: Q6_K
-          display_name: Unsloth_Q6_K_XL
+          display_name: UD_Q6_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: true
           allow_as_explicit_group_candidate: true
@@ -153,7 +158,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-Q3_K_XL.gguf
           baseline_family: IQ3_S
           quantize_base_name: IQ3_S
-          display_name: Unsloth_Q3_K_XL
+          display_name: UD_Q3_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
@@ -161,7 +166,7 @@ baselines:
         - file_name: Qwen3-4B-Instruct-2507-UD-IQ3_XXS.gguf
           baseline_family: IQ3_XS
           quantize_base_name: IQ3_XS
-          display_name: Unsloth_IQ3_XXS_for_IQ3_XS
+          display_name: UD_IQ3_XXS
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true

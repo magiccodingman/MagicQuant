@@ -64,9 +64,12 @@ public static class Config
     public static double SelectionNearAnchorRequiredKldGainFractionOfPairGap =>
         Math.Max(0d, Current.CandidateSelection.NearAnchorRequiredKldGainFractionOfPairGap);
 
+    public static bool SelectionAllowEightBitAnchorReplacements =>
+        Current.CandidateSelection.AllowEightBitAnchorReplacements;
+
     public static string? OutputDirectory => Current.Output.OutputDir;
     public static string OutputNamePrefix => string.IsNullOrWhiteSpace(Current.Output.OutputNamePrefix)
-        ? "model"
+        ? "Model"
         : Current.Output.OutputNamePrefix.Trim();
 
     public static bool ExportExternalLearnedBaselines => Current.Output.ExportExternalLearnedBaselines;

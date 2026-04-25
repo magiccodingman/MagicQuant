@@ -18,6 +18,7 @@ public sealed class CombinationSurvivalPipelineService
     private readonly HybridArtifactExportService _exportService;
     private readonly ReadmeGenerationService _readmeService;
     private readonly HybridMapGenerationService _hybridMapService;
+    private readonly SelectionDiagnosticsLogService _diagnosticsLogService;
 
     public CombinationSurvivalPipelineService(QuantizationService quantizationService)
     {
@@ -32,6 +33,7 @@ public sealed class CombinationSurvivalPipelineService
         _exportService = new HybridArtifactExportService(_quantizationService, _effectiveResolver);
         _readmeService = new ReadmeGenerationService();
         _hybridMapService = new HybridMapGenerationService();
+        _diagnosticsLogService = new SelectionDiagnosticsLogService();
     }
 
     public async Task<CombinationSurvivalExecutionResult> RunAsync(CancellationToken ct = default)
@@ -74,10 +76,11 @@ public sealed class CombinationSurvivalPipelineService
         AnsiConsole.MarkupLine($"[green]Final candidate/anchor survivors before manual enablement:[/] [cyan]{selection.Survivors.Count:N0}[/]");
         AnsiConsole.MarkupLine($"[yellow]Recorded baseline/anchor eliminations:[/] [cyan]{selection.Eliminations.Count:N0}[/]");
         AnsiConsole.MarkupLine($"[yellow]Prediction validation misses:[/] [cyan]{selection.ValidationFailures.Count:N0}[/]");
+        RenderEliminationSummary(selection.Eliminations);
 
         var selectedRows = _selectionCli.Prompt(selection.Survivors);
 
-        var exportedArtifacts = await _exportService.ExportAsync(selectedRows, ct);
+        var exportedArtifacts = await _exportService.ExportAsync(selectedRows, pureBaselines, ct);
 
         string modelName = string.IsNullOrWhiteSpace(Cache.ModelDirectory)
             ? "model"
@@ -91,13 +94,19 @@ public sealed class CombinationSurvivalPipelineService
             .ThenBy(x => x.SizeBytes)
             .ToList();
 
+        var nativeReference = await _benchmarkRepository.LoadBenchmarkSnapshotAsync(
+            (TensorConfig)HybridQuant.CreatePureBaseline(BaselineQuants.GetNativeQuant()),
+            ct);
+
+        await _diagnosticsLogService.WriteAsync(benchmarkOverview, selection.ValidationFailures, ct);
+
         await _readmeService.GenerateAsync(
             Cache.OutputDirectory!,
             modelName,
             exportedArtifacts,
-            benchmarkOverview,
+            pureBaselines,
             selection.Eliminations,
-            selection.ValidationFailures,
+            nativeReference,
             ct);
 
         await _hybridMapService.GenerateAsync(Cache.OutputDirectory!, exportedArtifacts, ct);
@@ -114,4 +123,42 @@ public sealed class CombinationSurvivalPipelineService
             ValidationFailures = selection.ValidationFailures
         };
     }
+
+    private static void RenderEliminationSummary(IReadOnlyCollection<BaselineEliminationRecord> eliminations)
+    {
+        if (eliminations.Count == 0)
+            return;
+
+        AnsiConsole.Write(new Rule("[yellow]Baseline / Anchor Eliminations[/]") { Justification = Justify.Left });
+
+        var table = new Table().Border(TableBorder.Rounded);
+        table.AddColumn("Removed");
+        table.AddColumn("Winner");
+        table.AddColumn("KLD Δ");
+        table.AddColumn("Size Δ (GB)");
+        table.AddColumn("Reason");
+
+        foreach (var row in eliminations
+                     .DistinctBy(x => $"{TensorConfigIdentity.ToKey(x.Eliminated.Config)}::{TensorConfigIdentity.ToKey(x.Eliminator.Config)}::{x.Reason}")
+                     .OrderBy(x => x.Eliminated.Kld)
+                     .ThenBy(x => x.Eliminated.SizeBytes)
+                     .Take(25))
+        {
+            double kldDelta = row.Eliminated.Kld - row.Eliminator.Kld;
+            double sizeDeltaGb = (row.Eliminated.SizeBytes - (double)row.Eliminator.SizeBytes) / 1024d / 1024d / 1024d;
+
+            table.AddRow(
+                Markup.Escape(row.Eliminated.DisplayName),
+                Markup.Escape(row.Eliminator.DisplayName),
+                kldDelta.ToString("0.000000"),
+                sizeDeltaGb.ToString("0.00"),
+                Markup.Escape(row.Reason));
+        }
+
+        AnsiConsole.Write(table);
+
+        if (eliminations.Count > 25)
+            AnsiConsole.MarkupLine($"[grey]Showing first 25 of {eliminations.Count:N0} elimination records. Full details are in README/logs.[/]");
+    }
+
 }

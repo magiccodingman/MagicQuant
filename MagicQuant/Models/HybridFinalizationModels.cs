@@ -169,7 +169,7 @@ public sealed class ExportedArtifactRecord
     public string? FullPath { get; init; }
     public string DownloadTarget { get; init; } = string.Empty;
     public ulong ExpectedSizeBytes { get; init; }
-    public ulong? ActualSizeBytes { get; init; }
+    public ulong? ActualSizeBytes { get; set; }
     public EffectiveStateResolutionResult? EffectiveState { get; init; }
 }
 
