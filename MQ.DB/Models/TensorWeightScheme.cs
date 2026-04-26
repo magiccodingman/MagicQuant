@@ -120,6 +120,9 @@ public sealed class TensorWeightScheme
 
     public static readonly TensorWeightScheme Q5_K =
         new(5, false, ["Q5_K"], 256);
+    
+    public static readonly TensorWeightScheme Q5_K_S =
+        new(18, false, ["Q5_K_S"], 256);
 
     public static readonly TensorWeightScheme IQ4_XS =
         new(6, false, ["IQ4_XS"], 32);
@@ -183,6 +186,23 @@ public sealed class TensorWeightScheme
             32
         );
     
+    public static readonly TensorWeightScheme Q4_K_S =
+        new(
+            17,
+            false,
+            ["Q4_K_S"],
+            32
+        );
+    
+    public static readonly TensorWeightScheme MXFP4 =
+        new(
+            19,
+            false,
+            ["MXFP4"],
+            32
+        );
+
+    
     public static readonly TensorWeightScheme Q2_K =
         new(
             13,
@@ -203,7 +223,7 @@ public sealed class TensorWeightScheme
         NULL,
         BF16,
         //F16,
-        //MXFP4,
+        MXFP4,
         Q8_0,
         Q6_K,
         Q5_K,
@@ -215,7 +235,9 @@ public sealed class TensorWeightScheme
         IQ2_S,
         IQ2_XS,
         IQ2_XXS,
-        Q4_K
+        Q4_K,
+        Q4_K_S,
+        Q5_K_S
     ];
 
     // This is the true registry of everything known.

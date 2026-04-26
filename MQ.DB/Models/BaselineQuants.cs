@@ -90,32 +90,51 @@ public record BaselineQuants(
     }
 
     public static readonly BaselineQuants Q8_0 =
-        Create(0, false, "Q8_0", "Q8_0", TensorWeightScheme.Q8_0, [TensorWeightScheme.Q8_0], [], true, true, true, false, 8, 11);
+        Create(0, false, "Q8_0", "Q8_0", TensorWeightScheme.Q8_0, [TensorWeightScheme.Q8_0], [], true, true, true, false, 8, 16);
 
     public static readonly BaselineQuants Q6_K =
-        Create(1, false, "Q6_K", "Q6_K", TensorWeightScheme.Q6_K, [TensorWeightScheme.Q6_K], [], true, false, true, false, 6, 10);
+        Create(1, false, "Q6_K", "Q6_K", TensorWeightScheme.Q6_K, [TensorWeightScheme.Q6_K], [], true, false, true, false, 6, 15);
 
     public static readonly BaselineQuants Q5_K =
-        Create(2, false, "Q5_K", "Q5_K", TensorWeightScheme.Q5_K, [TensorWeightScheme.Q5_K], [TReg.MoeRouter.UniqueId], true, false, true, false, 5, 9);
+        Create(2, false, "Q5_K", "Q5_K", TensorWeightScheme.Q5_K, [TensorWeightScheme.Q5_K], [TReg.MoeRouter.UniqueId], true, false, true, false, 5, 14);
 
+    public static readonly BaselineQuants Q5_K_S =
+        Create(13, false, "Q5_K_S", "Q5_K_S", TensorWeightScheme.Q5_K_S, [TensorWeightScheme.Q5_K_S], [TReg.MoeRouter.UniqueId], true, false, true, false, 5, 13);
+
+    
     public static readonly BaselineQuants Q4_K_M =
-        Create(3, false, "Q4_K_M", "Q4_K_M", TensorWeightScheme.Q4_K, [TensorWeightScheme.Q4_K], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 8);
+        Create(3, false, "Q4_K_M", "Q4_K_M", TensorWeightScheme.Q4_K, [TensorWeightScheme.Q4_K], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 12);
 
+    public static readonly BaselineQuants Q4_K_S =
+        Create(14, false, "Q4_K_S", "Q4_K_S", TensorWeightScheme.Q4_K_S, [TensorWeightScheme.Q4_K_S], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 11);
+
+    
     public static readonly BaselineQuants IQ4_NL =
-        Create(5, false, "IQ4_NL", "IQ4_NL", TensorWeightScheme.IQ4_NL, [TensorWeightScheme.IQ4_NL], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 7);
+        Create(5, false, "IQ4_NL", "IQ4_NL", TensorWeightScheme.IQ4_NL, [TensorWeightScheme.IQ4_NL], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 10);
 
     public static readonly BaselineQuants IQ4_XS =
-        Create(6, false, "IQ4_XS", "IQ4_XS", TensorWeightScheme.IQ4_XS, [TensorWeightScheme.IQ4_XS], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 6);
+        Create(6, false, "IQ4_XS", "IQ4_XS", TensorWeightScheme.IQ4_XS, [TensorWeightScheme.IQ4_XS], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 9);
 
+    public static readonly BaselineQuants MXFP4_MOE =
+        Create(15, false, "MXFP4_MOE", "MXFP4_MOE", TensorWeightScheme.MXFP4, [TensorWeightScheme.MXFP4, TensorWeightScheme.IQ3_S, TensorWeightScheme.IQ3_XS], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 8);
+
+    public static readonly BaselineQuants IQ3_M =
+        Create(17, true, "IQ3_M", "IQ3_M", TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 7);
+
+    
     public static readonly BaselineQuants IQ3_S =
-        Create(7, true, "IQ3_S", "IQ3_S", TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 5);
+        Create(7, true, "IQ3_S", "IQ3_S", TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 6);
 
     public static readonly BaselineQuants IQ3_XS =
-        Create(8, true, "IQ3_XS", "IQ3_XS", TensorWeightScheme.IQ3_XS, [TensorWeightScheme.IQ3_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 4);
+        Create(8, true, "IQ3_XS", "IQ3_XS", TensorWeightScheme.IQ3_XS, [TensorWeightScheme.IQ3_XS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 5);
 
     public static readonly BaselineQuants IQ3_XXS =
-        Create(9, true, "IQ3_XXS", "IQ3_XXS", TensorWeightScheme.IQ3_XXS, [TensorWeightScheme.IQ3_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 3);
+        Create(9, true, "IQ3_XXS", "IQ3_XXS", TensorWeightScheme.IQ3_XXS, [TensorWeightScheme.IQ3_XXS], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 4);
 
+    public static readonly BaselineQuants IQ2_M =
+        Create(16, true, "IQ2_M", "IQ2_M", TensorWeightScheme.IQ2_S, [TensorWeightScheme.IQ2_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId], true, false, true, false, 2, 3);
+
+    
     public static readonly BaselineQuants IQ2_S =
         Create(10, true, "IQ2_S", "IQ2_S", TensorWeightScheme.IQ2_S, [TensorWeightScheme.IQ2_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId, TReg.MoeExperts.UniqueId], true, false, true, false, 2, 2);
 
@@ -136,12 +155,17 @@ public record BaselineQuants(
         Q8_0,
         Q6_K,
         Q5_K,
+        Q5_K_S,
         Q4_K_M,
+        Q4_K_S,
         IQ4_NL,
         IQ4_XS,
+        MXFP4_MOE,
+        IQ3_M,
         IQ3_S,
         IQ3_XS,
         IQ3_XXS,
+        IQ2_M,
         IQ2_S,
         IQ2_XS,
         IQ2_XXS

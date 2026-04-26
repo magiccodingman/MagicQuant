@@ -27,18 +27,25 @@ public sealed class ReadmeGenerationService
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var sb = new StringBuilder();
-        sb.AppendLine($"# MagicQuant Hybrids (v2.2) - {modelName}");
+        sb.AppendLine($"# MagicQuant Hybrids (v2.0) - {modelName}");
         sb.AppendLine();
         sb.AppendLine("MagicQuant is **not** a quantization technique by itself.");
         sb.AppendLine();
-        sb.AppendLine("It is a search, judging, and hybrid-discovery system that learns from baseline families such as llama.cpp and external/custom baseline sources, then uses isolated empirical truth, rank-safe prediction, and real benchmarking to keep the practical survivors.");
+        sb.AppendLine("It is a search, judging, and hybrid-discovery system that learns from baseline families such as llama.cpp and external/custom baseline sources, then uses isolated samples, rank-safe prediction, and real benchmarking to keep the practical survivors.");
         sb.AppendLine();
-        sb.AppendLine("Sometimes a hybrid beats a pure baseline. Sometimes it does not. The point is to pay the real benchmarking cost only where the trade is genuinely worth keeping.");
+        sb.AppendLine("Sometimes a hybrid beats a pure baseline. Sometimes it does not. MagicQuant finds non linear good trades to discover potential better hybrids, good sub spaces between anchor baselines and more.");
         sb.AppendLine();
-
+        sb.AppendLine();
+        sb.AppendLine("Read more on the [MagicQuant Wiki Here](https://github.com/magiccodingman/MagicQuant-Wiki).");
+        sb.AppendLine("_The GitHub links is also a great place to make a request, bring up issues, share ideas, or anything else._");
+        sb.AppendLine();
+        sb.AppendLine("---");
+        sb.AppendLine();
         sb.AppendLine("## Final surviving downloadable outputs");
         sb.AppendLine();
         AppendDownloadTable(sb, exportedArtifacts, replacementMap, exportedByKey, namingContext);
+        sb.AppendLine();
+        sb.AppendLine("---");
         sb.AppendLine();
 
         sb.AppendLine("## Release metadata");
@@ -47,10 +54,10 @@ public sealed class ReadmeGenerationService
         sb.AppendLine("- [Hybrid tensor map](./../../resolve/main/magicquant.hybrid-map.json?download=true) — tensor-group assignments and effective-state details for MagicQuant hybrid GGUFs.");
         sb.AppendLine("- [Replacement details](./../../resolve/main/magicquant.replacements.json?download=true) — structured details for baselines or anchors removed from the final download table, including reason codes, KLD deltas, PPL delta %, and size deltas.");
         sb.AppendLine();
-        AppendReasonCodeDetails(sb);
+        sb.AppendLine("---");
         sb.AppendLine();
-
-        AppendCollapsible(sb, "Method note", "The final chooser uses rank-safe isolation prediction: Q8-carrier single-group isolation measurements provide the additive backbone, a low-bit interaction correction improves numeric KLD closeness, and an isotonic projection keeps the final predicted ordering monotone with the isolation backbone. Predicted candidates still have to validate against real benchmark truth before they can replace a baseline or remain as an interior hybrid.");
+        
+        AppendReasonCodeDetails(sb);
         sb.AppendLine();
 
         AppendProviderCredits(sb, exportedArtifacts);
@@ -59,11 +66,12 @@ public sealed class ReadmeGenerationService
         AppendCollapsible(sb, "Warning", "External/custom baselines are normalized into MagicQuant's controlled comparison flow. MagicQuant may rebuild a learned baseline under native-source / MagicQuant-controlled conditions, including its own imatrix handling, so hybrids can be judged on a more equal footing. That does **not** mean MagicQuant proved the original upstream artifact or upstream imatrix was worse. These comparisons exist for internal hybrid-search consistency, not as a universal judgment of the original creator's exact release artifact.");
         sb.AppendLine();
 
-        AppendCollapsible(sb, "Dive deeper", "Browse the project GitHub/Wiki for benchmark methodology, architecture notes, and planned pipeline improvements. If you spot a mistake, edge case, or a better practical trade, open an issue or share the artifact details so the comparison can be improved.");
+        sb.AppendLine("## Support");
+        sb.AppendLine("I’m a solo developer working full time for myself to achieve my dream. I build open source code on the side. If you like any of my work, buying me a coffee is always appreciated. Otherwise, I hope you enjoy, maybe give me a star or something. Or just send me good vibes. Either way, thank you!");
         sb.AppendLine();
-
-        AppendCollapsible(sb, "Support", "If this release helped you, a star, issue report, correction, or benchmark reproduction note is genuinely useful. Careful feedback matters more than hype, especially when a hybrid looks surprisingly good or surprisingly bad.");
-
+        sb.AppendLine("[Click here to see ways to support](https://sayou.biz/support) - BTC, Paypal, GitHub sponsors.");
+        sb.AppendLine();
+        
         await File.WriteAllTextAsync(readmePath, sb.ToString(), ct);
         AnsiConsole.MarkupLine($"[green]README generated:[/] {Markup.Escape(readmePath)}");
         return readmePath;
