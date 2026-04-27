@@ -392,6 +392,7 @@ public class BenchmarkService
                 Q8StableNgl = 0,
                 NativeModelSizeBytes = TryGetModelSize(nativeModelPath),
                 NativeStableNgl = 0,
+                NativeQuantizationKey = nativeQuantizationKey,
                 MaxCandidateNgl = NglCandidates.Max(),
                 GpuMemoryLimitsJson = SerializeGpuMemoryLimits(),
                 TensorSplitJson = SerializeTensorSplitMap(plan.Slots)
