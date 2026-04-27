@@ -99,7 +99,11 @@ public sealed class StageProgressTracker
 
             if (!_options.ShowEta)
             {
-                AnsiConsole.MarkupLine($"[grey][progress][/]{escapedStage}: [cyan]{finished}[/]/[cyan]{Total}[/] local GGUF outputs built");
+                var unitLabel = string.IsNullOrWhiteSpace(_options.UnitLabel)
+                    ? "items finished"
+                    : _options.UnitLabel.Trim();
+
+                AnsiConsole.MarkupLine($"[grey][progress][/]{escapedStage}: [cyan]{finished}[/]/[cyan]{Total}[/] {Markup.Escape(unitLabel)}");
             }
             else
             {

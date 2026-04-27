@@ -357,16 +357,7 @@ public sealed class PredictionGuidedHybridSelectionService
             $"[grey]Validating candidate:[/] {Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(candidate.Prediction.Quant))} " +
             $"[grey]| reason=[/] {candidate.Reason} [grey]| window=[/] {Markup.Escape(candidate.WindowLabel)}");
 
-        var summary = await _quantizationService.ProcessHybridBatchAsync(
-            new[] { candidate.Prediction.Quant },
-            new StageProgressOptions
-            {
-                StageName = "Single candidate validation",
-                Total = 1,
-                ShowEta = false,
-                MinimumPrintInterval = TimeSpan.FromSeconds(5)
-            },
-            ct);
+        var summary = await _quantizationService.ProcessHybridBatchAsync(new[] { candidate.Prediction.Quant }, ct);
         var snapshot = await _repository.LoadBenchmarkSnapshotAsync(candidate.Prediction.Config, ct);
 
         bool accepted = snapshot != null && accept(snapshot);

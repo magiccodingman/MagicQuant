@@ -116,7 +116,8 @@ public sealed class HybridArtifactExportService
                 StageName = "Final artifact export",
                 Total = localBuilds.Count,
                 ShowEta = false,
-                MinimumPrintInterval = TimeSpan.FromSeconds(5)
+                MinimumPrintInterval = TimeSpan.FromSeconds(5),
+                UnitLabel = "local GGUF outputs built"
             })
             : null;
 

@@ -10,4 +10,5 @@ public sealed class StageProgressOptions
     public bool ShowEta { get; init; } = true;
     public bool CountSkippedForEta { get; init; } = false;
     public bool PrintFinalSummary { get; init; } = true;
+    public string? UnitLabel { get; init; }
 }
