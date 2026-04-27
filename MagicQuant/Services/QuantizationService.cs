@@ -736,7 +736,7 @@ private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
         throw new InvalidOperationException(
             $"Strict tensor-group learning validation failed for external baseline '{quant.BaseQuant.Names[0]}' " +
             $"from '{quant.BaseQuant.SourceRepository}/{quant.BaseQuant.SourceFileName}'. " +
-            $"No normalized rebuilt baseline was produced and no learned tensor mappings were persisted. " +
+            $"Prepared external baseline learning truth was invalid. No learned tensor mappings were persisted. " +
             $"Diagnostic log: {diagnosticPath}");
     }
 
@@ -764,12 +764,6 @@ private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
     if (!benchmarkId.HasValue)
         throw new InvalidOperationException($"Unable to persist learned mappings because no AiBenchmark exists for rebuilt baseline '{quant.BaseQuant.Names[0]}'.");
 
-    await db.LearnedBaselineTensorQuants
-        .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
-                    x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
-                    x.TensorWeightSchemeId == tensorScheme.UniqueId)
-        .ExecuteDeleteAsync(ct);
-
     var rows = prepared.TruthByTensor
         .OrderBy(x => x.Key, StringComparer.Ordinal)
         .Select(kv =>
@@ -796,6 +790,12 @@ private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
 
     if (rows.Count == 0)
         throw new InvalidOperationException($"Prepared learning truth for baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
+
+    await db.LearnedBaselineTensorQuants
+        .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
+                    x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
+                    x.TensorWeightSchemeId == tensorScheme.UniqueId)
+        .ExecuteDeleteAsync(ct);
 
     db.LearnedBaselineTensorQuants.AddRange(rows);
     await db.SaveChangesAsync(ct);
@@ -1716,12 +1716,6 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     if (!benchmarkId.HasValue)
         throw new InvalidOperationException("Native-source benchmark row is missing; benchmark base model before native-source learning.");
 
-    await db.LearnedBaselineTensorQuants
-        .Where(x => x.AiModelHashId == scopedAiModelHashId &&
-                    x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
-                    x.TensorWeightSchemeId == nativeScheme.UniqueId)
-        .ExecuteDeleteAsync(ct);
-
     var rows = truth
         .OrderBy(x => x.Key, StringComparer.Ordinal)
         .Select(x =>
@@ -1744,6 +1738,12 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
 
     if (rows.Count == 0)
         throw new InvalidOperationException("Native-source learning produced no persistable rows.");
+
+    await db.LearnedBaselineTensorQuants
+        .Where(x => x.AiModelHashId == scopedAiModelHashId &&
+                    x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                    x.TensorWeightSchemeId == nativeScheme.UniqueId)
+        .ExecuteDeleteAsync(ct);
 
     db.LearnedBaselineTensorQuants.AddRange(rows);
     await db.SaveChangesAsync(ct);
@@ -1855,12 +1855,6 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         if (!benchmarkId.HasValue)
             throw new InvalidOperationException($"Unable to persist learned mappings because no AiBenchmark exists for baseline '{quant.BaseQuant.Names[0]}'.");
 
-        await db.LearnedBaselineTensorQuants
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
-                        x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
-                        x.TensorWeightSchemeId == tensorScheme.UniqueId)
-            .ExecuteDeleteAsync(ct);
-
         var rows = truth
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .Select(kv =>
@@ -1887,6 +1881,12 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
 
         if (rows.Count == 0)
             throw new InvalidOperationException($"Learning baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
+
+        await db.LearnedBaselineTensorQuants
+            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
+                        x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
+                        x.TensorWeightSchemeId == tensorScheme.UniqueId)
+            .ExecuteDeleteAsync(ct);
 
         db.LearnedBaselineTensorQuants.AddRange(rows);
         await db.SaveChangesAsync(ct);
@@ -1996,7 +1996,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         if (hardMismatches.Count > 0)
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {hardMismatches.Count} high-severity GGUF/log mismatches; GGUF truth was used.");
+                $"[red]STRICT VALIDATION:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] has {hardMismatches.Count} high-severity GGUF/log mismatches. A failure diagnostic will be written and learning will stop.");
             AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", hardMismatches.Take(6).Select(x => $"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}")))}[/]");
         }
 
