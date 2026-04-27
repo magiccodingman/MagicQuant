@@ -32,6 +32,7 @@ public sealed class TensorGroupingAuditService
             if (matchedGroups.Length > 1)
             {
                 var names = matchedGroups.Select(x => x.Name).ToList();
+                truthByTensor.TryGetValue(tensorName, out var truth);
                 grouped[tensorName] = new TensorGroupingResult
                 {
                     PrimaryGroup = null,
@@ -43,8 +44,8 @@ public sealed class TensorGroupingAuditService
                     TensorName = tensorName,
                     IssueKind = "AmbiguousSemanticGroupCollision",
                     MatchedGroups = names,
-                    FinalQuantType = truthByTensor.TryGetValue(tensorName, out var truth) ? truth.FinalQuantType : null,
-                    LearningSource = truthByTensor.TryGetValue(tensorName, out truth) ? truth.Source.ToString() : null
+                    FinalQuantType = truth?.FinalQuantType,
+                    LearningSource = truth?.Source.ToString()
                 });
 
                 continue;
@@ -53,6 +54,7 @@ public sealed class TensorGroupingAuditService
             var matchedPattern = FindMatchingBaseQuantExceptionPattern(tensorName);
             if (matchedPattern != null)
             {
+                truthByTensor.TryGetValue(tensorName, out var truth);
                 grouped[tensorName] = new TensorGroupingResult
                 {
                     PrimaryGroup = null,
@@ -66,8 +68,8 @@ public sealed class TensorGroupingAuditService
                     TensorName = tensorName,
                     IssueKind = "BaseQuantExceptionFallback",
                     MatchedExceptionPattern = matchedPattern,
-                    FinalQuantType = truthByTensor.TryGetValue(tensorName, out var truth) ? truth.FinalQuantType : null,
-                    LearningSource = truthByTensor.TryGetValue(tensorName, out truth) ? truth.Source.ToString() : null
+                    FinalQuantType = truth?.FinalQuantType,
+                    LearningSource = truth?.Source.ToString()
                 });
 
                 continue;
@@ -79,12 +81,13 @@ public sealed class TensorGroupingAuditService
                 MatchedGroups = []
             };
 
+            truthByTensor.TryGetValue(tensorName, out var unresolvedTruth);
             illegalUnresolved.Add(new TensorGroupingAuditIssue
             {
                 TensorName = tensorName,
                 IssueKind = "IllegalUnresolvedTensor",
-                FinalQuantType = truthByTensor.TryGetValue(tensorName, out var truth) ? truth.FinalQuantType : null,
-                LearningSource = truthByTensor.TryGetValue(tensorName, out truth) ? truth.Source.ToString() : null
+                FinalQuantType = unresolvedTruth?.FinalQuantType,
+                LearningSource = unresolvedTruth?.Source.ToString()
             });
         }
 

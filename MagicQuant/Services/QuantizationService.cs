@@ -1997,14 +1997,14 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {hardMismatches.Count} high-severity GGUF/log mismatches; GGUF truth was used.");
-            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", hardMismatches.Take(6).Select(x => $\"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}\")))}[/]");
+            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", hardMismatches.Take(6).Select(x => $"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}")))}[/]");
         }
 
         if (softMismatches.Count > 0)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {softMismatches.Count} GGUF/log mismatches; GGUF truth was used.");
-            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", softMismatches.Take(6).Select(x => $\"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}\")))}[/]");
+            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", softMismatches.Take(6).Select(x => $"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}")))}[/]");
         }
 
         if (logOnly.Count > 0)
@@ -2789,9 +2789,9 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
         public Dictionary<string, LearnedTensorTruth>? TruthByTensor { get; set; }
         public IReadOnlyDictionary<string, TensorGroupingResult>? GroupedByTensor { get; set; }
         public IReadOnlyCollection<string>? AllTensorNamesInDownloadedArtifact { get; set; }
-        public List<TensorGroupingAuditIssue>? AmbiguousGroupingRows { get; set; }
-        public List<string>? UnresolvedTensorNames { get; set; }
-        public List<TensorGroupingAuditIssue>? BaseQuantExceptionRows { get; set; }
+        public IReadOnlyList<TensorGroupingAuditIssue>? AmbiguousGroupingRows { get; set; }
+        public IReadOnlyList<string>? UnresolvedTensorNames { get; set; }
+        public IReadOnlyList<TensorGroupingAuditIssue>? BaseQuantExceptionRows { get; set; }
         public TensorTruthVerificationResult? Verification { get; set; }
         public bool HasPreparedLearningTruth { get; set; }
     }

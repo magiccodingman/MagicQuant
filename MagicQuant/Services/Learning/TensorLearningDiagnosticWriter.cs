@@ -3,6 +3,7 @@ using System.Text.Json;
 using MagicQuant.Helpers;
 using MagicQuant.Models.Learning;
 using MQ.DB;
+using MQ.DB.Models;
 
 namespace MagicQuant.Services.Learning;
 
