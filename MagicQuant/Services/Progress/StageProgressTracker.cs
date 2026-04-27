@@ -103,7 +103,7 @@ public sealed class StageProgressTracker
                     ? "items finished"
                     : _options.UnitLabel.Trim();
 
-                AnsiConsole.MarkupLine($"[grey][progress][/]{escapedStage}: [cyan]{finished}[/]/[cyan]{Total}[/] {Markup.Escape(unitLabel)}");
+                AnsiConsole.MarkupLine($"[grey][[progress]][/] {escapedStage}: [cyan]{finished}[/]/[cyan]{Total}[/] {Markup.Escape(unitLabel)}");
             }
             else
             {
@@ -132,7 +132,7 @@ public sealed class StageProgressTracker
                     : $" | item={Markup.Escape(itemName)}";
 
                 AnsiConsole.MarkupLine(
-                    $"[grey][progress][/]{escapedStage}: [cyan]{finished}[/]/[cyan]{Total}[/] done | completed=[green]{completed}[/] skipped=[yellow]{skipped}[/] failed=[red]{failed}[/] | elapsed={elapsedText} | {etaText} | {estFinishText}{maybeItem}");
+                    $"[grey][[progress]][/] {escapedStage}: [cyan]{finished}[/]/[cyan]{Total}[/] done | completed=[green]{completed}[/] skipped=[yellow]{skipped}[/] failed=[red]{failed}[/] | elapsed={elapsedText} | {etaText} | {estFinishText}{maybeItem}");
             }
 
             _lastPrintedUtc = now;
