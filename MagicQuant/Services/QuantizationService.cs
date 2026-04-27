@@ -1790,16 +1790,17 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         }
 
         var tensorScheme = quant.BaseQuant.DefaultTensorScheme!;
-        var parsed = ParseQuantizeLogForTensorTypes(report?.LogPath ?? (quantizedModelPath + ".quantize.log"));
+        string logPath = report?.LogPath ?? (quantizedModelPath + ".quantize.log");
+        var parsed = ParseQuantizeLogForTensorTypes(logPath);
         var ggufMetadata = await ReadTensorMetadataFromGgufAsync(quantizedModelPath, quantizedModelPath);
         var ggufTruth = ggufMetadata.TensorTypes
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
 
         if (parsed.Count == 0 && ggufTruth.Count == 0)
         {
-            AnsiConsole.MarkupLine(
-                $"[red]WARNING:[/] learned mapping parse returned no tensors from logs and GGUF for baseline [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
-            return;
+            throw new InvalidOperationException(
+                $"Strict tensor learning failed for baseline '{quant.BaseQuant.Names[0]}': no tensor truth could be read from either the quantize log or GGUF metadata. " +
+                $"QuantizedModelPath={quantizedModelPath}; LogPath={logPath}");
         }
 
         var verification = BuildTruthMapWithVerification(parsed, ggufTruth, quant.BaseQuant.Names[0]);
