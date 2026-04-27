@@ -151,38 +151,42 @@ public class Evolution : ICommand
         // cannot accidentally inherit a stale default.
         RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Enabled);
 
+        string baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
-                                   await benchmarkService.TryInitializeExecutionPlanFromCacheAsync(
-                                       quantizationKey: q8QuantizationKey);
+                                   await benchmarkService.TryInitializeDynamicExecutionPlanFromCacheAsync(
+                                       q8QuantizationKey: q8QuantizationKey,
+                                       nativeModelPath: bf16ModelGgufPath,
+                                       nativeQuantizationKey: baseTypeName);
 
         if (!loadedPlanFromCache)
         {
-            AnsiConsole.MarkupLine("[grey]Cache not usable, preparing probe-only Q8 baseline...[/]");
-            var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
+            AnsiConsole.MarkupLine("[grey]Dynamic execution-plan cache not usable; probing Q8 + native anchors...[/]");
+            string? q8ModelGgufPath = null;
 
-            await benchmarkService.EnsureExecutionPlanAsync(
-                q8ModelGgufPath,
-                quantizationKey: q8QuantizationKey,
-                forceRediscovery: Cache.ForceRefreshHardwareProbe);
+            try
+            {
+                q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
+                await benchmarkService.EnsureDynamicExecutionPlanAsync(
+                    q8ModelPath: q8ModelGgufPath,
+                    nativeModelPath: bf16ModelGgufPath,
+                    q8QuantizationKey: q8QuantizationKey,
+                    nativeQuantizationKey: baseTypeName,
+                    forceRediscovery: Cache.ForceRefreshHardwareProbe);
+            }
+            finally
+            {
+                await quantizationService.CleanupPureQ8ModelAsync();
+            }
         }
 
         bool nativeTruthAlreadyLearned =
             !Cache.ForceRelearnBaselineTensorMappings &&
             await quantizationService.HasNativeSourceLearnedTruthAsync();
-
-        if (!nativeTruthAlreadyLearned || !loadedPlanFromCache)
-        {
-            await benchmarkService.ClampStaticNglWithBaseModelAsync(bf16ModelGgufPath);
-        }
-        else
+        if (nativeTruthAlreadyLearned && loadedPlanFromCache)
         {
             AnsiConsole.MarkupLine(
-                "[grey]Skipping base-model ngl clamp because native-source truth already exists and execution plan cache was loaded.[/]");
+                "[grey]Native-source truth already exists and dynamic plan loaded from cache.[/]");
         }
-
-        await quantizationService.CleanupPureQ8ModelAsync();
-
-        var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         var benchmarkRootDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks");
         var baseBenchDir = Path.Combine(benchmarkRootDir, baseTypeName);
         var baseLogitsDir = Path.Combine(baseBenchDir, "logits");

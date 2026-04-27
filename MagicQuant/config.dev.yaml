@@ -13,6 +13,11 @@ flags:
   force_refresh_hardware_probe: false
   allow_high_precision_hybrids: false
 
+hardware:
+  gpu_memory_limits_gb:
+    0: 19
+    1: 23
+
 imatrix:
   imatrix_url:
   dataset_repo:

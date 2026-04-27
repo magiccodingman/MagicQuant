@@ -24,6 +24,16 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
     public int GroupSize { get; set; }
     public string SlotsJson { get; set; } = "[]";
 
+    public int ProbeSchemaVersion { get; set; } = 2;
+    public ulong Q8ModelSizeBytes { get; set; }
+    public int Q8StableNgl { get; set; }
+    public ulong NativeModelSizeBytes { get; set; }
+    public int NativeStableNgl { get; set; }
+    public string NativeQuantizationKey { get; set; } = string.Empty;
+    public int MaxCandidateNgl { get; set; }
+    public string GpuMemoryLimitsJson { get; set; } = "{}";
+    public string TensorSplitJson { get; set; } = "{}";
+
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
 
@@ -35,7 +45,10 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
         builder.Property(x => x.HardwareFingerprint).HasMaxLength(1024);
         builder.Property(x => x.QuantizedModelFingerprint).HasMaxLength(2048);
         builder.Property(x => x.QuantizationKey).HasMaxLength(128);
+        builder.Property(x => x.NativeQuantizationKey).HasMaxLength(128);
         builder.Property(x => x.SlotsJson).HasMaxLength(8000);
+        builder.Property(x => x.GpuMemoryLimitsJson).HasMaxLength(4000);
+        builder.Property(x => x.TensorSplitJson).HasMaxLength(4000);
 
         builder.HasIndex(x => x.AiModelHashId);
         builder.HasIndex(x => x.ImatrixDefinitionId);

@@ -50,6 +50,7 @@ public class QuantizationService
     private readonly string _benchDir;
     private readonly PythonManager _python;
     private readonly SemaphoreSlim _cpuQuantLock;
+    private readonly int _quantThreadsPerProcess;
     private readonly int _maxConcurrentQuantizations;
     private readonly ImatrixService _imatrixService;
     private readonly HuggingFaceBaselineService _huggingFaceBaselineService;
@@ -88,8 +89,56 @@ public class QuantizationService
         Directory.CreateDirectory(_benchDir);
 
         int threadCount = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
-        _maxConcurrentQuantizations = Math.Max(1, threadCount / 8);
-        _cpuQuantLock = new SemaphoreSlim(_maxConcurrentQuantizations, _maxConcurrentQuantizations);
+
+// Minimum desired threads per llama-quantize process.
+// This is used to decide the natural concurrency first.
+        const int minimumQuantThreadsPerProcess = 8;
+
+// Hard safety cap for large GGUF quantization.
+// More than 2 concurrent 35B quantizers can overwhelm the output NVMe queue.
+        const int maxConcurrentQuantizationCap = 2;
+
+// Keep a little workstation breathing room.
+        int reservedThreads = threadCount switch
+        {
+            >= 16 => 2,
+            >= 8  => 2,
+            >= 4  => 1,
+            _     => 0
+        };
+
+        int usableThreads = Math.Max(1, threadCount - reservedThreads);
+
+// First decide how many quantization processes the CPU budget would naturally allow.
+        int naturalConcurrentQuantizations = Math.Max(
+            1,
+            usableThreads / minimumQuantThreadsPerProcess);
+
+// Then cap it to avoid hammering the output drive with too many giant writers.
+        _maxConcurrentQuantizations = Math.Max(
+            1,
+            Math.Min(maxConcurrentQuantizationCap, naturalConcurrentQuantizations));
+
+// Divide the usable thread budget evenly across the allowed quantization processes.
+// Example on 7950X3D:
+// 32 total - 2 reserved = 30 usable
+// natural = 30 / 8 = 3
+// capped = min(2, 3) = 2
+// threads/process = 30 / 2 = 15
+        _quantThreadsPerProcess = Math.Max(
+            1,
+            usableThreads / _maxConcurrentQuantizations);
+
+        _cpuQuantLock = new SemaphoreSlim(
+            _maxConcurrentQuantizations,
+            _maxConcurrentQuantizations);
+
+        AnsiConsole.MarkupLine(
+            $"[grey]Quantization CPU plan:[/] " +
+            $"threads={threadCount}, reserved={reservedThreads}, usable={usableThreads}, " +
+            $"naturalConcurrent={naturalConcurrentQuantizations}, " +
+            $"concurrent={_maxConcurrentQuantizations}, " +
+            $"threads/process={_quantThreadsPerProcess}");
     }
 
     public static void ValidateQuantNameNormalizationOrThrow()
@@ -1468,7 +1517,7 @@ public class QuantizationService
         args.Add($"\"{inputFile}\"");
         args.Add($"\"{outputFile}\"");
         args.Add(baseQuant.QuantizeBaseArgumentName);
-        args.Add("8");
+        args.Add(_quantThreadsPerProcess.ToString());
 
         string bin = Path.Combine(
             Cache.LlamaBin!,
@@ -1583,7 +1632,7 @@ public class QuantizationService
         args.Add($"\"{inputFile}\"");
         args.Add($"\"{outputFile}\"");
         args.Add(ResolveQuantizeBaseArgument(quant, concreteOverrides));
-        args.Add("8");
+        args.Add(_quantThreadsPerProcess.ToString());
 
         string arguments = string.Join(" ", args);
 

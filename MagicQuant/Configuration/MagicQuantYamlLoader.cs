@@ -74,6 +74,15 @@ public static class MagicQuantYamlLoader
         Cache.ForceRelearnBaselineTensorMappings = config.Flags.ForceRelearnBaselineTensorMappings;
         Cache.ForceRefreshHardwareProbe = config.Flags.ForceRefreshHardwareProbe;
 
+        config.Hardware.GpuMemoryLimitsGb ??= new Dictionary<int, double>();
+        config.Hardware.GpuMemoryLimitsGb = config.Hardware.GpuMemoryLimitsGb
+            .Where(x => x.Key >= 0 && x.Value > 0d)
+            .ToDictionary(x => x.Key, x => x.Value);
+
+        Cache.GpuMemoryLimitsGb = config.Hardware.GpuMemoryLimitsGb
+            .Where(x => x.Key >= 0 && x.Value > 0d)
+            .ToDictionary(x => x.Key, x => x.Value);
+
         RuntimeSearchSpace.AllowHighPrecisionHybrids = config.Flags.AllowHighPrecisionHybrids;
         Cache.CurrentArchitectureFamilyName =
             config.Identity.ArchitectureFamilyName?.Trim() ?? string.Empty;
