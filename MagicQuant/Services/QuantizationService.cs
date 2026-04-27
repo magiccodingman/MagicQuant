@@ -119,8 +119,14 @@ public class QuantizationService
     // Batch processing
     // ----------------------------------------------------------------
 
+    public Task<SampleProcessingSummary> ProcessHybridBatchAsync(
+        IReadOnlyCollection<HybridQuant> quants,
+        CancellationToken ct = default)
+        => ProcessHybridBatchAsync(quants, progressOptions: null, ct);
+
     public async Task<SampleProcessingSummary> ProcessHybridBatchAsync(
         IReadOnlyCollection<HybridQuant> quants,
+        StageProgressOptions? progressOptions,
         CancellationToken ct = default)
     {
         if (quants == null)
@@ -136,7 +142,7 @@ public class QuantizationService
             })
             .ToList();
 
-        return await ProcessHybridBatchAsync(shimmedPlans, ct);
+        return await ProcessHybridBatchAsync(shimmedPlans, progressOptions, ct);
     }
 
     public Task<SampleProcessingSummary> ProcessHybridBatchAsync(
