@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using MagicQuant.Helpers;
 using MagicQuant.Models.Learning;
 using MagicQuant.Services.Learning;
+using MagicQuant.Services.Progress;
 using MQ.DB;
 using MQ.DB.Data;
 using MQ.DB.Models;
@@ -138,17 +139,32 @@ public class QuantizationService
         return await ProcessHybridBatchAsync(shimmedPlans, ct);
     }
 
+    public Task<SampleProcessingSummary> ProcessHybridBatchAsync(
+        IReadOnlyCollection<RequiredSamplePlan> plans,
+        CancellationToken ct = default)
+        => ProcessHybridBatchAsync(plans, progressOptions: null, ct);
+
     public async Task<SampleProcessingSummary> ProcessHybridBatchAsync(
         IReadOnlyCollection<RequiredSamplePlan> plans,
+        StageProgressOptions? progressOptions,
         CancellationToken ct = default)
     {
         if (plans == null)
             throw new ArgumentNullException(nameof(plans));
 
-        int completed = 0;
-        int skipped = 0;
-        int failed = 0;
+        if (plans.Count == 0)
+        {
+            return new SampleProcessingSummary
+            {
+                Requested = 0,
+                Records = new List<SampleProcessingRecord>()
+            };
+        }
+
         var records = new ConcurrentBag<SampleProcessingRecord>();
+        var stageProgress = progressOptions != null && progressOptions.Total > 0
+            ? new StageProgressTracker(progressOptions)
+            : null;
 
         await EnsureBaseModelFileAsync(false);
 
@@ -159,146 +175,153 @@ public class QuantizationService
 
         foreach (var baselinePlan in learnableBaselinePlans)
         {
-            var baselineRecord = new SampleProcessingRecord
-            {
-                Plan = baselinePlan,
-                ModelName = GenerateHybridName(baselinePlan.Quant)
-            };
-
-            try
-            {
-                var state = await ProcessHybridQuantAsync(baselinePlan.Quant, ct);
-                baselineRecord.State = state;
-
-                var identity = await ResolveBenchmarkIdentityAsync(baselinePlan.Quant, ct);
-                baselineRecord.TensorComboId = identity.TensorComboId;
-                baselineRecord.BenchmarkId = identity.BenchmarkId;
-
-                switch (state)
-                {
-                    case SampleProcessState.Completed:
-                        completed++;
-                        break;
-                    case SampleProcessState.Skipped:
-                        skipped++;
-                        break;
-                    default:
-                        failed++;
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                baselineRecord.State = SampleProcessState.Failed;
-                baselineRecord.Error = ex.Message;
-                failed++;
-
-                AnsiConsole.MarkupLine($"[red]Baseline sample failed:[/] {Markup.Escape(baselineRecord.ModelName)}");
-                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
-            }
-            finally
-            {
-                records.Add(baselineRecord);
-            }
+            ct.ThrowIfCancellationRequested();
+            records.Add(await ExecutePlanAsync(baselinePlan, stageProgress, ct));
         }
 
         var remainingPlans = plans.Except(learnableBaselinePlans).ToList();
         var equivalenceMap = await BuildIsolationDeduplicationPlanAsync(remainingPlans, ct);
 
+        var planByKey = remainingPlans.ToDictionary(p => p.Key, StringComparer.Ordinal);
+        var primaryGroups = new List<(RequiredSamplePlan Source, List<RequiredSamplePlan> Duplicates)>();
+
         foreach (var plan in remainingPlans)
         {
-            if (equivalenceMap.TryGetValue(plan.Key, out var cloneSourceKey) &&
-                !string.IsNullOrWhiteSpace(cloneSourceKey) &&
-                !string.Equals(cloneSourceKey, plan.Key, StringComparison.Ordinal))
+            ct.ThrowIfCancellationRequested();
+
+            if (!equivalenceMap.TryGetValue(plan.Key, out var sourceKey) ||
+                string.IsNullOrWhiteSpace(sourceKey) ||
+                string.Equals(sourceKey, plan.Key, StringComparison.Ordinal))
             {
-                var sourcePlan =
-                    remainingPlans.First(x => string.Equals(x.Key, cloneSourceKey, StringComparison.Ordinal));
-                var record = new SampleProcessingRecord
-                {
-                    Plan = plan,
-                    ModelName = GenerateHybridName(plan.Quant)
-                };
-
-                try
-                {
-                    bool cloned = await CloneEquivalentIsolationBenchmarkAsync(sourcePlan, plan, ct);
-                    if (cloned)
-                    {
-                        var identity = await ResolveBenchmarkIdentityAsync(plan.Quant, ct);
-                        record.State = SampleProcessState.Completed;
-                        record.TensorComboId = identity.TensorComboId;
-                        record.BenchmarkId = identity.BenchmarkId;
-                        completed++;
-                    }
-                    else
-                    {
-                        var state = await ProcessHybridQuantAsync(plan.Quant, ct);
-                        record.State = state;
-                        var identity = await ResolveBenchmarkIdentityAsync(plan.Quant, ct);
-                        record.TensorComboId = identity.TensorComboId;
-                        record.BenchmarkId = identity.BenchmarkId;
-                        if (state == SampleProcessState.Completed) completed++;
-                        else if (state == SampleProcessState.Skipped) skipped++;
-                        else failed++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    record.State = SampleProcessState.Failed;
-                    record.Error = ex.Message;
-                    failed++;
-                    AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(record.ModelName)}");
-                    AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
-                }
-                finally
-                {
-                    records.Add(record);
-                }
-
+                primaryGroups.Add((plan, new List<RequiredSamplePlan>()));
                 continue;
             }
 
-            var recordPrimary = new SampleProcessingRecord
+            if (!planByKey.TryGetValue(sourceKey, out _))
             {
-                Plan = plan,
-                ModelName = GenerateHybridName(plan.Quant)
-            };
-
-            try
-            {
-                var state = await ProcessHybridQuantAsync(plan.Quant, ct);
-                recordPrimary.State = state;
-
-                var identity = await ResolveBenchmarkIdentityAsync(plan.Quant, ct);
-                recordPrimary.TensorComboId = identity.TensorComboId;
-                recordPrimary.BenchmarkId = identity.BenchmarkId;
-
-                if (state == SampleProcessState.Completed) completed++;
-                else if (state == SampleProcessState.Skipped) skipped++;
-                else failed++;
-            }
-            catch (Exception ex)
-            {
-                recordPrimary.State = SampleProcessState.Failed;
-                recordPrimary.Error = ex.Message;
-                failed++;
-                AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(recordPrimary.ModelName)}");
-                AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
-            }
-            finally
-            {
-                records.Add(recordPrimary);
+                primaryGroups.Add((plan, new List<RequiredSamplePlan>()));
             }
         }
+
+        var groupBySource = primaryGroups.ToDictionary(g => g.Source.Key, g => g, StringComparer.Ordinal);
+        foreach (var plan in remainingPlans)
+        {
+            if (!equivalenceMap.TryGetValue(plan.Key, out var sourceKey) ||
+                string.IsNullOrWhiteSpace(sourceKey) ||
+                string.Equals(sourceKey, plan.Key, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (groupBySource.TryGetValue(sourceKey, out var group))
+                group.Duplicates.Add(plan);
+        }
+
+        int workerCount = Math.Max(1, Math.Min(primaryGroups.Count,
+            _maxConcurrentQuantizations + _benchmarker.CurrentParallelSlotCount));
+
+        await Parallel.ForEachAsync(
+            primaryGroups,
+            new ParallelOptions { MaxDegreeOfParallelism = workerCount, CancellationToken = ct },
+            async (group, token) =>
+            {
+                records.Add(await ExecutePlanAsync(group.Source, stageProgress, token));
+
+                foreach (var duplicatePlan in group.Duplicates)
+                {
+                    token.ThrowIfCancellationRequested();
+                    records.Add(await ExecuteDuplicatePlanAsync(group.Source, duplicatePlan, stageProgress, token));
+                }
+            });
+
+        var finalRecords = records.OrderBy(x => x.Plan.Key, StringComparer.Ordinal).ToList();
 
         return new SampleProcessingSummary
         {
             Requested = plans.Count,
-            Completed = completed,
-            Skipped = skipped,
-            Failed = failed,
-            Records = records.OrderBy(x => x.Plan.Key).ToList()
+            Completed = finalRecords.Count(x => x.State == SampleProcessState.Completed),
+            Skipped = finalRecords.Count(x => x.State == SampleProcessState.Skipped),
+            Failed = finalRecords.Count(x => x.State == SampleProcessState.Failed),
+            Records = finalRecords
         };
+    }
+
+
+    private async Task<SampleProcessingRecord> ExecutePlanAsync(
+        RequiredSamplePlan plan,
+        StageProgressTracker? progress,
+        CancellationToken ct)
+    {
+        var record = new SampleProcessingRecord
+        {
+            Plan = plan,
+            ModelName = GenerateHybridName(plan.Quant)
+        };
+
+        try
+        {
+            var state = await ProcessHybridQuantAsync(plan.Quant, ct);
+            record.State = state;
+
+            var identity = await ResolveBenchmarkIdentityAsync(plan.Quant, ct);
+            record.TensorComboId = identity.TensorComboId;
+            record.BenchmarkId = identity.BenchmarkId;
+
+            progress?.ReportFinished(state, record.ModelName);
+            return record;
+        }
+        catch (Exception ex)
+        {
+            record.State = SampleProcessState.Failed;
+            record.Error = ex.Message;
+
+            AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(record.ModelName)}");
+            AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
+
+            progress?.ReportFinished(SampleProcessState.Failed, record.ModelName);
+            return record;
+        }
+    }
+
+    private async Task<SampleProcessingRecord> ExecuteDuplicatePlanAsync(
+        RequiredSamplePlan sourcePlan,
+        RequiredSamplePlan duplicatePlan,
+        StageProgressTracker? progress,
+        CancellationToken ct)
+    {
+        var record = new SampleProcessingRecord
+        {
+            Plan = duplicatePlan,
+            ModelName = GenerateHybridName(duplicatePlan.Quant)
+        };
+
+        try
+        {
+            bool cloned = await CloneEquivalentIsolationBenchmarkAsync(sourcePlan, duplicatePlan, ct);
+
+            if (cloned)
+            {
+                var identity = await ResolveBenchmarkIdentityAsync(duplicatePlan.Quant, ct);
+                record.State = SampleProcessState.Completed;
+                record.TensorComboId = identity.TensorComboId;
+                record.BenchmarkId = identity.BenchmarkId;
+                progress?.ReportFinished(SampleProcessState.Completed, record.ModelName);
+                return record;
+            }
+
+            return await ExecutePlanAsync(duplicatePlan, progress, ct);
+        }
+        catch (Exception ex)
+        {
+            record.State = SampleProcessState.Failed;
+            record.Error = ex.Message;
+
+            AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(record.ModelName)}");
+            AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
+
+            progress?.ReportFinished(SampleProcessState.Failed, record.ModelName);
+            return record;
+        }
     }
 
     private async Task<(Guid? TensorComboId, Guid? BenchmarkId)> ResolveBenchmarkIdentityAsync(

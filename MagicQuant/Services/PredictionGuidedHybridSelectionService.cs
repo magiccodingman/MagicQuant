@@ -1,4 +1,5 @@
 using MagicQuant.Models;
+using MagicQuant.Services.Progress;
 using MQ.DB.Models;
 using Spectre.Console;
 
@@ -305,7 +306,17 @@ public sealed class PredictionGuidedHybridSelectionService
         AnsiConsole.MarkupLine($"[grey]Interior candidates selected for batch validation:[/] [cyan]{deduped.Count:N0}[/]");
 
         var quantBatch = deduped.Select(x => x.Prediction.Quant).DistinctBy(x => TensorConfigIdentity.ToKey((TensorConfig)x)).ToList();
-        var summary = await _quantizationService.ProcessHybridBatchAsync(quantBatch, ct);
+        var summary = await _quantizationService.ProcessHybridBatchAsync(
+            quantBatch,
+            new StageProgressOptions
+            {
+                StageName = "Interior candidate validation batch",
+                Total = quantBatch.Count,
+                MinimumNonSkippedSamplesBeforeEta = 2,
+                ShowEta = true,
+                CountSkippedForEta = false
+            },
+            ct);
         AnsiConsole.MarkupLine($"[grey]Interior validation batch:[/] requested={summary.Requested:N0} completed={summary.Completed:N0} skipped={summary.Skipped:N0} failed={summary.Failed:N0}");
 
         foreach (var candidate in deduped)
@@ -346,7 +357,16 @@ public sealed class PredictionGuidedHybridSelectionService
             $"[grey]Validating candidate:[/] {Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(candidate.Prediction.Quant))} " +
             $"[grey]| reason=[/] {candidate.Reason} [grey]| window=[/] {Markup.Escape(candidate.WindowLabel)}");
 
-        var summary = await _quantizationService.ProcessHybridBatchAsync(new[] { candidate.Prediction.Quant }, ct);
+        var summary = await _quantizationService.ProcessHybridBatchAsync(
+            new[] { candidate.Prediction.Quant },
+            new StageProgressOptions
+            {
+                StageName = "Single candidate validation",
+                Total = 1,
+                ShowEta = false,
+                MinimumPrintInterval = TimeSpan.FromSeconds(5)
+            },
+            ct);
         var snapshot = await _repository.LoadBenchmarkSnapshotAsync(candidate.Prediction.Config, ct);
 
         bool accepted = snapshot != null && accept(snapshot);
