@@ -179,11 +179,33 @@ public class QuantizationService
             .OrderBy(p => p.Quant.BaseQuant.UniqueId)
             .ToList();
 
-        foreach (var baselinePlan in learnableBaselinePlans)
+        var duplicateLearnableNames = learnableBaselinePlans
+            .Select(p => GenerateHybridName(p.Quant))
+            .GroupBy(x => x, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        if (duplicateLearnableNames.Count > 0)
         {
-            ct.ThrowIfCancellationRequested();
-            records.Add(await ExecutePlanAsync(baselinePlan, stageProgress, ct));
+            throw new InvalidOperationException(
+                "Duplicate learnable baseline output names were queued in the same batch: " +
+                string.Join(", ", duplicateLearnableNames));
         }
+
+        int baselineWorkerCount = CalculateBatchWorkerCount(learnableBaselinePlans.Count);
+
+        await Parallel.ForEachAsync(
+            learnableBaselinePlans,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = baselineWorkerCount,
+                CancellationToken = ct
+            },
+            async (baselinePlan, token) =>
+            {
+                records.Add(await ExecutePlanAsync(baselinePlan, stageProgress, token));
+            });
 
         var remainingPlans = plans.Except(learnableBaselinePlans).ToList();
         var equivalenceMap = await BuildIsolationDeduplicationPlanAsync(remainingPlans, ct);
@@ -223,8 +245,7 @@ public class QuantizationService
                 group.Duplicates.Add(plan);
         }
 
-        int workerCount = Math.Max(1, Math.Min(primaryGroups.Count,
-            _maxConcurrentQuantizations + _benchmarker.CurrentParallelSlotCount));
+        int workerCount = CalculateBatchWorkerCount(primaryGroups.Count);
 
         await Parallel.ForEachAsync(
             primaryGroups,
@@ -250,6 +271,17 @@ public class QuantizationService
             Failed = finalRecords.Count(x => x.State == SampleProcessState.Failed),
             Records = finalRecords
         };
+    }
+
+
+    private int CalculateBatchWorkerCount(int itemCount)
+    {
+        if (itemCount <= 0)
+            return 1;
+
+        return Math.Max(1, Math.Min(
+            itemCount,
+            _maxConcurrentQuantizations + _benchmarker.CurrentParallelSlotCount));
     }
 
 
