@@ -607,8 +607,10 @@ public class BenchmarkService
             _ = BuildTensorSplitArgs(slot);
         }
 
+        // NativeStableNgl == 0 is valid and represents "native anchor unavailable"
+        // while still running a Q8-based GPU plan.
         if (row.UsesGpu &&
-            (row.Q8ModelSizeBytes == 0 || row.NativeModelSizeBytes == 0 || row.Q8StableNgl <= 0 || row.NativeStableNgl <= 0))
+            (row.Q8ModelSizeBytes == 0 || row.NativeModelSizeBytes == 0 || row.Q8StableNgl <= 0))
         {
             AnsiConsole.MarkupLine("[yellow]Execution-plan cache row is missing dynamic anchor metadata; re-probing.[/]");
             return null;
