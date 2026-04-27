@@ -211,7 +211,8 @@ public class QuantizationService
                 !string.IsNullOrWhiteSpace(cloneSourceKey) &&
                 !string.Equals(cloneSourceKey, plan.Key, StringComparison.Ordinal))
             {
-                var sourcePlan = remainingPlans.First(x => string.Equals(x.Key, cloneSourceKey, StringComparison.Ordinal));
+                var sourcePlan =
+                    remainingPlans.First(x => string.Equals(x.Key, cloneSourceKey, StringComparison.Ordinal));
                 var record = new SampleProcessingRecord
                 {
                     Plan = plan,
@@ -316,7 +317,9 @@ public class QuantizationService
         if (exactAiModelHashId == null)
             return (null, null);
 
-        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value, createIfMissing: false, ct);
+        var imatrixDefinitionId =
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value,
+                createIfMissing: false, ct);
 
         var comboId = await db.TensorCombos
             .AsNoTracking()
@@ -339,486 +342,512 @@ public class QuantizationService
 
         var benchmarkId = await db.AiBenchmarks
             .AsNoTracking()
-             .Where(x => x.AiModelHashId == exactAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == comboId)
+            .Where(x => x.AiModelHashId == exactAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId &&
+                        x.TensorComboId == comboId)
             .Select(x => x.Id)
             .FirstOrDefaultAsync(ct);
 
         return (comboId, benchmarkId == Guid.Empty ? null : benchmarkId);
     }
 
-public async Task<SampleProcessState> ProcessHybridQuantAsync(
-    HybridQuant quant,
-    CancellationToken ct = default)
-{
-    string modelName = GenerateHybridName(quant);
-    string quantPath = Path.Combine(_ggufDir, $"{modelName}.gguf");
-    string modelBenchDir = Path.Combine(_benchDir, modelName);
-    string baseLogitsDir = GetBaseLogitsDirectory();
-
-    DateTime startedUtc = DateTime.UtcNow;
-    var stopwatch = Stopwatch.StartNew();
-    var forceBaselineRelearn = Cache.ForceRelearnBaselineTensorMappings && IsLearnableBaselineRun(quant);
-    bool pureExternalBaseline = ShouldDownloadExternalBaselineInsteadOfQuantizing(quant);
-    bool baselineLearnedTruthExists = !forceBaselineRelearn && await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
-    string benchmarkModelPath = quantPath;
-    PreparedExternalBaselineBuild? preparedExternalBaseline = null;
-    string? transientExternalDownloadPath = null;
-
-    if (!forceBaselineRelearn && baselineLearnedTruthExists && await _benchmarker.TryReuseExistingBenchmarksAsync(
-            quantConfig: quant,
-            modelPath: quantPath,
-            benchDir: modelBenchDir,
-            klLogitsDir: baseLogitsDir,
-            domainsOverride: new[] { "general" }))
+    public async Task<SampleProcessState> ProcessHybridQuantAsync(
+        HybridQuant quant,
+        CancellationToken ct = default)
     {
-        AnsiConsole.MarkupLine($"[grey]Reused existing benchmark artifacts:[/] {Markup.Escape(modelName)}");
+        string modelName = GenerateHybridName(quant);
+        string quantPath = Path.Combine(_ggufDir, $"{modelName}.gguf");
+        string modelBenchDir = Path.Combine(_benchDir, modelName);
+        string baseLogitsDir = GetBaseLogitsDirectory();
 
-        if (!IsProtectedModel(modelName))
-            await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
+        DateTime startedUtc = DateTime.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
+        var forceBaselineRelearn = Cache.ForceRelearnBaselineTensorMappings && IsLearnableBaselineRun(quant);
+        bool pureExternalBaseline = ShouldDownloadExternalBaselineInsteadOfQuantizing(quant);
+        bool baselineLearnedTruthExists =
+            !forceBaselineRelearn && await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
+        string benchmarkModelPath = quantPath;
+        PreparedExternalBaselineBuild? preparedExternalBaseline = null;
+        string? transientExternalDownloadPath = null;
 
-        return SampleProcessState.Skipped;
-    }
-
-    if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
-    {
-        AnsiConsole.MarkupLine($"[grey]Skipping already completed sample:[/] {Markup.Escape(modelName)}");
-
-        if (!IsProtectedModel(modelName))
-            await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
-
-        return SampleProcessState.Skipped;
-    }
-
-    try
-    {
-        string inputPath = await GetEffectiveInputModelPathAsync(quant, forceBaselineRelearn, ct);
-        if (pureExternalBaseline)
-            transientExternalDownloadPath = inputPath;
-
-        QuantizationExecutionReport? quantizationReport = null;
-
-        await _cpuQuantLock.WaitAsync(ct);
-        try
+        if (!forceBaselineRelearn && baselineLearnedTruthExists && await _benchmarker.TryReuseExistingBenchmarksAsync(
+                quantConfig: quant,
+                modelPath: quantPath,
+                benchDir: modelBenchDir,
+                klLogitsDir: baseLogitsDir,
+                domainsOverride: new[] { "general" }))
         {
-            if (pureExternalBaseline)
-            {
-                preparedExternalBaseline = await PrepareExternalBaselineRebuildAsync(
-                    quant,
-                    downloadedExternalBaselinePath: inputPath,
-                    rebuiltOutputPath: quantPath,
-                    forceBaselineRelearn: forceBaselineRelearn,
-                    ct: ct);
+            AnsiConsole.MarkupLine($"[grey]Reused existing benchmark artifacts:[/] {Markup.Escape(modelName)}");
 
-                benchmarkModelPath = preparedExternalBaseline.BenchmarkModelPath;
-            }
-            else
-            {
-                benchmarkModelPath = quantPath;
-                if (!File.Exists(quantPath) || forceBaselineRelearn)
-                {
-                    var quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
-                        ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
-                        : quant;
-
-                    var effectiveInputPath = quant.BaseQuant.IsExternalRepositoryBaseline
-                        ? await EnsureBaseModelFileAsync()
-                        : inputPath;
-
-                    if (quant.BaseQuant.IsExternalRepositoryBaseline)
-                    {
-                        AnsiConsole.MarkupLine(
-                            $"[cyan]Building sample:[/] {Markup.Escape(modelName)} [grey](native input, surrogate carrier={Markup.Escape(quantToExecute.BaseQuant.Names[0])})[/]");
-                    }
-                    else
-                    {
-                        AnsiConsole.MarkupLine($"[cyan]Building sample:[/] {Markup.Escape(modelName)}");
-                    }
-
-                    quantizationReport = await RunLlamaQuantizeAsync(effectiveInputPath, quantPath, quantToExecute);
-                }
-            }
-        }
-        finally
-        {
-            _cpuQuantLock.Release();
-        }
-
-        if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
-        {
-            if (!IsProtectedModel(modelName) && benchmarkModelPath == quantPath)
+            if (!IsProtectedModel(modelName))
                 await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
 
             return SampleProcessState.Skipped;
         }
 
-        AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {Markup.Escape(modelName)}");
-
-        await _benchmarker.RunAllBenchmarksAsync(
-            quantConfig: quant,
-            modelPath: benchmarkModelPath,
-            benchDir: modelBenchDir,
-            klLogitsDir: baseLogitsDir,
-            saveLogits: false,
-            domainsOverride: new[] { "general" });
-
-        stopwatch.Stop();
-
-        await PersistQuantizationRunAsync(
-            quant: quant,
-            imatrixDefinitionId: null,
-            startedUtc: startedUtc,
-            completedUtc: DateTime.UtcNow,
-            succeeded: true,
-            outputModelPath: benchmarkModelPath,
-            error: null,
-            ct: ct);
-
-        if (IsLearnableBaselineRun(quant))
+        if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
         {
-            if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
-                await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
-            else if (!baselineLearnedTruthExists || forceBaselineRelearn)
-                await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
+            AnsiConsole.MarkupLine($"[grey]Skipping already completed sample:[/] {Markup.Escape(modelName)}");
+
+            if (!IsProtectedModel(modelName))
+                await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
+
+            return SampleProcessState.Skipped;
         }
 
-        return SampleProcessState.Completed;
-    }
-    catch (Exception ex)
-    {
-        stopwatch.Stop();
         try
         {
+            string inputPath = await GetEffectiveInputModelPathAsync(quant, forceBaselineRelearn, ct);
+            if (pureExternalBaseline)
+                transientExternalDownloadPath = inputPath;
+
+            QuantizationExecutionReport? quantizationReport = null;
+
+            await _cpuQuantLock.WaitAsync(ct);
+            try
+            {
+                if (pureExternalBaseline)
+                {
+                    preparedExternalBaseline = await PrepareExternalBaselineRebuildAsync(
+                        quant,
+                        downloadedExternalBaselinePath: inputPath,
+                        rebuiltOutputPath: quantPath,
+                        forceBaselineRelearn: forceBaselineRelearn,
+                        ct: ct);
+
+                    benchmarkModelPath = preparedExternalBaseline.BenchmarkModelPath;
+                }
+                else
+                {
+                    benchmarkModelPath = quantPath;
+                    if (!File.Exists(quantPath) || forceBaselineRelearn)
+                    {
+                        var quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
+                            ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
+                            : quant;
+
+                        var effectiveInputPath = quant.BaseQuant.IsExternalRepositoryBaseline
+                            ? await EnsureBaseModelFileAsync()
+                            : inputPath;
+
+                        if (quant.BaseQuant.IsExternalRepositoryBaseline)
+                        {
+                            AnsiConsole.MarkupLine(
+                                $"[cyan]Building sample:[/] {Markup.Escape(modelName)} [grey](native input, surrogate carrier={Markup.Escape(quantToExecute.BaseQuant.Names[0])})[/]");
+                        }
+                        else
+                        {
+                            AnsiConsole.MarkupLine($"[cyan]Building sample:[/] {Markup.Escape(modelName)}");
+                        }
+
+                        quantizationReport = await RunLlamaQuantizeAsync(effectiveInputPath, quantPath, quantToExecute);
+                    }
+                }
+            }
+            finally
+            {
+                _cpuQuantLock.Release();
+            }
+
+            if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
+            {
+                if (!IsProtectedModel(modelName) && benchmarkModelPath == quantPath)
+                    await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
+
+                return SampleProcessState.Skipped;
+            }
+
+            AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {Markup.Escape(modelName)}");
+
+            await _benchmarker.RunAllBenchmarksAsync(
+                quantConfig: quant,
+                modelPath: benchmarkModelPath,
+                benchDir: modelBenchDir,
+                klLogitsDir: baseLogitsDir,
+                saveLogits: false,
+                domainsOverride: new[] { "general" });
+
+            stopwatch.Stop();
+
             await PersistQuantizationRunAsync(
                 quant: quant,
                 imatrixDefinitionId: null,
                 startedUtc: startedUtc,
                 completedUtc: DateTime.UtcNow,
-                succeeded: false,
+                succeeded: true,
                 outputModelPath: benchmarkModelPath,
-                error: ex.ToString(),
+                error: null,
                 ct: ct);
+
+            if (IsLearnableBaselineRun(quant))
+            {
+                if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
+                    await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
+                else if (!baselineLearnedTruthExists || forceBaselineRelearn)
+                    await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
+            }
+
+            return SampleProcessState.Completed;
         }
-        catch
+        catch (Exception ex)
         {
+            stopwatch.Stop();
+            try
+            {
+                await PersistQuantizationRunAsync(
+                    quant: quant,
+                    imatrixDefinitionId: null,
+                    startedUtc: startedUtc,
+                    completedUtc: DateTime.UtcNow,
+                    succeeded: false,
+                    outputModelPath: benchmarkModelPath,
+                    error: ex.ToString(),
+                    ct: ct);
+            }
+            catch
+            {
+            }
+
+            throw;
         }
-
-        throw;
-    }
-    finally
-    {
-        if (pureExternalBaseline && !string.IsNullOrWhiteSpace(transientExternalDownloadPath))
-            await CleanupExternalBaselineDownloadArtifactsAsync(transientExternalDownloadPath);
-
-        if (!IsProtectedModel(modelName) && benchmarkModelPath == quantPath)
-            await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
-    }
-}
-
-private bool ShouldDownloadExternalBaselineInsteadOfQuantizing(HybridQuant quant)
-    => quant.BaseQuant.IsExternalRepositoryBaseline && quant.Tensors.Count == 0;
-
-private async Task<string> GetEffectiveInputModelPathAsync(HybridQuant quant, bool forceRefresh, CancellationToken ct)
-{
-    string basePath = await EnsureBaseModelFileAsync();
-    if (!quant.BaseQuant.IsExternalRepositoryBaseline)
-        return basePath;
-
-    // Pure external baselines are downloaded so MagicQuant can learn their tensor truth.
-    // Any continuation / isolation / hybrid that uses that external baseline must rebuild
-    // from the native base GGUF instead of requantizing the staged external GGUF.
-    if (quant.Tensors.Count > 0)
-        return basePath;
-
-    string externalPath = GetExternalBaselineCachePath(quant.BaseQuant);
-    await _huggingFaceBaselineService.DownloadBaselineAsync(quant.BaseQuant, externalPath, forceRefresh, ct);
-    await ValidateExternalBaselineTensorParityOrThrow(basePath, externalPath);
-    return externalPath;
-}
-
-private string GetExternalBaselineCachePath(BaselineQuants baseline)
-{
-    string root = Cache.ExternalBaselineCacheDirectory ?? Path.Combine(Cache.ModelMagicQuantDirectory!, "ExternalBaselines");
-    Directory.CreateDirectory(root);
-    string safe = string.Concat(baseline.CanonicalKey.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
-    string extension = Path.GetExtension(baseline.SourceFileName ?? string.Empty);
-    if (string.IsNullOrWhiteSpace(extension))
-        extension = ".gguf";
-    return Path.Combine(root, safe + extension);
-}
-
-private async Task ValidateExternalBaselineTensorParityOrThrow(string baseModelPath, string externalBaselinePath)
-{
-    var baseMeta = await ReadTensorMetadataFromGgufAsync(baseModelPath, externalBaselinePath + ".nativecheck");
-    var externalMeta = await ReadTensorMetadataFromGgufAsync(externalBaselinePath, externalBaselinePath + ".externalcheck");
-
-    var baseNames = baseMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
-    var externalNames = externalMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
-
-    var missing = baseNames.Except(externalNames, StringComparer.Ordinal).Take(20).ToList();
-    var unexpected = externalNames.Except(baseNames, StringComparer.Ordinal).Take(20).ToList();
-
-    if (missing.Count > 0 || unexpected.Count > 0 || baseNames.Count != externalNames.Count)
-    {
-        throw new InvalidOperationException(
-            $"External/custom baseline tensor mismatch detected. Missing=[{string.Join(", ", missing)}] Unexpected=[{string.Join(", ", unexpected)}]. " +
-            "MagicQuant will not persist or use a custom baseline whose tensor names do not exactly match the source model.");
-    }
-}
-
-private async Task<bool> HasLearnedTruthForBaselineAsync(BaselineQuants baseline, CancellationToken ct = default)
-{
-    if (baseline.UniqueId == BaselineQuants.NativeSourceUniqueId)
-        return await HasNativeSourceLearnedTruthAsync(ct);
-
-    if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
-        return false;
-
-    await using var db = new MagicQuantContext();
-    var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
-
-    if (scopedAiModelHashId == null)
-        return false;
-
-    var query = db.LearnedBaselineTensorQuants
-        .AsNoTracking()
-        .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-        .Where(x => x.BaselineCanonicalKey == baseline.CanonicalKey);
-
-    if (baseline.DefaultTensorScheme != null)
-        query = query.Where(x => x.TensorWeightSchemeId == baseline.DefaultTensorScheme.UniqueId);
-
-    return await query.AnyAsync(ct);
-}
-
-private async Task<PreparedExternalBaselineBuild> PrepareExternalBaselineRebuildAsync(
-    HybridQuant quant,
-    string downloadedExternalBaselinePath,
-    string rebuiltOutputPath,
-    bool forceBaselineRelearn,
-    CancellationToken ct)
-{
-    if (!quant.BaseQuant.IsExternalRepositoryBaseline)
-        throw new InvalidOperationException("PrepareExternalBaselineRebuildAsync was called for a non-external baseline.");
-
-    string nativeBasePath = await EnsureBaseModelFileAsync();
-    bool canReuseLearnedTruth = !forceBaselineRelearn && await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
-
-    if (canReuseLearnedTruth)
-    {
-        var blanket = TryLoadAllLearnedTensorMappings(
-            canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
-            preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
-            allowDominantFallback: false);
-
-        if (blanket.Count == 0)
-            throw new InvalidOperationException($"Custom baseline '{quant.BaseQuant.Names[0]}' was marked as already learned, but no blanket learned tensor mapping could be loaded.");
-
-        if (!File.Exists(rebuiltOutputPath) || forceBaselineRelearn)
+        finally
         {
-            AnsiConsole.MarkupLine($"[cyan]Rebuilding normalized custom baseline from learned truth:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-            await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, blanket);
+            if (pureExternalBaseline && !string.IsNullOrWhiteSpace(transientExternalDownloadPath))
+                await CleanupExternalBaselineDownloadArtifactsAsync(transientExternalDownloadPath);
+
+            if (!IsProtectedModel(modelName) && benchmarkModelPath == quantPath)
+                await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
         }
+    }
+
+    private bool ShouldDownloadExternalBaselineInsteadOfQuantizing(HybridQuant quant)
+        => quant.BaseQuant.IsExternalRepositoryBaseline && quant.Tensors.Count == 0;
+
+    private async Task<string> GetEffectiveInputModelPathAsync(HybridQuant quant, bool forceRefresh,
+        CancellationToken ct)
+    {
+        string basePath = await EnsureBaseModelFileAsync();
+        if (!quant.BaseQuant.IsExternalRepositoryBaseline)
+            return basePath;
+
+        // Pure external baselines are downloaded so MagicQuant can learn their tensor truth.
+        // Any continuation / isolation / hybrid that uses that external baseline must rebuild
+        // from the native base GGUF instead of requantizing the staged external GGUF.
+        if (quant.Tensors.Count > 0)
+            return basePath;
+
+        string externalPath = GetExternalBaselineCachePath(quant.BaseQuant);
+        await _huggingFaceBaselineService.DownloadBaselineAsync(quant.BaseQuant, externalPath, forceRefresh, ct);
+        await ValidateExternalBaselineTensorParityOrThrow(basePath, externalPath);
+        return externalPath;
+    }
+
+    private string GetExternalBaselineCachePath(BaselineQuants baseline)
+    {
+        string root = Cache.ExternalBaselineCacheDirectory ??
+                      Path.Combine(Cache.ModelMagicQuantDirectory!, "ExternalBaselines");
+        Directory.CreateDirectory(root);
+        string safe =
+            string.Concat(baseline.CanonicalKey.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
+        string extension = Path.GetExtension(baseline.SourceFileName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(extension))
+            extension = ".gguf";
+        return Path.Combine(root, safe + extension);
+    }
+
+    private async Task ValidateExternalBaselineTensorParityOrThrow(string baseModelPath, string externalBaselinePath)
+    {
+        var baseMeta = await ReadTensorMetadataFromGgufAsync(baseModelPath, externalBaselinePath + ".nativecheck");
+        var externalMeta =
+            await ReadTensorMetadataFromGgufAsync(externalBaselinePath, externalBaselinePath + ".externalcheck");
+
+        var baseNames = baseMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
+        var externalNames = externalMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
+
+        var missing = baseNames.Except(externalNames, StringComparer.Ordinal).Take(20).ToList();
+        var unexpected = externalNames.Except(baseNames, StringComparer.Ordinal).Take(20).ToList();
+
+        if (missing.Count > 0 || unexpected.Count > 0 || baseNames.Count != externalNames.Count)
+        {
+            throw new InvalidOperationException(
+                $"External/custom baseline tensor mismatch detected. Missing=[{string.Join(", ", missing)}] Unexpected=[{string.Join(", ", unexpected)}]. " +
+                "MagicQuant will not persist or use a custom baseline whose tensor names do not exactly match the source model.");
+        }
+    }
+
+    private async Task<bool> HasLearnedTruthForBaselineAsync(BaselineQuants baseline, CancellationToken ct = default)
+    {
+        if (baseline.UniqueId == BaselineQuants.NativeSourceUniqueId)
+            return await HasNativeSourceLearnedTruthAsync(ct);
+
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            return false;
+
+        await using var db = new MagicQuantContext();
+        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
+
+        if (scopedAiModelHashId == null)
+            return false;
+
+        var query = db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
+            .Where(x => x.BaselineCanonicalKey == baseline.CanonicalKey);
+
+        if (baseline.DefaultTensorScheme != null)
+            query = query.Where(x => x.TensorWeightSchemeId == baseline.DefaultTensorScheme.UniqueId);
+
+        return await query.AnyAsync(ct);
+    }
+
+    private async Task<PreparedExternalBaselineBuild> PrepareExternalBaselineRebuildAsync(
+        HybridQuant quant,
+        string downloadedExternalBaselinePath,
+        string rebuiltOutputPath,
+        bool forceBaselineRelearn,
+        CancellationToken ct)
+    {
+        if (!quant.BaseQuant.IsExternalRepositoryBaseline)
+            throw new InvalidOperationException(
+                "PrepareExternalBaselineRebuildAsync was called for a non-external baseline.");
+
+        string nativeBasePath = await EnsureBaseModelFileAsync();
+        bool canReuseLearnedTruth = !forceBaselineRelearn && await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
+
+        if (canReuseLearnedTruth)
+        {
+            var blanket = TryLoadAllLearnedTensorMappings(
+                canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                allowDominantFallback: false);
+
+            if (blanket.Count == 0)
+                throw new InvalidOperationException(
+                    $"Custom baseline '{quant.BaseQuant.Names[0]}' was marked as already learned, but no blanket learned tensor mapping could be loaded.");
+
+            if (!File.Exists(rebuiltOutputPath) || forceBaselineRelearn)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[cyan]Rebuilding normalized custom baseline from learned truth:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
+                await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, blanket);
+            }
+
+            return new PreparedExternalBaselineBuild
+            {
+                BenchmarkModelPath = rebuiltOutputPath,
+                DownloadedExternalModelPath = downloadedExternalBaselinePath,
+                HasPreparedLearningTruth = false
+            };
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[cyan]Learning external baseline truth from downloaded artifact:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
+        await ValidateExternalBaselineTensorParityOrThrow(nativeBasePath, downloadedExternalBaselinePath);
+
+        var ggufMetadata =
+            await ReadTensorMetadataFromGgufAsync(downloadedExternalBaselinePath, rebuiltOutputPath + ".learn");
+        var ggufTruth = ggufMetadata.TensorTypes
+            .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
+
+        if (ggufTruth.Count == 0)
+            throw new InvalidOperationException(
+                $"Downloaded external baseline '{quant.BaseQuant.Names[0]}' produced no readable GGUF tensor truth.");
+
+        var truth = ggufTruth
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .ToDictionary(
+                x => x.Key,
+                x => new LearnedTensorTruth(x.Key, x.Value, LearningSource.GgufOnly),
+                StringComparer.Ordinal);
+
+        var verification = new TensorTruthVerificationResult
+        {
+            TruthByTensor = truth
+        };
+        var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
+
+        if (audit.HasFatalIssues)
+        {
+            var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+                baselineName: quant.BaseQuant.Names[0],
+                schemeName: quant.BaseQuant.DefaultTensorScheme?.Names[0] ?? "external",
+                sourceKind: quant.BaseQuant.SourceKind.ToString(),
+                sourceRepository: quant.BaseQuant.SourceRepository,
+                sourceFileName: quant.BaseQuant.SourceFileName,
+                truthByTensor: truth,
+                audit: audit,
+                verification: verification,
+                ct: ct);
+
+            AnsiConsole.MarkupLine(
+                $"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+            throw new InvalidOperationException(
+                $"Strict tensor-group learning validation failed for external baseline '{quant.BaseQuant.Names[0]}' " +
+                $"from '{quant.BaseQuant.SourceRepository}/{quant.BaseQuant.SourceFileName}'. " +
+                $"No normalized rebuilt baseline was produced and no learned tensor mappings were persisted. " +
+                $"Diagnostic log: {diagnosticPath}");
+        }
+
+        var normalizedOverrides = truth.ToDictionary(
+            x => x.Key,
+            x => NativePrecisionNormalization.NormalizeLearnedFinalQuantTypeForApplication(x.Value.FinalQuantType),
+            StringComparer.Ordinal);
+
+        if (normalizedOverrides.Values.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidOperationException(
+                $"External baseline '{quant.BaseQuant.Names[0]}' produced one or more empty normalized tensor scheme names.");
+
+        AnsiConsole.MarkupLine(
+            $"[cyan]Rebuilding normalized benchmark artifact for custom baseline:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
+        await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, normalizedOverrides);
 
         return new PreparedExternalBaselineBuild
         {
             BenchmarkModelPath = rebuiltOutputPath,
             DownloadedExternalModelPath = downloadedExternalBaselinePath,
-            HasPreparedLearningTruth = false
+            TruthByTensor = truth,
+            GroupedByTensor = audit.GroupedByTensor,
+            AllTensorNamesInDownloadedArtifact = ggufMetadata.TensorNames,
+            AmbiguousGroupingRows = audit.Ambiguous,
+            UnresolvedTensorNames = audit.IllegalUnresolved.Select(x => x.TensorName).ToList(),
+            BaseQuantExceptionRows = audit.BaseQuantExceptions,
+            Verification = verification,
+            HasPreparedLearningTruth = true
         };
     }
 
-    AnsiConsole.MarkupLine($"[cyan]Learning external baseline truth from downloaded artifact:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-    await ValidateExternalBaselineTensorParityOrThrow(nativeBasePath, downloadedExternalBaselinePath);
-
-    var ggufMetadata = await ReadTensorMetadataFromGgufAsync(downloadedExternalBaselinePath, rebuiltOutputPath + ".learn");
-    var ggufTruth = ggufMetadata.TensorTypes
-        .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
-
-    if (ggufTruth.Count == 0)
-        throw new InvalidOperationException($"Downloaded external baseline '{quant.BaseQuant.Names[0]}' produced no readable GGUF tensor truth.");
-
-    var truth = ggufTruth
-        .OrderBy(x => x.Key, StringComparer.Ordinal)
-        .ToDictionary(
-            x => x.Key,
-            x => new LearnedTensorTruth(x.Key, x.Value, LearningSource.GgufOnly),
-            StringComparer.Ordinal);
-
-    var verification = new TensorTruthVerificationResult
+    private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
+        HybridQuant quant,
+        PreparedExternalBaselineBuild prepared,
+        CancellationToken ct)
     {
-        TruthByTensor = truth
-    };
-    var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
+        if (!IsLearnableBaselineRun(quant) || !prepared.HasPreparedLearningTruth || prepared.TruthByTensor == null ||
+            prepared.GroupedByTensor == null)
+            return;
 
-    if (audit.HasFatalIssues)
-    {
-        var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
-            baselineName: quant.BaseQuant.Names[0],
-            schemeName: quant.BaseQuant.DefaultTensorScheme?.Names[0] ?? "external",
-            sourceKind: quant.BaseQuant.SourceKind.ToString(),
-            sourceRepository: quant.BaseQuant.SourceRepository,
-            sourceFileName: quant.BaseQuant.SourceFileName,
-            truthByTensor: truth,
-            audit: audit,
-            verification: verification,
-            ct: ct);
-
-        AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
-        throw new InvalidOperationException(
-            $"Strict tensor-group learning validation failed for external baseline '{quant.BaseQuant.Names[0]}' " +
-            $"from '{quant.BaseQuant.SourceRepository}/{quant.BaseQuant.SourceFileName}'. " +
-            $"No normalized rebuilt baseline was produced and no learned tensor mappings were persisted. " +
-            $"Diagnostic log: {diagnosticPath}");
-    }
-
-    var normalizedOverrides = truth.ToDictionary(
-        x => x.Key,
-        x => NativePrecisionNormalization.NormalizeLearnedFinalQuantTypeForApplication(x.Value.FinalQuantType),
-        StringComparer.Ordinal);
-
-    if (normalizedOverrides.Values.Any(string.IsNullOrWhiteSpace))
-        throw new InvalidOperationException($"External baseline '{quant.BaseQuant.Names[0]}' produced one or more empty normalized tensor scheme names.");
-
-    AnsiConsole.MarkupLine($"[cyan]Rebuilding normalized benchmark artifact for custom baseline:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-    await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, normalizedOverrides);
-
-    return new PreparedExternalBaselineBuild
-    {
-        BenchmarkModelPath = rebuiltOutputPath,
-        DownloadedExternalModelPath = downloadedExternalBaselinePath,
-        TruthByTensor = truth,
-        GroupedByTensor = audit.GroupedByTensor,
-        AllTensorNamesInDownloadedArtifact = ggufMetadata.TensorNames,
-        AmbiguousGroupingRows = audit.Ambiguous,
-        UnresolvedTensorNames = audit.IllegalUnresolved.Select(x => x.TensorName).ToList(),
-        BaseQuantExceptionRows = audit.BaseQuantExceptions,
-        Verification = verification,
-        HasPreparedLearningTruth = true
-    };
-}
-
-private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
-    HybridQuant quant,
-    PreparedExternalBaselineBuild prepared,
-    CancellationToken ct)
-{
-    if (!IsLearnableBaselineRun(quant) || !prepared.HasPreparedLearningTruth || prepared.TruthByTensor == null || prepared.GroupedByTensor == null)
-        return;
-
-    var tensorScheme = quant.BaseQuant.DefaultTensorScheme!;
-    var verification = prepared.Verification ?? new TensorTruthVerificationResult { TruthByTensor = prepared.TruthByTensor };
-    var audit = new TensorGroupingAuditResult
-    {
-        GroupedByTensor = prepared.GroupedByTensor,
-        Ambiguous = prepared.AmbiguousGroupingRows ?? [],
-        IllegalUnresolved = (prepared.UnresolvedTensorNames ?? []).Select(x => new TensorGroupingAuditIssue
+        var tensorScheme = quant.BaseQuant.DefaultTensorScheme!;
+        var verification = prepared.Verification ?? new TensorTruthVerificationResult
+            { TruthByTensor = prepared.TruthByTensor };
+        var audit = new TensorGroupingAuditResult
         {
-            TensorName = x,
-            IssueKind = "IllegalUnresolvedTensor"
-        }).ToList(),
-        BaseQuantExceptions = prepared.BaseQuantExceptionRows ?? []
-    };
+            GroupedByTensor = prepared.GroupedByTensor,
+            Ambiguous = prepared.AmbiguousGroupingRows ?? [],
+            IllegalUnresolved = (prepared.UnresolvedTensorNames ?? []).Select(x => new TensorGroupingAuditIssue
+            {
+                TensorName = x,
+                IssueKind = "IllegalUnresolvedTensor"
+            }).ToList(),
+            BaseQuantExceptions = prepared.BaseQuantExceptionRows ?? []
+        };
 
-    if (audit.HasFatalIssues || verification.HasFatalIssues)
-    {
-        var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+        if (audit.HasFatalIssues || verification.HasFatalIssues)
+        {
+            var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+                baselineName: quant.BaseQuant.Names[0],
+                schemeName: tensorScheme.Names[0],
+                sourceKind: quant.BaseQuant.SourceKind.ToString(),
+                sourceRepository: quant.BaseQuant.SourceRepository,
+                sourceFileName: quant.BaseQuant.SourceFileName,
+                truthByTensor: prepared.TruthByTensor,
+                audit: audit,
+                verification: verification,
+                ct: ct);
+
+            AnsiConsole.MarkupLine(
+                $"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+            throw new InvalidOperationException(
+                $"Strict tensor-group learning validation failed for external baseline '{quant.BaseQuant.Names[0]}' " +
+                $"from '{quant.BaseQuant.SourceRepository}/{quant.BaseQuant.SourceFileName}'. " +
+                $"Prepared external baseline learning truth was invalid. No learned tensor mappings were persisted. " +
+                $"Diagnostic log: {diagnosticPath}");
+        }
+
+        await using var db = new MagicQuantContext();
+
+        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
+        if (scopedAiModelHashId == null)
+            throw new InvalidOperationException(
+                "Unable to persist learned mappings because scoped AiModelHash row was not found.");
+
+        var combo = await db.TensorCombos
+            .AsNoTracking()
+            .FirstAsync(x => x.BaseQuant == quant.BaseQuant.UniqueId &&
+                             x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
+                             x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 &&
+                             x.MoeRouter == 0, ct);
+
+        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var imatrixDefinitionId =
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId,
+                createIfMissing: false, ct);
+
+        var benchmarkId = await db.AiBenchmarks
+            .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId &&
+                        x.TensorComboId == combo.Id)
+            .OrderByDescending(x => x.Id)
+            .Select(x => (Guid?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (!benchmarkId.HasValue)
+            throw new InvalidOperationException(
+                $"Unable to persist learned mappings because no AiBenchmark exists for rebuilt baseline '{quant.BaseQuant.Names[0]}'.");
+
+        var rows = prepared.TruthByTensor
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .Select(kv =>
+            {
+                var match = prepared.GroupedByTensor[kv.Key];
+
+                return new LearnedBaselineTensorQuant
+                {
+                    Id = Guid.NewGuid(),
+                    AiBenchmarkId = benchmarkId.Value,
+                    AiModelHashId = scopedAiModelHashId.Value,
+                    BaselineQuantId = quant.BaseQuant.UniqueId,
+                    TensorWeightSchemeId = tensorScheme.UniqueId,
+                    TensorGroupId = match.PrimaryGroup?.UniqueId ?? UnknownTensorGroupId,
+                    BaselineCanonicalKey = quant.BaseQuant.CanonicalKey,
+                    BaselineSourceKind = quant.BaseQuant.SourceKind,
+                    BaselineSourceRepository = quant.BaseQuant.SourceRepository,
+                    BaselineSourceFileName = quant.BaseQuant.SourceFileName,
+                    TensorName = kv.Key,
+                    FinalQuantType = kv.Value.FinalQuantType
+                };
+            })
+            .ToList();
+
+        if (rows.Count == 0)
+            throw new InvalidOperationException(
+                $"Prepared learning truth for baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
+
+        await db.LearnedBaselineTensorQuants
+            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
+                        x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
+                        x.TensorWeightSchemeId == tensorScheme.UniqueId)
+            .ExecuteDeleteAsync(ct);
+
+        db.LearnedBaselineTensorQuants.AddRange(rows);
+        await db.SaveChangesAsync(ct);
+
+        await WriteLearningDiagnosticArtifactAsync(
             baselineName: quant.BaseQuant.Names[0],
             schemeName: tensorScheme.Names[0],
-            sourceKind: quant.BaseQuant.SourceKind.ToString(),
-            sourceRepository: quant.BaseQuant.SourceRepository,
-            sourceFileName: quant.BaseQuant.SourceFileName,
             truthByTensor: prepared.TruthByTensor,
-            audit: audit,
-            verification: verification,
-            ct: ct);
+            grouped: prepared.GroupedByTensor,
+            allTensorNamesInModel: prepared.AllTensorNamesInDownloadedArtifact ?? prepared.TruthByTensor.Keys.ToList(),
+            ambiguous: audit.Ambiguous,
+            unresolved: prepared.UnresolvedTensorNames ?? new List<string>());
 
-        AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
-        throw new InvalidOperationException(
-            $"Strict tensor-group learning validation failed for external baseline '{quant.BaseQuant.Names[0]}' " +
-            $"from '{quant.BaseQuant.SourceRepository}/{quant.BaseQuant.SourceFileName}'. " +
-            $"Prepared external baseline learning truth was invalid. No learned tensor mappings were persisted. " +
-            $"Diagnostic log: {diagnosticPath}");
+        AnsiConsole.MarkupLine(
+            $"[green]Persisted rebuilt custom-baseline learning truth:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
     }
 
-    await using var db = new MagicQuantContext();
+    private async Task CleanupExternalBaselineDownloadArtifactsAsync(string downloadedExternalBaselinePath)
+    {
+        if (string.IsNullOrWhiteSpace(downloadedExternalBaselinePath))
+            return;
 
-    var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
-    if (scopedAiModelHashId == null)
-        throw new InvalidOperationException("Unable to persist learned mappings because scoped AiModelHash row was not found.");
-
-    var combo = await db.TensorCombos
-        .AsNoTracking()
-        .FirstAsync(x => x.BaseQuant == quant.BaseQuant.UniqueId &&
-                         x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
-                         x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 && x.MoeRouter == 0, ct);
-
-    var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
-    var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId, createIfMissing: false, ct);
-
-    var benchmarkId = await db.AiBenchmarks
-        .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
-        .OrderByDescending(x => x.Id)
-        .Select(x => (Guid?)x.Id)
-        .FirstOrDefaultAsync(ct);
-
-    if (!benchmarkId.HasValue)
-        throw new InvalidOperationException($"Unable to persist learned mappings because no AiBenchmark exists for rebuilt baseline '{quant.BaseQuant.Names[0]}'.");
-
-    var rows = prepared.TruthByTensor
-        .OrderBy(x => x.Key, StringComparer.Ordinal)
-        .Select(kv =>
-        {
-            var match = prepared.GroupedByTensor[kv.Key];
-
-            return new LearnedBaselineTensorQuant
-            {
-                Id = Guid.NewGuid(),
-                AiBenchmarkId = benchmarkId.Value,
-                AiModelHashId = scopedAiModelHashId.Value,
-                BaselineQuantId = quant.BaseQuant.UniqueId,
-                TensorWeightSchemeId = tensorScheme.UniqueId,
-                TensorGroupId = match.PrimaryGroup?.UniqueId ?? UnknownTensorGroupId,
-                BaselineCanonicalKey = quant.BaseQuant.CanonicalKey,
-                BaselineSourceKind = quant.BaseQuant.SourceKind,
-                BaselineSourceRepository = quant.BaseQuant.SourceRepository,
-                BaselineSourceFileName = quant.BaseQuant.SourceFileName,
-                TensorName = kv.Key,
-                FinalQuantType = kv.Value.FinalQuantType
-            };
-        })
-        .ToList();
-
-    if (rows.Count == 0)
-        throw new InvalidOperationException($"Prepared learning truth for baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
-
-    await db.LearnedBaselineTensorQuants
-        .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
-                    x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
-                    x.TensorWeightSchemeId == tensorScheme.UniqueId)
-        .ExecuteDeleteAsync(ct);
-
-    db.LearnedBaselineTensorQuants.AddRange(rows);
-    await db.SaveChangesAsync(ct);
-
-    await WriteLearningDiagnosticArtifactAsync(
-        baselineName: quant.BaseQuant.Names[0],
-        schemeName: tensorScheme.Names[0],
-        truthByTensor: prepared.TruthByTensor,
-        grouped: prepared.GroupedByTensor,
-        allTensorNamesInModel: prepared.AllTensorNamesInDownloadedArtifact ?? prepared.TruthByTensor.Keys.ToList(),
-        ambiguous: audit.Ambiguous,
-        unresolved: prepared.UnresolvedTensorNames ?? new List<string>());
-
-    AnsiConsole.MarkupLine($"[green]Persisted rebuilt custom-baseline learning truth:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
-}
-
-private async Task CleanupExternalBaselineDownloadArtifactsAsync(string downloadedExternalBaselinePath)
-{
-    if (string.IsNullOrWhiteSpace(downloadedExternalBaselinePath))
-        return;
-
-    await HardDeleteHelper.DeleteFileIfExistsAsync(downloadedExternalBaselinePath);
-}
+        await HardDeleteHelper.DeleteFileIfExistsAsync(downloadedExternalBaselinePath);
+    }
 
 // ----------------------------------------------------------------
 // Benchmark/logit helpers
@@ -844,7 +873,9 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         if (exactAiModelHashId == null)
             return false;
 
-        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value, createIfMissing: false, ct);
+        var imatrixDefinitionId =
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value,
+                createIfMissing: false, ct);
 
         var bench = await db.AiBenchmarks
             .AsNoTracking()
@@ -883,7 +914,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         return (TensorConfig)quant;
     }
 
-    private static async Task<uint?> ResolveCurrentScopedAiModelHashIdOrNullAsync(MagicQuantContext db, CancellationToken ct)
+    private static async Task<uint?> ResolveCurrentScopedAiModelHashIdOrNullAsync(MagicQuantContext db,
+        CancellationToken ct)
     {
         return await ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db, ct);
     }
@@ -893,7 +925,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         return await ArchitectureFamilyService.ResolveScopedAiModelHashIdAsync(db, ct);
     }
 
-    private static async Task<uint?> ResolveCurrentExactAiModelHashIdOrNullAsync(MagicQuantContext db, CancellationToken ct)
+    private static async Task<uint?> ResolveCurrentExactAiModelHashIdOrNullAsync(MagicQuantContext db,
+        CancellationToken ct)
     {
         return await ArchitectureFamilyService.ResolveExactCurrentAiModelHashIdOrNullAsync(db, ct);
     }
@@ -956,11 +989,14 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             await db.SaveChangesAsync(ct);
         }
 
-        imatrixDefinitionId ??= await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, persistenceAiModelHashId, createIfMissing: true, ct);
+        imatrixDefinitionId ??=
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, persistenceAiModelHashId,
+                createIfMissing: true, ct);
         await ImatrixIdentityService.ValidateOwnershipAsync(db, persistenceAiModelHashId, imatrixDefinitionId, ct);
 
         Guid? aiBenchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == persistenceAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == tensorCombo.Id)
+            .Where(x => x.AiModelHashId == persistenceAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId &&
+                        x.TensorComboId == tensorCombo.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
@@ -1130,13 +1166,14 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         CancellationToken ct = default)
     {
         if (tensorTypes == null || tensorTypes.Count == 0)
-            throw new ArgumentException("A clone tensor map must contain at least one tensor entry.", nameof(tensorTypes));
+            throw new ArgumentException("A clone tensor map must contain at least one tensor entry.",
+                nameof(tensorTypes));
 
         if (string.IsNullOrWhiteSpace(outputPath))
             throw new InvalidOperationException("Export output path is required.");
 
         var baseQuant = BaselineQuants.ResolveBuiltInStandardBaseline(baseQuantName)
-                       ?? BaselineQuants.Q8_0;
+                        ?? BaselineQuants.Q8_0;
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
@@ -1343,7 +1380,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             .Take(20)
             .ToList();
 
-        if (missingInManifest.Count > 0 || unexpectedInManifest.Count > 0 || inputTensorMetadata.TensorNames.Count != tensorTypes.Count)
+        if (missingInManifest.Count > 0 || unexpectedInManifest.Count > 0 ||
+            inputTensorMetadata.TensorNames.Count != tensorTypes.Count)
         {
             throw new InvalidOperationException(
                 $"Clone tensor manifest does not exactly match this model architecture. " +
@@ -1360,7 +1398,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         {
             string imatrixPath = _imatrixService.GetCanonicalImatrixPath();
             if (!File.Exists(imatrixPath))
-                throw new InvalidOperationException($"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
+                throw new InvalidOperationException(
+                    $"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
 
             args.Add($"--imatrix \"{imatrixPath}\"");
         }
@@ -1375,7 +1414,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "llama-quantize.exe" : "llama-quantize");
 
         string quantizeLogPath = outputFile + ".quantize.log";
-        AnsiConsole.MarkupLine($"[cyan]Quantizing clone artifact:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
+        AnsiConsole.MarkupLine(
+            $"[cyan]Quantizing clone artifact:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
 
         var result = await RunLoggedProcessAsync(new ProcessStartInfo
         {
@@ -1406,7 +1446,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         };
     }
 
-    private async Task<QuantizationExecutionReport> RunLlamaQuantizeAsync(string inputFile, string outputFile, HybridQuant quant, IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
+    private async Task<QuantizationExecutionReport> RunLlamaQuantizeAsync(string inputFile, string outputFile,
+        HybridQuant quant, IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
     {
         if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
             throw new FileNotFoundException($"Input GGUF not found: {inputFile}");
@@ -1428,7 +1469,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
 
         var inputTensorMetadata = await ReadTensorMetadataFromGgufAsync(inputFile, outputFile);
-        var requestedOverrides = BuildRequestedTensorOverrides(quant, inputTensorMetadata.TensorNames, temporaryCarrierOverrides);
+        var requestedOverrides =
+            BuildRequestedTensorOverrides(quant, inputTensorMetadata.TensorNames, temporaryCarrierOverrides);
         var concreteOverrides = ResolveConcreteTensorOverrides(
             allTensorNames: inputTensorMetadata.TensorNames,
             requestedOverrides: requestedOverrides);
@@ -1471,7 +1513,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         {
             string imatrixPath = _imatrixService.GetCanonicalImatrixPath();
             if (!File.Exists(imatrixPath))
-                throw new InvalidOperationException($"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
+                throw new InvalidOperationException(
+                    $"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
 
             args.Add($"--imatrix \"{imatrixPath}\"");
         }
@@ -1495,7 +1538,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             Arguments = arguments
         };
 
-        AnsiConsole.MarkupLine($"[cyan]Quantizing:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
+        AnsiConsole.MarkupLine(
+            $"[cyan]Quantizing:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
         var result = await RunLoggedProcessAsync(psi, quantizeLogPath);
 
         if (result.ExitCode != 0)
@@ -1545,9 +1589,9 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             return quant;
 
         var standardFamily = BaselineQuants.ResolveBuiltInStandardBaseline(quant.BaseQuant.QuantizeBaseArgumentName)
-            ?? BaselineQuants.ResolveBuiltInStandardBaseline(quant.BaseQuant.Names[0])
-            ?? throw new InvalidOperationException(
-                $"Could not resolve a built-in carrier baseline for external baseline '{quant.BaseQuant.Names[0]}' using quantize base name '{quant.BaseQuant.QuantizeBaseArgumentName}'.");
+                             ?? BaselineQuants.ResolveBuiltInStandardBaseline(quant.BaseQuant.Names[0])
+                             ?? throw new InvalidOperationException(
+                                 $"Could not resolve a built-in carrier baseline for external baseline '{quant.BaseQuant.Names[0]}' using quantize base name '{quant.BaseQuant.QuantizeBaseArgumentName}'.");
 
         var clone = quant.Clone();
         clone.BaseQuant = standardFamily;
@@ -1573,7 +1617,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     {
         await using var db = new MagicQuantContext();
         int removed = await db.LearnedBaselineTensorQuants.ExecuteDeleteAsync(ct);
-        AnsiConsole.MarkupLine($"[yellow]Relearn requested:[/] removed [red]{removed:N0}[/] learned baseline tensor mapping rows.");
+        AnsiConsole.MarkupLine(
+            $"[yellow]Relearn requested:[/] removed [red]{removed:N0}[/] learned baseline tensor mapping rows.");
     }
 
     public async Task InvalidateBaselineArtifactsAsync(CancellationToken ct = default)
@@ -1601,7 +1646,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         if (Directory.Exists(debugDir))
             Directory.Delete(debugDir, recursive: true);
 
-        if (!string.IsNullOrWhiteSpace(Cache.ExternalBaselineCacheDirectory) && Directory.Exists(Cache.ExternalBaselineCacheDirectory))
+        if (!string.IsNullOrWhiteSpace(Cache.ExternalBaselineCacheDirectory) &&
+            Directory.Exists(Cache.ExternalBaselineCacheDirectory))
             Directory.Delete(Cache.ExternalBaselineCacheDirectory, recursive: true);
 
         string nativeType = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
@@ -1615,7 +1661,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         if (Directory.Exists(nativeBenchDir))
             Directory.Delete(nativeBenchDir, recursive: true);
 
-        AnsiConsole.MarkupLine("[yellow]Relearn requested:[/] baseline artifacts, benchmark caches, and learning diagnostics were invalidated.");
+        AnsiConsole.MarkupLine(
+            "[yellow]Relearn requested:[/] baseline artifacts, benchmark caches, and learning diagnostics were invalidated.");
     }
 
     public async Task<bool> HasNativeSourceLearnedTruthAsync(CancellationToken ct = default)
@@ -1640,152 +1687,156 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     }
 
     public async Task LearnNativeSourceTruthAsync(
-    string nativeGgufPath,
-    CancellationToken ct = default)
-{
-    if (string.IsNullOrWhiteSpace(nativeGgufPath) || !File.Exists(nativeGgufPath))
-        throw new FileNotFoundException($"Native GGUF path not found for learning: {nativeGgufPath}");
-
-    var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
-
-    if (!Cache.ForceRelearnBaselineTensorMappings)
+        string nativeGgufPath,
+        CancellationToken ct = default)
     {
-        await using var precheckDb = new MagicQuantContext();
-        var precheckScopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(precheckDb, ct);
+        if (string.IsNullOrWhiteSpace(nativeGgufPath) || !File.Exists(nativeGgufPath))
+            throw new FileNotFoundException($"Native GGUF path not found for learning: {nativeGgufPath}");
 
-        if (precheckScopedAiModelHashId != null)
+        var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
+        if (!Cache.ForceRelearnBaselineTensorMappings)
         {
-            int existingRows = await precheckDb.LearnedBaselineTensorQuants
-                .AsNoTracking()
-                .Where(x => x.AiModelHashId == precheckScopedAiModelHashId.Value &&
-                            x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
-                            x.TensorWeightSchemeId == nativeScheme.UniqueId)
-                .CountAsync(ct);
+            await using var precheckDb = new MagicQuantContext();
+            var precheckScopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(precheckDb, ct);
 
-            if (existingRows > 0)
+            if (precheckScopedAiModelHashId != null)
             {
-                AnsiConsole.MarkupLine(
-                    $"[grey]Native-source learned truth already exists:[/] [cyan]{existingRows:N0}[/] row(s) for [yellow]{Markup.Escape(nativeScheme.Names[0])}[/]. Skipping relearn. Use [green]--relearn-baseline-mappings[/] to regenerate.");
-                return;
+                int existingRows = await precheckDb.LearnedBaselineTensorQuants
+                    .AsNoTracking()
+                    .Where(x => x.AiModelHashId == precheckScopedAiModelHashId.Value &&
+                                x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                                x.TensorWeightSchemeId == nativeScheme.UniqueId)
+                    .CountAsync(ct);
+
+                if (existingRows > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[grey]Native-source learned truth already exists:[/] [cyan]{existingRows:N0}[/] row(s) for [yellow]{Markup.Escape(nativeScheme.Names[0])}[/]. Skipping relearn. Use [green]--relearn-baseline-mappings[/] to regenerate.");
+                    return;
+                }
             }
         }
-    }
 
-    var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, nativeGgufPath);
-    var ggufTruth = metadata.TensorTypes
-        .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
+        var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, nativeGgufPath);
+        var ggufTruth = metadata.TensorTypes
+            .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
 
-    var verification = BuildTruthMapWithVerification(
-        logTruth: new Dictionary<string, string>(StringComparer.Ordinal),
-        ggufTruth: ggufTruth,
-        baselineName: "NATIVE");
-    var truth = verification.TruthByTensor;
+        var verification = BuildTruthMapWithVerification(
+            logTruth: new Dictionary<string, string>(StringComparer.Ordinal),
+            ggufTruth: ggufTruth,
+            baselineName: "NATIVE");
+        var truth = verification.TruthByTensor;
 
-    var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
+        var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
 
-    if (audit.HasFatalIssues || verification.HasFatalIssues)
-    {
-        var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+        if (audit.HasFatalIssues || verification.HasFatalIssues)
+        {
+            var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+                baselineName: $"NATIVE_{nativeScheme.Names[0]}",
+                schemeName: nativeScheme.Names[0],
+                sourceKind: "NativeSource",
+                sourceRepository: null,
+                sourceFileName: Path.GetFileName(nativeGgufPath),
+                truthByTensor: truth,
+                audit: audit,
+                verification: verification,
+                ct: ct);
+
+            AnsiConsole.MarkupLine(
+                $"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+            throw new InvalidOperationException(
+                $"Strict tensor-group learning validation failed for baseline 'NATIVE_{nativeScheme.Names[0]}'. " +
+                $"Ambiguous={audit.Ambiguous.Count}, IllegalUnresolved={audit.IllegalUnresolved.Count}, " +
+                $"AllowedBaseQuantFallback={audit.BaseQuantExceptions.Count}. " +
+                $"No learned tensor mappings were persisted. Diagnostic log: {diagnosticPath}");
+        }
+
+        await using var db = new MagicQuantContext();
+        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct)
+                                  ?? throw new InvalidOperationException(
+                                      "Could not persist native-source learning because scoped AiModelHash row was missing.");
+
+        var combo = await db.TensorCombos
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.BaseQuant == BaselineQuants.NativeSourceUniqueId &&
+                                      x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
+                                      x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 &&
+                                      x.MoeExperts == 0 && x.MoeRouter == 0, ct);
+
+        if (combo == null)
+            throw new InvalidOperationException(
+                "Native-source benchmark TensorCombo is missing; benchmark base model first.");
+
+        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
+            db,
+            exactAiModelHashId,
+            createIfMissing: false,
+            ct);
+
+        var benchmarkId = await db.AiBenchmarks
+            .Where(x => x.AiModelHashId == exactAiModelHashId &&
+                        x.ImatrixDefinitionId == imatrixDefinitionId &&
+                        x.TensorComboId == combo.Id)
+            .OrderByDescending(x => x.Id)
+            .Select(x => (Guid?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (!benchmarkId.HasValue)
+            throw new InvalidOperationException(
+                "Native-source benchmark row is missing; benchmark base model before native-source learning.");
+
+        var rows = truth
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .Select(x =>
+            {
+                var primaryGroup = audit.GroupedByTensor[x.Key].PrimaryGroup;
+
+                return new LearnedBaselineTensorQuant
+                {
+                    Id = Guid.NewGuid(),
+                    AiBenchmarkId = benchmarkId.Value,
+                    AiModelHashId = scopedAiModelHashId,
+                    BaselineQuantId = BaselineQuants.NativeSourceUniqueId,
+                    TensorWeightSchemeId = nativeScheme.UniqueId,
+                    TensorGroupId = primaryGroup?.UniqueId ?? UnknownTensorGroupId,
+                    TensorName = x.Key,
+                    FinalQuantType = x.Value.FinalQuantType
+                };
+            })
+            .ToList();
+
+        if (rows.Count == 0)
+            throw new InvalidOperationException("Native-source learning produced no persistable rows.");
+
+        await db.LearnedBaselineTensorQuants
+            .Where(x => x.AiModelHashId == scopedAiModelHashId &&
+                        x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+                        x.TensorWeightSchemeId == nativeScheme.UniqueId)
+            .ExecuteDeleteAsync(ct);
+
+        db.LearnedBaselineTensorQuants.AddRange(rows);
+        await db.SaveChangesAsync(ct);
+
+        await WriteLearningDiagnosticArtifactAsync(
             baselineName: $"NATIVE_{nativeScheme.Names[0]}",
             schemeName: nativeScheme.Names[0],
-            sourceKind: "NativeSource",
-            sourceRepository: null,
-            sourceFileName: Path.GetFileName(nativeGgufPath),
             truthByTensor: truth,
-            audit: audit,
-            verification: verification,
-            ct: ct);
+            grouped: audit.GroupedByTensor,
+            allTensorNamesInModel: metadata.TensorNames,
+            ambiguous: audit.Ambiguous,
+            unresolved: audit.IllegalUnresolved.Select(x => x.TensorName).ToList());
 
-        AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
-        throw new InvalidOperationException(
-            $"Strict tensor-group learning validation failed for baseline 'NATIVE_{nativeScheme.Names[0]}'. " +
-            $"Ambiguous={audit.Ambiguous.Count}, IllegalUnresolved={audit.IllegalUnresolved.Count}, " +
-            $"AllowedBaseQuantFallback={audit.BaseQuantExceptions.Count}. " +
-            $"No learned tensor mappings were persisted. Diagnostic log: {diagnosticPath}");
+        var sourcePrecision = nativeScheme.Names[0];
+        var distribution = rows.GroupBy(x => x.FinalQuantType)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Key}:{g.Count()}")
+            .ToList();
+
+        AnsiConsole.MarkupLine(
+            $"[green]Native-source learned truth:[/] precision={Markup.Escape(sourcePrecision)}, tensors={rows.Count}, unresolved={audit.IllegalUnresolved.Count}, ambiguous={audit.Ambiguous.Count}, baseFallback={audit.BaseQuantExceptions.Count}, dist={Markup.Escape($"[{string.Join(", ", distribution)}]")}");
     }
-
-    await using var db = new MagicQuantContext();
-    var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct)
-        ?? throw new InvalidOperationException("Could not persist native-source learning because scoped AiModelHash row was missing.");
-
-    var combo = await db.TensorCombos
-        .AsNoTracking()
-        .FirstOrDefaultAsync(x => x.BaseQuant == BaselineQuants.NativeSourceUniqueId &&
-                                  x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
-                                  x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 &&
-                                  x.MoeExperts == 0 && x.MoeRouter == 0, ct);
-
-    if (combo == null)
-        throw new InvalidOperationException("Native-source benchmark TensorCombo is missing; benchmark base model first.");
-
-    var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
-    var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
-        db,
-        exactAiModelHashId,
-        createIfMissing: false,
-        ct);
-
-    var benchmarkId = await db.AiBenchmarks
-        .Where(x => x.AiModelHashId == exactAiModelHashId &&
-                    x.ImatrixDefinitionId == imatrixDefinitionId &&
-                    x.TensorComboId == combo.Id)
-        .OrderByDescending(x => x.Id)
-        .Select(x => (Guid?)x.Id)
-        .FirstOrDefaultAsync(ct);
-
-    if (!benchmarkId.HasValue)
-        throw new InvalidOperationException("Native-source benchmark row is missing; benchmark base model before native-source learning.");
-
-    var rows = truth
-        .OrderBy(x => x.Key, StringComparer.Ordinal)
-        .Select(x =>
-        {
-            var primaryGroup = audit.GroupedByTensor[x.Key].PrimaryGroup;
-
-            return new LearnedBaselineTensorQuant
-            {
-                Id = Guid.NewGuid(),
-                AiBenchmarkId = benchmarkId.Value,
-                AiModelHashId = scopedAiModelHashId,
-                BaselineQuantId = BaselineQuants.NativeSourceUniqueId,
-                TensorWeightSchemeId = nativeScheme.UniqueId,
-                TensorGroupId = primaryGroup?.UniqueId ?? UnknownTensorGroupId,
-                TensorName = x.Key,
-                FinalQuantType = x.Value.FinalQuantType
-            };
-        })
-        .ToList();
-
-    if (rows.Count == 0)
-        throw new InvalidOperationException("Native-source learning produced no persistable rows.");
-
-    await db.LearnedBaselineTensorQuants
-        .Where(x => x.AiModelHashId == scopedAiModelHashId &&
-                    x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
-                    x.TensorWeightSchemeId == nativeScheme.UniqueId)
-        .ExecuteDeleteAsync(ct);
-
-    db.LearnedBaselineTensorQuants.AddRange(rows);
-    await db.SaveChangesAsync(ct);
-
-    await WriteLearningDiagnosticArtifactAsync(
-        baselineName: $"NATIVE_{nativeScheme.Names[0]}",
-        schemeName: nativeScheme.Names[0],
-        truthByTensor: truth,
-        grouped: audit.GroupedByTensor,
-        allTensorNamesInModel: metadata.TensorNames,
-        ambiguous: audit.Ambiguous,
-        unresolved: audit.IllegalUnresolved.Select(x => x.TensorName).ToList());
-
-    var sourcePrecision = nativeScheme.Names[0];
-    var distribution = rows.GroupBy(x => x.FinalQuantType)
-        .OrderByDescending(g => g.Count())
-        .Select(g => $"{g.Key}:{g.Count()}")
-        .ToList();
-
-    AnsiConsole.MarkupLine(
-        $"[green]Native-source learned truth:[/] precision={Markup.Escape(sourcePrecision)}, tensors={rows.Count}, unresolved={audit.IllegalUnresolved.Count}, ambiguous={audit.Ambiguous.Count}, baseFallback={audit.BaseQuantExceptions.Count}, dist={Markup.Escape($"[{string.Join(", ", distribution)}]")}");
-}
 
     private static bool IsLearnableBaselineRun(HybridQuant quant)
     {
@@ -1826,7 +1877,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         var verification = BuildTruthMapWithVerification(parsed, ggufTruth, quant.BaseQuant.Names[0]);
         var truth = verification.TruthByTensor;
         if (truth.Count == 0)
-            throw new InvalidOperationException($"No verified tensor truth entries were available for baseline '{quant.BaseQuant.Names[0]}'.");
+            throw new InvalidOperationException(
+                $"No verified tensor truth entries were available for baseline '{quant.BaseQuant.Names[0]}'.");
 
         var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
         if (audit.HasFatalIssues || verification.HasFatalIssues)
@@ -1842,7 +1894,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                 verification: verification,
                 ct: ct);
 
-            AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+            AnsiConsole.MarkupLine(
+                $"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
             throw new InvalidOperationException(
                 $"Strict tensor-group learning validation failed for baseline '{quant.BaseQuant.Names[0]}'. " +
                 $"Ambiguous={audit.Ambiguous.Count}, " +
@@ -1856,25 +1909,31 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
 
         var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
         if (scopedAiModelHashId == null)
-            throw new InvalidOperationException("Unable to persist learned mappings because scoped AiModelHash row was not found.");
+            throw new InvalidOperationException(
+                "Unable to persist learned mappings because scoped AiModelHash row was not found.");
 
         var combo = await db.TensorCombos
             .AsNoTracking()
             .FirstAsync(x => x.BaseQuant == quant.BaseQuant.UniqueId &&
                              x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
-                             x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 && x.MoeRouter == 0, ct);
+                             x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 &&
+                             x.MoeRouter == 0, ct);
 
         var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
-        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId, createIfMissing: false, ct);
+        var imatrixDefinitionId =
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId,
+                createIfMissing: false, ct);
 
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
+            .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId &&
+                        x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
         if (!benchmarkId.HasValue)
-            throw new InvalidOperationException($"Unable to persist learned mappings because no AiBenchmark exists for baseline '{quant.BaseQuant.Names[0]}'.");
+            throw new InvalidOperationException(
+                $"Unable to persist learned mappings because no AiBenchmark exists for baseline '{quant.BaseQuant.Names[0]}'.");
 
         var rows = truth
             .OrderBy(x => x.Key, StringComparer.Ordinal)
@@ -1901,7 +1960,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             .ToList();
 
         if (rows.Count == 0)
-            throw new InvalidOperationException($"Learning baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
+            throw new InvalidOperationException(
+                $"Learning baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
 
         await db.LearnedBaselineTensorQuants
             .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
@@ -1929,7 +1989,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     {
         if (!File.Exists(logPath))
         {
-            AnsiConsole.MarkupLine($"[red]WARNING:[/] quantization log does not exist, cannot learn tensor mapping: {Markup.Escape(logPath)}");
+            AnsiConsole.MarkupLine(
+                $"[red]WARNING:[/] quantization log does not exist, cannot learn tensor mapping: {Markup.Escape(logPath)}");
             return new Dictionary<string, string>(StringComparer.Ordinal);
         }
 
@@ -1973,8 +2034,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
 
         foreach (var name in allNames)
         {
-            bool inLog = logTruth.TryGetValue(name, out var logType);
-            bool inGguf = ggufTruth.TryGetValue(name, out var ggufType);
+            var inLog = logTruth.TryGetValue(name, out var logType);
+            var inGguf = ggufTruth.TryGetValue(name, out var ggufType);
 
             if (inLog && inGguf)
             {
@@ -1984,24 +2045,18 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                 }
                 else
                 {
+                    // GGUF is the final artifact truth. The log is secondary evidence only.
+                    // A log/GGUF disagreement is useful diagnostic information, but it is
+                    // not fatal as long as GGUF truth exists.
                     result[name] = new LearnedTensorTruth(name, ggufType!, LearningSource.BothWithMismatch);
 
-                    if (IsHighSeverityMismatch(logType!, ggufType!))
-                        hardMismatches.Add(new TensorTruthMismatch
-                        {
-                            TensorName = name,
-                            LogQuantType = logType!,
-                            GgufQuantType = ggufType!,
-                            IsHighSeverity = true
-                        });
-                    else
-                        softMismatches.Add(new TensorTruthMismatch
-                        {
-                            TensorName = name,
-                            LogQuantType = logType!,
-                            GgufQuantType = ggufType!,
-                            IsHighSeverity = false
-                        });
+                    softMismatches.Add(new TensorTruthMismatch
+                    {
+                        TensorName = name,
+                        LogQuantType = logType!,
+                        GgufQuantType = ggufType!,
+                        IsHighSeverity = IsHighSeverityMismatch(logType!, ggufType!)
+                    });
                 }
             }
             else if (inGguf)
@@ -2010,35 +2065,47 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             }
             else if (inLog)
             {
+                // Log-only entries are not reliable enough to learn from because there is no
+                // final GGUF artifact truth confirming them.
                 logOnly.Add($"{name}:{logType}");
             }
         }
 
-        if (hardMismatches.Count > 0)
-        {
-            AnsiConsole.MarkupLine(
-                $"[red]STRICT VALIDATION:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] has {hardMismatches.Count} high-severity GGUF/log mismatches. A failure diagnostic will be written and learning will stop.");
-            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", hardMismatches.Take(6).Select(x => $"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}")))}[/]");
-        }
-
         if (softMismatches.Count > 0)
         {
+            var highSeverityCount = softMismatches.Count(x => x.IsHighSeverity);
+            var lowSeverityCount = softMismatches.Count - highSeverityCount;
+
+            var severitySummary = highSeverityCount > 0 && lowSeverityCount > 0
+                ? $"{highSeverityCount} high-severity, {lowSeverityCount} low-severity"
+                : highSeverityCount > 0
+                    ? $"{highSeverityCount} high-severity"
+                    : $"{lowSeverityCount} low-severity";
+
             AnsiConsole.MarkupLine(
-                $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {softMismatches.Count} GGUF/log mismatches; GGUF truth was used.");
-            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", softMismatches.Take(6).Select(x => $"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}")))}[/]");
+                $"[yellow]GGUF/log mismatch:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {softMismatches.Count} tensor type disagreement(s) ({severitySummary}). GGUF artifact truth was used.");
+
+            AnsiConsole.MarkupLine(
+                $"[grey]Examples: {Markup.Escape(string.Join(" | ", softMismatches.Take(6).Select(x => $"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}")))}[/]");
         }
 
         if (logOnly.Count > 0)
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] produced {logOnly.Count} log-only tensor mapping(s) with no GGUF truth. They were ignored.");
-            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", logOnly.Take(6)))}[/]");
+                $"[yellow]GGUF/log mismatch:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] produced {logOnly.Count} log-only tensor mapping(s) with no GGUF artifact truth. They were ignored.");
+
+            AnsiConsole.MarkupLine(
+                $"[grey]Examples: {Markup.Escape(string.Join(" | ", logOnly.Take(6)))}[/]");
         }
 
         return new TensorTruthVerificationResult
         {
             TruthByTensor = result,
+
+            // Deliberately empty for log-vs-GGUF disagreements where GGUF truth exists.
+            // GGUF wins, so these are diagnostics, not fatal validation failures.
             HardMismatches = hardMismatches,
+
             SoftMismatches = softMismatches,
             LogOnly = logOnly
         };
@@ -2097,7 +2164,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                 LearnedTensorCount = learned.Count,
                 UnmatchedExpected = unmatched,
                 UnexpectedLearned = unexpected,
-                Ambiguous = ambiguous.Where(x => x.MatchedGroups.Contains(group.Name)).Select(x => x.TensorName).Take(20).ToList(),
+                Ambiguous = ambiguous.Where(x => x.MatchedGroups.Contains(group.Name)).Select(x => x.TensorName)
+                    .Take(20).ToList(),
                 QuantDistribution = distribution,
                 SourceDistribution = sourceCounts
             });
@@ -2142,7 +2210,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         string debugDir = Path.Combine(_benchDir, "_learning_debug");
         Directory.CreateDirectory(debugDir);
         string path = Path.Combine(debugDir, $"{baselineName}_{schemeName}_learned_map.json");
-        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(artifact, new JsonSerializerOptions { WriteIndented = true }));
+        await File.WriteAllTextAsync(path,
+            JsonSerializer.Serialize(artifact, new JsonSerializerOptions { WriteIndented = true }));
 
         AnsiConsole.MarkupLine(
             $"[grey]Learned mapping diagnostic written:[/] {Markup.Escape(path)}");
@@ -2173,216 +2242,226 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     }
 
 
-private List<RequestedTensorOverride> BuildRequestedTensorOverrides(
-    HybridQuant quant,
-    IReadOnlyCollection<string> sourceTensorNames,
-    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
-{
-    var result = new List<RequestedTensorOverride>();
-
-    bool hasTemporaryCarrierOverrides = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0;
-    bool hasExplicitGroupOverrides = quant.Tensors != null && quant.Tensors.Count > 0;
-    bool shouldApplyBaseCarrierBlanket = ShouldApplyLearnedBaseCarrierBlanket(quant, temporaryCarrierOverrides);
-
-    if (!shouldApplyBaseCarrierBlanket)
-        return result;
-
-    var baseScheme = TryResolveBaseTensorScheme(quant.BaseQuant);
-    var blanket = LoadBaseCarrierTensorMappingsOrThrow(
-        quant: quant,
-        temporaryCarrierOverrides: temporaryCarrierOverrides,
-        requireFullCoverage: shouldApplyBaseCarrierBlanket);
-
-    foreach (var kv in blanket.OrderBy(x => x.Key, StringComparer.Ordinal))
+    private List<RequestedTensorOverride> BuildRequestedTensorOverrides(
+        HybridQuant quant,
+        IReadOnlyCollection<string> sourceTensorNames,
+        IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
     {
-        result.Add(new RequestedTensorOverride
+        var result = new List<RequestedTensorOverride>();
+
+        bool hasTemporaryCarrierOverrides = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0;
+        bool hasExplicitGroupOverrides = quant.Tensors != null && quant.Tensors.Count > 0;
+        bool shouldApplyBaseCarrierBlanket = ShouldApplyLearnedBaseCarrierBlanket(quant, temporaryCarrierOverrides);
+
+        if (!shouldApplyBaseCarrierBlanket)
+            return result;
+
+        var baseScheme = TryResolveBaseTensorScheme(quant.BaseQuant);
+        var blanket = LoadBaseCarrierTensorMappingsOrThrow(
+            quant: quant,
+            temporaryCarrierOverrides: temporaryCarrierOverrides,
+            requireFullCoverage: shouldApplyBaseCarrierBlanket);
+
+        foreach (var kv in blanket.OrderBy(x => x.Key, StringComparer.Ordinal))
         {
-            GroupName = "base_carrier",
-            TensorName = kv.Key,
-            SchemeName = kv.Value
-        });
-    }
-
-    if (!hasExplicitGroupOverrides)
-        return result;
-
-    foreach (var hybrid in quant.Tensors)
-    {
-        if (hybrid?.TGroup == null)
-            continue;
-
-        hybrid.ValidateOrThrow();
-
-        if (hybrid.MaterializedTensorScheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
-            continue;
-
-        var expectedForGroup = GetExpectedTensorNamesForGroup(hybrid.TGroup, sourceTensorNames);
-        if (expectedForGroup.Count == 0)
-            continue;
-
-        switch (hybrid.OverrideMode)
-        {
-            case HybridTensorOverrideMode.ExactTensorScheme:
+            result.Add(new RequestedTensorOverride
             {
-                var exactScheme = hybrid.ExactTensorScheme!;
-                if (!quant.BaseQuant.IsExternalRepositoryBaseline && baseScheme != null && exactScheme.UniqueId == baseScheme.UniqueId)
-                    continue;
-
-                string schemeName = ResolveSchemeName(exactScheme);
-                foreach (var tensorName in expectedForGroup.OrderBy(x => x, StringComparer.Ordinal))
-                {
-                    result.Add(new RequestedTensorOverride
-                    {
-                        GroupName = hybrid.TGroup.Name,
-                        TensorName = tensorName,
-                        SchemeName = schemeName
-                    });
-                }
-
-                break;
-            }
-
-            case HybridTensorOverrideMode.LearnedBaselineCandidate:
-            {
-                var sourceBaseline = hybrid.CandidateBaseline!;
-                var learned = TryLoadLearnedTensorMapping(
-                    sourceBaseline: sourceBaseline,
-                    targetGroup: hybrid.TGroup,
-                    preferredSourceScheme: sourceBaseline.DefaultTensorScheme,
-                    allowDominantFallback: false);
-
-                if (learned.Count == 0)
-                    throw new InvalidOperationException($"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Run with --relearn-baseline-mappings to regenerate.");
-
-                var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
-                var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
-                var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
-
-                if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
-                {
-                    var missingText = missingExpected.Count == 0 ? "none" : string.Join(", ", missingExpected.Take(15));
-                    var unexpectedText = unexpectedLearned.Count == 0 ? "none" : string.Join(", ", unexpectedLearned.Take(15));
-                    throw new InvalidOperationException($"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
-                }
-
-                foreach (var kv in learned.OrderBy(x => x.Key, StringComparer.Ordinal))
-                {
-                    result.Add(new RequestedTensorOverride
-                    {
-                        GroupName = hybrid.TGroup.Name,
-                        TensorName = kv.Key,
-                        SchemeName = kv.Value
-                    });
-                }
-
-                break;
-            }
-
-            default:
-                throw new InvalidOperationException($"Hybrid tensor for group '{hybrid.TGroup.Name}' has unsupported override mode '{hybrid.OverrideMode}'.");
+                GroupName = "base_carrier",
+                TensorName = kv.Key,
+                SchemeName = kv.Value
+            });
         }
+
+        if (!hasExplicitGroupOverrides)
+            return result;
+
+        foreach (var hybrid in quant.Tensors)
+        {
+            if (hybrid?.TGroup == null)
+                continue;
+
+            hybrid.ValidateOrThrow();
+
+            if (hybrid.MaterializedTensorScheme.UniqueId == TensorWeightScheme.NULL.UniqueId)
+                continue;
+
+            var expectedForGroup = GetExpectedTensorNamesForGroup(hybrid.TGroup, sourceTensorNames);
+            if (expectedForGroup.Count == 0)
+                continue;
+
+            switch (hybrid.OverrideMode)
+            {
+                case HybridTensorOverrideMode.ExactTensorScheme:
+                {
+                    var exactScheme = hybrid.ExactTensorScheme!;
+                    if (!quant.BaseQuant.IsExternalRepositoryBaseline && baseScheme != null &&
+                        exactScheme.UniqueId == baseScheme.UniqueId)
+                        continue;
+
+                    string schemeName = ResolveSchemeName(exactScheme);
+                    foreach (var tensorName in expectedForGroup.OrderBy(x => x, StringComparer.Ordinal))
+                    {
+                        result.Add(new RequestedTensorOverride
+                        {
+                            GroupName = hybrid.TGroup.Name,
+                            TensorName = tensorName,
+                            SchemeName = schemeName
+                        });
+                    }
+
+                    break;
+                }
+
+                case HybridTensorOverrideMode.LearnedBaselineCandidate:
+                {
+                    var sourceBaseline = hybrid.CandidateBaseline!;
+                    var learned = TryLoadLearnedTensorMapping(
+                        sourceBaseline: sourceBaseline,
+                        targetGroup: hybrid.TGroup,
+                        preferredSourceScheme: sourceBaseline.DefaultTensorScheme,
+                        allowDominantFallback: false);
+
+                    if (learned.Count == 0)
+                        throw new InvalidOperationException(
+                            $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Run with --relearn-baseline-mappings to regenerate.");
+
+                    var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
+                    var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
+                    var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
+
+                    if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
+                    {
+                        var missingText = missingExpected.Count == 0
+                            ? "none"
+                            : string.Join(", ", missingExpected.Take(15));
+                        var unexpectedText = unexpectedLearned.Count == 0
+                            ? "none"
+                            : string.Join(", ", unexpectedLearned.Take(15));
+                        throw new InvalidOperationException(
+                            $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
+                    }
+
+                    foreach (var kv in learned.OrderBy(x => x.Key, StringComparer.Ordinal))
+                    {
+                        result.Add(new RequestedTensorOverride
+                        {
+                            GroupName = hybrid.TGroup.Name,
+                            TensorName = kv.Key,
+                            SchemeName = kv.Value
+                        });
+                    }
+
+                    break;
+                }
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Hybrid tensor for group '{hybrid.TGroup.Name}' has unsupported override mode '{hybrid.OverrideMode}'.");
+            }
+        }
+
+        return result;
     }
 
-    return result;
-}
-
-private bool ShouldApplyLearnedBaseCarrierBlanket(
-    HybridQuant quant,
-    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
-{
-    bool hasTemporaryCarrierOverrides = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0;
-    bool hasExplicitGroupOverrides = quant.Tensors != null && quant.Tensors.Count > 0;
-
-    return hasTemporaryCarrierOverrides ||
-           quant.BaseQuant.IsExternalRepositoryBaseline ||
-           hasExplicitGroupOverrides;
-}
-
-private Dictionary<string, string> LoadBaseCarrierTensorMappingsOrThrow(
-    HybridQuant quant,
-    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides,
-    bool requireFullCoverage)
-{
-    var blanket = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0
-        ? new Dictionary<string, string>(temporaryCarrierOverrides, StringComparer.Ordinal)
-        : TryLoadAllLearnedTensorMappings(
-            canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
-            preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
-            allowDominantFallback: false);
-
-    if (requireFullCoverage && blanket.Count == 0)
+    private bool ShouldApplyLearnedBaseCarrierBlanket(
+        HybridQuant quant,
+        IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
     {
-        throw new InvalidOperationException(
-            $"Missing full learned base-carrier mapping for baseline '{quant.BaseQuant.Names[0]}'. " +
-            "Run with --relearn-baseline-mappings before applying learned tensor configurations.");
+        bool hasTemporaryCarrierOverrides = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0;
+        bool hasExplicitGroupOverrides = quant.Tensors != null && quant.Tensors.Count > 0;
+
+        return hasTemporaryCarrierOverrides ||
+               quant.BaseQuant.IsExternalRepositoryBaseline ||
+               hasExplicitGroupOverrides;
     }
 
-    return blanket;
-}
-private Dictionary<string, string> TryLoadAllLearnedTensorMappings(
-    string canonicalBaselineKey,
-    TensorWeightScheme? preferredSourceScheme = null,
-    bool allowDominantFallback = false)
-{
-    using var db = new MagicQuantContext();
-    var scopedAiModelHashId = ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db).GetAwaiter().GetResult();
-    if (scopedAiModelHashId == null)
-        return new Dictionary<string, string>(StringComparer.Ordinal);
-
-    var allRows = db.LearnedBaselineTensorQuants
-        .AsNoTracking()
-        .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-        .Where(x => x.BaselineCanonicalKey == canonicalBaselineKey)
-        .OrderBy(x => x.TensorName)
-        .ToList();
-
-    if (allRows.Count == 0)
-        return new Dictionary<string, string>(StringComparer.Ordinal);
-
-    var rows = allRows;
-    if (preferredSourceScheme != null)
+    private Dictionary<string, string> LoadBaseCarrierTensorMappingsOrThrow(
+        HybridQuant quant,
+        IReadOnlyDictionary<string, string>? temporaryCarrierOverrides,
+        bool requireFullCoverage)
     {
-        var preferred = allRows.Where(x => x.TensorWeightSchemeId == preferredSourceScheme.UniqueId).ToList();
-        if (preferred.Count > 0)
-            rows = preferred;
-        else if (!allowDominantFallback)
-            return new Dictionary<string, string>(StringComparer.Ordinal);
-    }
+        var blanket = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0
+            ? new Dictionary<string, string>(temporaryCarrierOverrides, StringComparer.Ordinal)
+            : TryLoadAllLearnedTensorMappings(
+                canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                allowDominantFallback: false);
 
-    if (rows.Select(x => x.TensorWeightSchemeId).Distinct().Count() > 1)
-    {
-        if (!allowDominantFallback)
-            return new Dictionary<string, string>(StringComparer.Ordinal);
-
-        var dominantSchemeId = rows.GroupBy(x => x.TensorWeightSchemeId)
-            .OrderByDescending(g => g.Count())
-            .ThenBy(g => g.Key)
-            .Select(g => g.Key)
-            .First();
-        rows = rows.Where(x => x.TensorWeightSchemeId == dominantSchemeId).ToList();
-    }
-
-    var result = new Dictionary<string, string>(StringComparer.Ordinal);
-
-    foreach (var row in rows)
-    {
-        var appliedSchemeName =
-            NativePrecisionNormalization.NormalizeLearnedFinalQuantTypeForApplication(row.FinalQuantType);
-
-        if (string.IsNullOrWhiteSpace(appliedSchemeName))
+        if (requireFullCoverage && blanket.Count == 0)
         {
             throw new InvalidOperationException(
-                $"Learned tensor mapping for tensor '{row.TensorName}' on baseline key '{canonicalBaselineKey}' " +
-                $"returned an empty normalized scheme name. Observed FinalQuantType='{row.FinalQuantType}'.");
+                $"Missing full learned base-carrier mapping for baseline '{quant.BaseQuant.Names[0]}'. " +
+                "Run with --relearn-baseline-mappings before applying learned tensor configurations.");
         }
 
-        result[row.TensorName] = appliedSchemeName;
+        return blanket;
     }
 
-    return result;
-}
+    private Dictionary<string, string> TryLoadAllLearnedTensorMappings(
+        string canonicalBaselineKey,
+        TensorWeightScheme? preferredSourceScheme = null,
+        bool allowDominantFallback = false)
+    {
+        using var db = new MagicQuantContext();
+        var scopedAiModelHashId =
+            ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db).GetAwaiter().GetResult();
+        if (scopedAiModelHashId == null)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
 
-private Dictionary<string, string> TryLoadLearnedTensorMapping(
+        var allRows = db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
+            .Where(x => x.BaselineCanonicalKey == canonicalBaselineKey)
+            .OrderBy(x => x.TensorName)
+            .ToList();
+
+        if (allRows.Count == 0)
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var rows = allRows;
+        if (preferredSourceScheme != null)
+        {
+            var preferred = allRows.Where(x => x.TensorWeightSchemeId == preferredSourceScheme.UniqueId).ToList();
+            if (preferred.Count > 0)
+                rows = preferred;
+            else if (!allowDominantFallback)
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        if (rows.Select(x => x.TensorWeightSchemeId).Distinct().Count() > 1)
+        {
+            if (!allowDominantFallback)
+                return new Dictionary<string, string>(StringComparer.Ordinal);
+
+            var dominantSchemeId = rows.GroupBy(x => x.TensorWeightSchemeId)
+                .OrderByDescending(g => g.Count())
+                .ThenBy(g => g.Key)
+                .Select(g => g.Key)
+                .First();
+            rows = rows.Where(x => x.TensorWeightSchemeId == dominantSchemeId).ToList();
+        }
+
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var row in rows)
+        {
+            var appliedSchemeName =
+                NativePrecisionNormalization.NormalizeLearnedFinalQuantTypeForApplication(row.FinalQuantType);
+
+            if (string.IsNullOrWhiteSpace(appliedSchemeName))
+            {
+                throw new InvalidOperationException(
+                    $"Learned tensor mapping for tensor '{row.TensorName}' on baseline key '{canonicalBaselineKey}' " +
+                    $"returned an empty normalized scheme name. Observed FinalQuantType='{row.FinalQuantType}'.");
+            }
+
+            result[row.TensorName] = appliedSchemeName;
+        }
+
+        return result;
+    }
+
+    private Dictionary<string, string> TryLoadLearnedTensorMapping(
         BaselineQuants sourceBaseline,
         TensorGroup targetGroup,
         TensorWeightScheme? preferredSourceScheme = null,
@@ -2390,7 +2469,8 @@ private Dictionary<string, string> TryLoadLearnedTensorMapping(
     {
         using var db = new MagicQuantContext();
 
-        var scopedAiModelHashId = ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db).GetAwaiter().GetResult();
+        var scopedAiModelHashId =
+            ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db).GetAwaiter().GetResult();
 
         if (scopedAiModelHashId == null)
             return new Dictionary<string, string>(StringComparer.Ordinal);
@@ -2463,41 +2543,41 @@ private Dictionary<string, string> TryLoadLearnedTensorMapping(
     }
 
 
-private List<ConcreteTensorOverride> ResolveConcreteTensorOverrides(
-    IReadOnlyCollection<string> allTensorNames,
-    List<RequestedTensorOverride> requestedOverrides)
-{
-    if (requestedOverrides.Count == 0)
-        return new List<ConcreteTensorOverride>();
-
-    var nameSet = allTensorNames.ToHashSet(StringComparer.Ordinal);
-
-    var missing = requestedOverrides
-        .Where(x => !nameSet.Contains(x.TensorName))
-        .ToList();
-
-    if (missing.Count > 0)
+    private List<ConcreteTensorOverride> ResolveConcreteTensorOverrides(
+        IReadOnlyCollection<string> allTensorNames,
+        List<RequestedTensorOverride> requestedOverrides)
     {
-        throw new InvalidOperationException(
-            $"Required learned tensor mappings were missing in source GGUF ({missing.Count} tensors). Examples: {string.Join(", ", missing.Take(10).Select(x => x.TensorName))}");
+        if (requestedOverrides.Count == 0)
+            return new List<ConcreteTensorOverride>();
+
+        var nameSet = allTensorNames.ToHashSet(StringComparer.Ordinal);
+
+        var missing = requestedOverrides
+            .Where(x => !nameSet.Contains(x.TensorName))
+            .ToList();
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Required learned tensor mappings were missing in source GGUF ({missing.Count} tensors). Examples: {string.Join(", ", missing.Take(10).Select(x => x.TensorName))}");
+        }
+
+        var lastWins = new Dictionary<string, RequestedTensorOverride>(StringComparer.Ordinal);
+        foreach (var item in requestedOverrides)
+            lastWins[item.TensorName] = item;
+
+        return lastWins.Values
+            .Select(x => new ConcreteTensorOverride
+            {
+                GroupName = x.GroupName,
+                SchemeName = x.SchemeName,
+                TensorName = x.TensorName
+            })
+            .OrderBy(x => x.TensorName, StringComparer.Ordinal)
+            .ToList();
     }
 
-    var lastWins = new Dictionary<string, RequestedTensorOverride>(StringComparer.Ordinal);
-    foreach (var item in requestedOverrides)
-        lastWins[item.TensorName] = item;
-
-    return lastWins.Values
-        .Select(x => new ConcreteTensorOverride
-        {
-            GroupName = x.GroupName,
-            SchemeName = x.SchemeName,
-            TensorName = x.TensorName
-        })
-        .OrderBy(x => x.TensorName, StringComparer.Ordinal)
-        .ToList();
-}
-
-private async Task<GgufTensorReadResult> ReadTensorMetadataFromGgufAsync(string ggufPath, string outputFilePath)
+    private async Task<GgufTensorReadResult> ReadTensorMetadataFromGgufAsync(string ggufPath, string outputFilePath)
     {
         string workingDir = Path.GetDirectoryName(outputFilePath)!;
         string unique = Guid.NewGuid().ToString("N");
@@ -2507,7 +2587,8 @@ private async Task<GgufTensorReadResult> ReadTensorMetadataFromGgufAsync(string 
 
         try
         {
-            await File.WriteAllTextAsync(payloadPath, JsonSerializer.Serialize(new { gguf_path = ggufPath, output_path = resultPath }));
+            await File.WriteAllTextAsync(payloadPath,
+                JsonSerializer.Serialize(new { gguf_path = ggufPath, output_path = resultPath }));
 
             const string py = """
                               import json
@@ -2562,206 +2643,206 @@ private async Task<GgufTensorReadResult> ReadTensorMetadataFromGgufAsync(string 
     }
 
 
-private async Task<Dictionary<string, string>> BuildIsolationDeduplicationPlanAsync(
-    IReadOnlyCollection<RequiredSamplePlan> plans,
-    CancellationToken ct)
-{
-    var result = new Dictionary<string, string>(StringComparer.Ordinal);
-    var firstBySignature = new Dictionary<string, string>(StringComparer.Ordinal);
-
-    foreach (var plan in plans)
+    private async Task<Dictionary<string, string>> BuildIsolationDeduplicationPlanAsync(
+        IReadOnlyCollection<RequiredSamplePlan> plans,
+        CancellationToken ct)
     {
-        string? signature = await TryBuildIsolationEquivalenceKeyAsync(plan, ct);
-        if (string.IsNullOrWhiteSpace(signature))
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var firstBySignature = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var plan in plans)
         {
-            result[plan.Key] = plan.Key;
-            continue;
+            string? signature = await TryBuildIsolationEquivalenceKeyAsync(plan, ct);
+            if (string.IsNullOrWhiteSpace(signature))
+            {
+                result[plan.Key] = plan.Key;
+                continue;
+            }
+
+            if (!firstBySignature.TryGetValue(signature, out var firstKey))
+            {
+                firstBySignature[signature] = plan.Key;
+                result[plan.Key] = plan.Key;
+                continue;
+            }
+
+            result[plan.Key] = firstKey;
+            AnsiConsole.MarkupLine(
+                $"[grey]Isolation dedupe planned:[/] {Markup.Escape(plan.Key)} -> {Markup.Escape(firstKey)}");
         }
 
-        if (!firstBySignature.TryGetValue(signature, out var firstKey))
+        return result;
+    }
+
+    private async Task<string?> TryBuildIsolationEquivalenceKeyAsync(
+        RequiredSamplePlan plan,
+        CancellationToken ct)
+    {
+        if (plan.Kind != RequiredSampleKind.GroupIsolationProbe &&
+            plan.Kind != RequiredSampleKind.GroupIsolationContinuation)
+            return null;
+
+        if (plan.TargetGroupId == null || string.IsNullOrWhiteSpace(plan.TestedCandidateCanonicalKey))
+            return null;
+
+        await using var db = new MagicQuantContext();
+        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
+        if (scopedAiModelHashId == null)
+            return null;
+
+        var rows = await db.LearnedBaselineTensorQuants
+            .AsNoTracking()
+            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
+            .Where(x => x.BaselineCanonicalKey == plan.TestedCandidateCanonicalKey)
+            .Where(x => x.TensorGroupId == plan.TargetGroupId.Value)
+            .OrderBy(x => x.TensorName)
+            .Select(x => new { x.TensorName, x.FinalQuantType })
+            .ToListAsync(ct);
+
+        if (rows.Count == 0)
+            return null;
+
+        var sb = new StringBuilder();
+        sb.Append("group=").Append(plan.TargetGroupId.Value).Append('|');
+        foreach (var row in rows)
         {
-            firstBySignature[signature] = plan.Key;
-            result[plan.Key] = plan.Key;
-            continue;
+            sb.Append(row.TensorName).Append('=')
+                .Append(NormalizeLearnedIsolationQuantToken(row.FinalQuantType))
+                .Append(';');
         }
 
-        result[plan.Key] = firstKey;
-        AnsiConsole.MarkupLine(
-            $"[grey]Isolation dedupe planned:[/] {Markup.Escape(plan.Key)} -> {Markup.Escape(firstKey)}");
+        return sb.ToString();
     }
 
-    return result;
-}
-
-private async Task<string?> TryBuildIsolationEquivalenceKeyAsync(
-    RequiredSamplePlan plan,
-    CancellationToken ct)
-{
-    if (plan.Kind != RequiredSampleKind.GroupIsolationProbe &&
-        plan.Kind != RequiredSampleKind.GroupIsolationContinuation)
-        return null;
-
-    if (plan.TargetGroupId == null || string.IsNullOrWhiteSpace(plan.TestedCandidateCanonicalKey))
-        return null;
-
-    await using var db = new MagicQuantContext();
-    var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
-    if (scopedAiModelHashId == null)
-        return null;
-
-    var rows = await db.LearnedBaselineTensorQuants
-        .AsNoTracking()
-        .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-        .Where(x => x.BaselineCanonicalKey == plan.TestedCandidateCanonicalKey)
-        .Where(x => x.TensorGroupId == plan.TargetGroupId.Value)
-        .OrderBy(x => x.TensorName)
-        .Select(x => new { x.TensorName, x.FinalQuantType })
-        .ToListAsync(ct);
-
-    if (rows.Count == 0)
-        return null;
-
-    var sb = new StringBuilder();
-    sb.Append("group=").Append(plan.TargetGroupId.Value).Append('|');
-    foreach (var row in rows)
+    private static string NormalizeLearnedIsolationQuantToken(string value)
     {
-        sb.Append(row.TensorName).Append('=')
-            .Append(NormalizeLearnedIsolationQuantToken(row.FinalQuantType))
-            .Append(';');
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return value.Trim().Replace(" ", string.Empty).Replace("-", "_").ToUpperInvariant();
     }
 
-    return sb.ToString();
-}
-
-private static string NormalizeLearnedIsolationQuantToken(string value)
-{
-    if (string.IsNullOrWhiteSpace(value))
-        return string.Empty;
-
-    return value.Trim().Replace(" ", string.Empty).Replace("-", "_").ToUpperInvariant();
-}
-
-private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
-    RequiredSamplePlan sourcePlan,
-    RequiredSamplePlan duplicatePlan,
-    CancellationToken ct)
-{
-    var sourceIdentity = await ResolveBenchmarkIdentityAsync(sourcePlan.Quant, ct);
-    if (sourceIdentity.BenchmarkId == null)
-        return false;
-
-    await using var db = new MagicQuantContext();
-    var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
-    if (scopedAiModelHashId == null)
-        return false;
-
-    var sourceBench = await db.AiBenchmarks
-        .Include(x => x.CategorBenchmarks)
-        .FirstOrDefaultAsync(x => x.Id == sourceIdentity.BenchmarkId.Value, ct);
-
-    if (sourceBench == null)
-        return false;
-
-    var duplicateLookup = BuildTensorLookup(duplicatePlan.Quant);
-    var duplicateCombo = await db.TensorCombos.FirstOrDefaultAsync(x =>
-        x.BaseQuant == duplicateLookup.BaseQuant &&
-        x.Embeddings == duplicateLookup.Embeddings &&
-        x.LmHead == duplicateLookup.LmHead &&
-        x.AttnQ == duplicateLookup.AttnQ &&
-        x.AttnKV == duplicateLookup.AttnKV &&
-        x.AttnOutput == duplicateLookup.AttnOutput &&
-        x.FfnUpGate == duplicateLookup.FfnUpGate &&
-        x.FfnDown == duplicateLookup.FfnDown &&
-        x.MoeExperts == duplicateLookup.MoeExperts &&
-        x.MoeRouter == duplicateLookup.MoeRouter, ct);
-
-    if (duplicateCombo == null)
+    private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
+        RequiredSamplePlan sourcePlan,
+        RequiredSamplePlan duplicatePlan,
+        CancellationToken ct)
     {
-        duplicateCombo = new TensorCombo(duplicateLookup);
-        db.TensorCombos.Add(duplicateCombo);
-        await db.SaveChangesAsync(ct);
-    }
+        var sourceIdentity = await ResolveBenchmarkIdentityAsync(sourcePlan.Quant, ct);
+        if (sourceIdentity.BenchmarkId == null)
+            return false;
 
-    var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
-    var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
-        db,
-        exactAiModelHashId,
-        createIfMissing: true,
-        ct);
+        await using var db = new MagicQuantContext();
+        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
+        if (scopedAiModelHashId == null)
+            return false;
 
-    var existing = await db.AiBenchmarks
-        .FirstOrDefaultAsync(x => x.AiModelHashId == exactAiModelHashId &&
-                                  x.ImatrixDefinitionId == imatrixDefinitionId &&
-                                  x.TensorComboId == duplicateCombo.Id, ct);
+        var sourceBench = await db.AiBenchmarks
+            .Include(x => x.CategorBenchmarks)
+            .FirstOrDefaultAsync(x => x.Id == sourceIdentity.BenchmarkId.Value, ct);
 
-    if (existing != null)
-        return true;
+        if (sourceBench == null)
+            return false;
 
-    var clonedBenchmark = new AiBenchmark
-    {
-        Id = Guid.NewGuid(),
-        Ngl = sourceBench.Ngl,
-        SizeBytes = sourceBench.SizeBytes,
-        TokensPerSecond = sourceBench.TokensPerSecond,
-        TensorComboId = duplicateCombo.Id,
-        AiModelHashId = exactAiModelHashId,
-        ImatrixDefinitionId = imatrixDefinitionId
-    };
-    db.AiBenchmarks.Add(clonedBenchmark);
+        var duplicateLookup = BuildTensorLookup(duplicatePlan.Quant);
+        var duplicateCombo = await db.TensorCombos.FirstOrDefaultAsync(x =>
+            x.BaseQuant == duplicateLookup.BaseQuant &&
+            x.Embeddings == duplicateLookup.Embeddings &&
+            x.LmHead == duplicateLookup.LmHead &&
+            x.AttnQ == duplicateLookup.AttnQ &&
+            x.AttnKV == duplicateLookup.AttnKV &&
+            x.AttnOutput == duplicateLookup.AttnOutput &&
+            x.FfnUpGate == duplicateLookup.FfnUpGate &&
+            x.FfnDown == duplicateLookup.FfnDown &&
+            x.MoeExperts == duplicateLookup.MoeExperts &&
+            x.MoeRouter == duplicateLookup.MoeRouter, ct);
 
-    var clonedCategories = sourceBench.CategorBenchmarks
-        .Select(x => new CategoryBenchmark
+        if (duplicateCombo == null)
+        {
+            duplicateCombo = new TensorCombo(duplicateLookup);
+            db.TensorCombos.Add(duplicateCombo);
+            await db.SaveChangesAsync(ct);
+        }
+
+        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
+            db,
+            exactAiModelHashId,
+            createIfMissing: true,
+            ct);
+
+        var existing = await db.AiBenchmarks
+            .FirstOrDefaultAsync(x => x.AiModelHashId == exactAiModelHashId &&
+                                      x.ImatrixDefinitionId == imatrixDefinitionId &&
+                                      x.TensorComboId == duplicateCombo.Id, ct);
+
+        if (existing != null)
+            return true;
+
+        var clonedBenchmark = new AiBenchmark
         {
             Id = Guid.NewGuid(),
-            AiBenchmarkId = clonedBenchmark.Id,
-            Category = x.Category,
-            Kld = x.Kld,
-            Ppl = x.Ppl,
-            PplError = x.PplError
-        })
-        .ToList();
-    db.AddRange(clonedCategories);
+            Ngl = sourceBench.Ngl,
+            SizeBytes = sourceBench.SizeBytes,
+            TokensPerSecond = sourceBench.TokensPerSecond,
+            TensorComboId = duplicateCombo.Id,
+            AiModelHashId = exactAiModelHashId,
+            ImatrixDefinitionId = imatrixDefinitionId
+        };
+        db.AiBenchmarks.Add(clonedBenchmark);
 
-    db.QuantizationRuns.Add(new QuantizationRun
-    {
-        Id = Guid.NewGuid(),
-        AiModelHashId = exactAiModelHashId,
-        ImatrixDefinitionId = imatrixDefinitionId,
-        TensorComboId = duplicateCombo.Id,
-        AiBenchmarkId = clonedBenchmark.Id,
-        StartedUtc = DateTime.UtcNow,
-        CompletedUtc = DateTime.UtcNow,
-        DurationMs = 0,
-        Succeeded = true,
-        Error = $"Cloned from equivalent isolation benchmark '{sourcePlan.Key}'.",
-        OutputModelPath = null
-    });
+        var clonedCategories = sourceBench.CategorBenchmarks
+            .Select(x => new CategoryBenchmark
+            {
+                Id = Guid.NewGuid(),
+                AiBenchmarkId = clonedBenchmark.Id,
+                Category = x.Category,
+                Kld = x.Kld,
+                Ppl = x.Ppl,
+                PplError = x.PplError
+            })
+            .ToList();
+        db.AddRange(clonedCategories);
 
-    foreach (var cat in clonedCategories)
-    {
-        db.BenchmarkRuns.Add(new BenchmarkRun
+        db.QuantizationRuns.Add(new QuantizationRun
         {
             Id = Guid.NewGuid(),
             AiModelHashId = exactAiModelHashId,
             ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = duplicateCombo.Id,
             AiBenchmarkId = clonedBenchmark.Id,
-            CategoryBenchmarkId = cat.Id,
-            Category = cat.Category,
             StartedUtc = DateTime.UtcNow,
             CompletedUtc = DateTime.UtcNow,
             DurationMs = 0,
             Succeeded = true,
-            Error = $"Cloned from equivalent isolation benchmark '{sourcePlan.Key}'."
+            Error = $"Cloned from equivalent isolation benchmark '{sourcePlan.Key}'.",
+            OutputModelPath = null
         });
+
+        foreach (var cat in clonedCategories)
+        {
+            db.BenchmarkRuns.Add(new BenchmarkRun
+            {
+                Id = Guid.NewGuid(),
+                AiModelHashId = exactAiModelHashId,
+                ImatrixDefinitionId = imatrixDefinitionId,
+                TensorComboId = duplicateCombo.Id,
+                AiBenchmarkId = clonedBenchmark.Id,
+                CategoryBenchmarkId = cat.Id,
+                Category = cat.Category,
+                StartedUtc = DateTime.UtcNow,
+                CompletedUtc = DateTime.UtcNow,
+                DurationMs = 0,
+                Succeeded = true,
+                Error = $"Cloned from equivalent isolation benchmark '{sourcePlan.Key}'."
+            });
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        AnsiConsole.MarkupLine(
+            $"[green]Isolation dedupe clone:[/] {Markup.Escape(duplicatePlan.Key)} reused benchmark data from {Markup.Escape(sourcePlan.Key)}");
+        return true;
     }
-
-    await db.SaveChangesAsync(ct);
-
-    AnsiConsole.MarkupLine(
-        $"[green]Isolation dedupe clone:[/] {Markup.Escape(duplicatePlan.Key)} reused benchmark data from {Markup.Escape(sourcePlan.Key)}");
-    return true;
-}
 
     // ----------------------------------------------------------------
     // Internal DTOs

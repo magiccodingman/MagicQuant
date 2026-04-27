@@ -13,6 +13,7 @@ namespace MagicQuant.Commands;
 
 public class Evolution : ICommand
 {
+    private static readonly string[] RequiredNativeKldDomains = ["general", "code", "math"];
 
     public async Task Run(List<CliArg> args)
     {
@@ -23,20 +24,20 @@ public class Evolution : ICommand
         }
 
         string? modelDirRaw = args.FirstOrDefault(a =>
-    string.Equals(a.Name, "model-dir", StringComparison.OrdinalIgnoreCase))?.Value;
+            string.Equals(a.Name, "model-dir", StringComparison.OrdinalIgnoreCase))?.Value;
 
-if (string.IsNullOrWhiteSpace(modelDirRaw))
-    modelDirRaw = Config.Current.Paths.ModelDir;
+        if (string.IsNullOrWhiteSpace(modelDirRaw))
+            modelDirRaw = Config.Current.Paths.ModelDir;
 
-if (string.IsNullOrWhiteSpace(modelDirRaw))
-{
-    const string msg = "[red]Error:[/] Missing required model directory. Provide [yellow]--model-dir[/] or set [yellow]paths.model_dir[/] in YAML.";
-    AnsiConsole.MarkupLine(msg);
-    ShowEvolutionHelp();
-    throw new InvalidOperationException("Missing required model directory.");
-}
+        if (string.IsNullOrWhiteSpace(modelDirRaw))
+        {
+            const string msg = "[red]Error:[/] Missing required model directory. Provide [yellow]--model-dir[/] or set [yellow]paths.model_dir[/] in YAML.";
+            AnsiConsole.MarkupLine(msg);
+            ShowEvolutionHelp();
+            throw new InvalidOperationException("Missing required model directory.");
+        }
 
-string fullModelPath = Path.GetFullPath(modelDirRaw);
+        string fullModelPath = Path.GetFullPath(modelDirRaw);
 
         if (!Directory.Exists(fullModelPath))
         {
@@ -59,13 +60,14 @@ string fullModelPath = Path.GetFullPath(modelDirRaw);
 
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
-Cache.ForceRelearnBaselineTensorMappings = Config.Current.Flags.ForceRelearnBaselineTensorMappings;
-Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
-Cache.UseImatrix = Config.Current.Flags.UseImatrix;
-Cache.ForceImatrixRebuild = Config.Current.Flags.ForceImatrixRebuild;
-RuntimeSearchSpace.ResetForNewModel();
-RuntimeSearchSpace.SetImatrixAvailability(false);
-RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
+        Cache.ForceRelearnBaselineTensorMappings = Config.Current.Flags.ForceRelearnBaselineTensorMappings;
+        Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
+        Cache.UseImatrix = Config.Current.Flags.UseImatrix;
+        Cache.ForceImatrixRebuild = Config.Current.Flags.ForceImatrixRebuild;
+
+        RuntimeSearchSpace.ResetForNewModel();
+        RuntimeSearchSpace.SetImatrixAvailability(false);
+        RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
 
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
@@ -86,18 +88,22 @@ RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPre
 
         AnsiConsole.MarkupLine("[grey]Acquiring unique model ID...[/]");
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
-AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
+        AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
 
-var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
-var customBaselineService = new HuggingFaceBaselineService(pyManager);
-var resolvedCustomBaselines = await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
-if (Config.Current.Baselines.CustomRepositories.Any(x => x.Enabled) && resolvedCustomBaselines.Count == 0)
-{
-    throw new InvalidOperationException("Custom baseline repositories were enabled, but no custom baselines resolved into the runtime registry.");
-}
-await EnsureSqliteReadyAsync();
+        var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
 
-var benchmarkService = new BenchmarkService(pyManager);
+        var customBaselineService = new HuggingFaceBaselineService(pyManager);
+        var resolvedCustomBaselines = await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
+
+        if (Config.Current.Baselines.CustomRepositories.Any(x => x.Enabled) && resolvedCustomBaselines.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Custom baseline repositories were enabled, but no custom baselines resolved into the runtime registry.");
+        }
+
+        await EnsureSqliteReadyAsync();
+
+        var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
         var imatrixService = new ImatrixService();
 
@@ -117,16 +123,17 @@ var benchmarkService = new BenchmarkService(pyManager);
         {
             UseImatrix = Cache.UseImatrix,
             ForceRebuild = Cache.ForceImatrixRebuild,
-ImatrixUrl = Config.Current.Imatrix.ImatrixUrl,
-DatasetRepo = Config.Current.Imatrix.DatasetRepo,
-DatasetSplit = Config.Current.Imatrix.DatasetSplit,
-DatasetConfig = Config.Current.Imatrix.DatasetConfig,
-LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
+            ImatrixUrl = Config.Current.Imatrix.ImatrixUrl,
+            DatasetRepo = Config.Current.Imatrix.DatasetRepo,
+            DatasetSplit = Config.Current.Imatrix.DatasetSplit,
+            DatasetConfig = Config.Current.Imatrix.DatasetConfig,
+            LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
             ModelDirectory = Cache.ModelDirectory!,
             MagicQuantDirectory = Cache.ModelMagicQuantDirectory!
         };
 
         var imatrixEnsureResult = await imatrixService.EnsureImatrixAsync(imatrixRequest, ct: default);
+
         if (imatrixEnsureResult.Enabled)
         {
             string canonicalPath = imatrixEnsureResult.CanonicalImatrixPath ?? "n/a";
@@ -151,14 +158,16 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         {
             AnsiConsole.MarkupLine("[grey]Cache not usable, preparing probe-only Q8 baseline...[/]");
             var q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
+
             await benchmarkService.EnsureExecutionPlanAsync(
                 q8ModelGgufPath,
                 quantizationKey: q8QuantizationKey,
                 forceRediscovery: Cache.ForceRefreshHardwareProbe);
         }
 
-        bool nativeTruthAlreadyLearned = !Cache.ForceRelearnBaselineTensorMappings &&
-                                         await quantizationService.HasNativeSourceLearnedTruthAsync();
+        bool nativeTruthAlreadyLearned =
+            !Cache.ForceRelearnBaselineTensorMappings &&
+            await quantizationService.HasNativeSourceLearnedTruthAsync();
 
         if (!nativeTruthAlreadyLearned || !loadedPlanFromCache)
         {
@@ -173,28 +182,22 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         await quantizationService.CleanupPureQ8ModelAsync();
 
         var baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
-        var baseBenchDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks", baseTypeName);
+        var benchmarkRootDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Benchmarks");
+        var baseBenchDir = Path.Combine(benchmarkRootDir, baseTypeName);
         var baseLogitsDir = Path.Combine(baseBenchDir, "logits");
+        var pplCorporaDir = Path.Combine(benchmarkRootDir, "_ppl_corpora");
 
         var baseModelQuant = HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant());
 
-        if (!nativeTruthAlreadyLearned)
-        {
-            await benchmarkService.RunAllBenchmarksAsync(
-                quantConfig: baseModelQuant,
-                modelPath: bf16ModelGgufPath,
-                benchDir: baseBenchDir,
-                klLogitsDir: baseLogitsDir,
-                saveLogits: true,
-                domainsOverride: new[] { "general", "code", "math" });
-
-            await quantizationService.LearnNativeSourceTruthAsync(bf16ModelGgufPath);
-        }
-        else
-        {
-            AnsiConsole.MarkupLine(
-                "[grey]Skipping native BF16 baseline benchmark + relearn because learned native-source truth already exists. Use --relearn-baseline-mappings to force rebuild.[/]");
-        }
+        await EnsureNativeBenchmarkEnvironmentReadyAsync(
+            benchmarkService: benchmarkService,
+            quantizationService: quantizationService,
+            baseModelQuant: baseModelQuant,
+            bf16ModelGgufPath: bf16ModelGgufPath,
+            baseBenchDir: baseBenchDir,
+            baseLogitsDir: baseLogitsDir,
+            pplCorporaDir: pplCorporaDir,
+            nativeTruthAlreadyLearned: nativeTruthAlreadyLearned);
 
         var compatibilityService = new ModelCompatibilityService(pyManager);
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
@@ -220,6 +223,7 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
 
         var isolationPlanner = new IsolationPlanningService();
         var initialPlan = isolationPlanner.BuildInitialPlan(Cache.UnusedTensorGroups);
+
         AnsiConsole.MarkupLine($"[grey]Queued initial startup samples:[/] [cyan]{initialPlan.TotalCount:N0}[/]");
 
         var initialSummary = await quantizationService.ProcessHybridBatchAsync(initialPlan.Plans);
@@ -269,6 +273,7 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         }
 
         var mergedPlan = initialPlan.MergeWith(continuationPlan);
+
         var archivalGroupIds = TReg.All
             .Where(x => !Cache.UnusedTensorGroups.Any(u => u.UniqueId == x.UniqueId))
             .Select(x => x.UniqueId)
@@ -373,6 +378,225 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine($"[green]Exported/linkable artifacts:[/] [cyan]{finalizationResult.ExportedArtifacts.Count:N0}[/]");
     }
 
+    private static async Task EnsureNativeBenchmarkEnvironmentReadyAsync(
+        BenchmarkService benchmarkService,
+        QuantizationService quantizationService,
+        HybridQuant baseModelQuant,
+        string bf16ModelGgufPath,
+        string baseBenchDir,
+        string baseLogitsDir,
+        string pplCorporaDir,
+        bool nativeTruthAlreadyLearned)
+    {
+        var status = ValidateNativeBenchmarkEnvironment(
+            baseBenchDir: baseBenchDir,
+            baseLogitsDir: baseLogitsDir,
+            pplCorporaDir: pplCorporaDir,
+            requiredDomains: RequiredNativeKldDomains);
+
+        bool mustRegenerateNativeBenchmarkArtifacts =
+            Cache.ForceRelearnBaselineTensorMappings ||
+            !status.IsValid;
+
+        if (mustRegenerateNativeBenchmarkArtifacts)
+        {
+            AnsiConsole.Write(new Rule("[yellow]Native BF16 Benchmark/KLD Artifact Validation[/]") { Justification = Justify.Left });
+
+            if (Cache.ForceRelearnBaselineTensorMappings)
+            {
+                AnsiConsole.MarkupLine("[yellow]Forced relearn is ON:[/] native BF16 benchmark/logit artifacts will be regenerated.");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine("[yellow]Native BF16 benchmark/KLD artifacts are missing or incomplete.[/] Regenerating required artifacts.");
+            }
+
+            PrintNativeBenchmarkEnvironmentIssues(status);
+
+            await ForceRegenerateNativeBenchmarkArtifactsAsync(
+                benchmarkService: benchmarkService,
+                baseModelQuant: baseModelQuant,
+                bf16ModelGgufPath: bf16ModelGgufPath,
+                baseBenchDir: baseBenchDir,
+                baseLogitsDir: baseLogitsDir);
+
+            status = ValidateNativeBenchmarkEnvironment(
+                baseBenchDir: baseBenchDir,
+                baseLogitsDir: baseLogitsDir,
+                pplCorporaDir: pplCorporaDir,
+                requiredDomains: RequiredNativeKldDomains);
+
+            if (!status.IsValid)
+            {
+                var details = string.Join(
+                    Environment.NewLine,
+                    status.MissingOrInvalidArtifacts.Select(x => $"- {x}"));
+
+                throw new InvalidOperationException(
+                    "Native BF16 benchmark/logit generation completed, but required native benchmark artifacts are still missing or invalid. " +
+                    "This is fatal because every non-base benchmark requires complete native KLD logits." +
+                    Environment.NewLine +
+                    details);
+            }
+
+            AnsiConsole.MarkupLine("[green]Native BF16 benchmark/KLD artifacts validated.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]Native BF16 benchmark/KLD artifacts already exist and passed validation.[/]");
+        }
+
+        if (!nativeTruthAlreadyLearned)
+        {
+            await quantizationService.LearnNativeSourceTruthAsync(bf16ModelGgufPath);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine(
+                "[grey]Skipping native-source tensor relearn because learned native-source truth already exists.[/]");
+        }
+    }
+
+    private static async Task ForceRegenerateNativeBenchmarkArtifactsAsync(
+        BenchmarkService benchmarkService,
+        HybridQuant baseModelQuant,
+        string bf16ModelGgufPath,
+        string baseBenchDir,
+        string baseLogitsDir)
+    {
+        if (Directory.Exists(baseBenchDir))
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]Clearing incomplete/stale native benchmark directory:[/] {Markup.Escape(baseBenchDir)}");
+
+            Directory.Delete(baseBenchDir, recursive: true);
+        }
+
+        Directory.CreateDirectory(baseBenchDir);
+        Directory.CreateDirectory(baseLogitsDir);
+
+        bool previousSuppressBenchmarkPersistence = Cache.SuppressBenchmarkPersistence;
+
+        try
+        {
+            // This is intentional.
+            //
+            // If persisted native BF16 benchmark rows already exist in SQLite, the normal
+            // BenchmarkService path may return DB truth without actually running llama-perplexity,
+            // which means missing KLD logits would stay missing forever.
+            //
+            // Transient mode forces this artifact-repair pass to rely on disk execution instead
+            // of DB benchmark truth. The native tensor truth is learned separately below.
+            Cache.SuppressBenchmarkPersistence = true;
+
+            await benchmarkService.RunAllBenchmarksAsync(
+                quantConfig: baseModelQuant,
+                modelPath: bf16ModelGgufPath,
+                benchDir: baseBenchDir,
+                klLogitsDir: baseLogitsDir,
+                saveLogits: true,
+                domainsOverride: RequiredNativeKldDomains);
+        }
+        finally
+        {
+            Cache.SuppressBenchmarkPersistence = previousSuppressBenchmarkPersistence;
+        }
+    }
+
+    private static NativeBenchmarkEnvironmentStatus ValidateNativeBenchmarkEnvironment(
+        string baseBenchDir,
+        string baseLogitsDir,
+        string pplCorporaDir,
+        IReadOnlyCollection<string> requiredDomains)
+    {
+        var issues = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(baseBenchDir))
+        {
+            issues.Add("Native benchmark directory path is null/empty.");
+        }
+        else if (!Directory.Exists(baseBenchDir))
+        {
+            issues.Add($"Native benchmark directory does not exist: {baseBenchDir}");
+        }
+
+        if (string.IsNullOrWhiteSpace(baseLogitsDir))
+        {
+            issues.Add("Native KLD logits directory path is null/empty.");
+        }
+        else if (!Directory.Exists(baseLogitsDir))
+        {
+            issues.Add($"Native KLD logits directory does not exist: {baseLogitsDir}");
+        }
+
+        if (string.IsNullOrWhiteSpace(pplCorporaDir))
+        {
+            issues.Add("_ppl_corpora directory path is null/empty.");
+        }
+        else if (!Directory.Exists(pplCorporaDir))
+        {
+            issues.Add($"_ppl_corpora directory does not exist: {pplCorporaDir}");
+        }
+        else if (!Directory.EnumerateFiles(pplCorporaDir, "*", SearchOption.AllDirectories).Any())
+        {
+            issues.Add($"_ppl_corpora directory exists but contains no files: {pplCorporaDir}");
+        }
+
+        foreach (var domain in requiredDomains.OrderBy(x => x, StringComparer.Ordinal))
+        {
+            if (!string.IsNullOrWhiteSpace(baseBenchDir) && Directory.Exists(baseBenchDir))
+            {
+                var pplLog = Path.Combine(baseBenchDir, $"perplexity_{domain}.log");
+
+                if (!File.Exists(pplLog))
+                {
+                    issues.Add($"Missing native BF16 perplexity log for domain '{domain}': {pplLog}");
+                }
+                else if (new FileInfo(pplLog).Length <= 0)
+                {
+                    issues.Add($"Native BF16 perplexity log is empty for domain '{domain}': {pplLog}");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(baseLogitsDir) && Directory.Exists(baseLogitsDir))
+            {
+                var logitsFile = Path.Combine(baseLogitsDir, $"kld_logits_{domain}.bin");
+
+                if (!File.Exists(logitsFile))
+                {
+                    issues.Add($"Missing native KLD logits for domain '{domain}': {logitsFile}");
+                }
+                else if (new FileInfo(logitsFile).Length <= 0)
+                {
+                    issues.Add($"Native KLD logits file is empty for domain '{domain}': {logitsFile}");
+                }
+            }
+        }
+
+        return new NativeBenchmarkEnvironmentStatus(
+            IsValid: issues.Count == 0,
+            MissingOrInvalidArtifacts: issues);
+    }
+
+    private static void PrintNativeBenchmarkEnvironmentIssues(NativeBenchmarkEnvironmentStatus status)
+    {
+        if (status.IsValid)
+            return;
+
+        foreach (var issue in status.MissingOrInvalidArtifacts.Take(20))
+            AnsiConsole.MarkupLine($"[grey]- {Markup.Escape(issue)}[/]");
+
+        if (status.MissingOrInvalidArtifacts.Count > 20)
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]- ...and {status.MissingOrInvalidArtifacts.Count - 20:N0} more issue(s).[/]");
+        }
+    }
+
+    private sealed record NativeBenchmarkEnvironmentStatus(
+        bool IsValid,
+        IReadOnlyList<string> MissingOrInvalidArtifacts);
+
     private static void PrintIsolationGroupDecisions(IEnumerable<IsolationGroupDecision> decisions)
     {
         foreach (var gd in decisions.OrderBy(x => x.GroupName))
@@ -392,7 +616,6 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
                 AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(line)}[/]");
         }
     }
-
 
     private static void PrintCustomBaselineRuntimeSummary(
         IReadOnlyCollection<ResolvedCustomBaselineSpec> resolvedCustomBaselines,
@@ -422,7 +645,8 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
             bool inCarriers = carriers.Any(x => x.UniqueId == custom.DynamicBaselineId);
             bool inExplicit = explicitCandidates.Any(x => x.UniqueId == custom.DynamicBaselineId);
 
-            AnsiConsole.MarkupLine($"  [cyan]{custom.DynamicBaselineId}[/] [yellow]{Markup.Escape(custom.DisplayName)}[/] family={Markup.Escape(custom.BaselineFamily)} file={Markup.Escape(custom.SourceFileName)} learning={inLearning} carrier={inCarriers} explicit={inExplicit}");
+            AnsiConsole.MarkupLine(
+                $"  [cyan]{custom.DynamicBaselineId}[/] [yellow]{Markup.Escape(custom.DisplayName)}[/] family={Markup.Escape(custom.BaselineFamily)} file={Markup.Escape(custom.SourceFileName)} learning={inLearning} carrier={inCarriers} explicit={inExplicit}");
         }
     }
 
@@ -441,7 +665,6 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
         AnsiConsole.MarkupLine("  [green]--use-imatrix[/]    Enable imatrix acquisition/build and allow imatrix-required search candidates (Optional)");
         AnsiConsole.MarkupLine("  [green]--allow-high-precision-hybrids[/]    Keep BF16/F16 explicit group candidates in final surviving combos (Optional, default false)");
-
         AnsiConsole.MarkupLine("  [green]--imatrix-force-rebuild[/]    Delete/rebuild canonical imatrix artifacts before run (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-url[/]    HTTPS URL for direct imatrix artifact download (Optional)");
         AnsiConsole.MarkupLine("  [green]--imatrix-dataset-repo[/]    Hugging Face dataset repo ID for imatrix generation (Optional)");
@@ -461,7 +684,6 @@ LocalDatasetFile = Config.Current.Imatrix.DatasetLocalFile,
         AnsiConsole.MarkupLine("[bold]Example:[/]");
         AnsiConsole.WriteLine("  mq evolution --model-dir \"C:\\Models\\Mistral-7B\"");
     }
-
 
     private static string ResolveAndValidateOutputDirectory()
     {
