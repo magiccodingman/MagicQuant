@@ -1432,12 +1432,32 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         var concreteOverrides = ResolveConcreteTensorOverrides(
             allTensorNames: inputTensorMetadata.TensorNames,
             requestedOverrides: requestedOverrides);
+        bool shouldRequireFullLearnedCoverage = ShouldApplyLearnedBaseCarrierBlanket(quant, temporaryCarrierOverrides);
 
         if (requestedOverrides.Count > 0 && concreteOverrides.Count == 0)
         {
             throw new InvalidOperationException(
                 $"No concrete tensors were resolved for requested overrides when quantizing '{outputFile}'. " +
                 "This means the requested tensor selectors did not match the input GGUF.");
+        }
+
+        if (shouldRequireFullLearnedCoverage)
+        {
+            var concreteNames = concreteOverrides
+                .Select(x => x.TensorName)
+                .ToHashSet(StringComparer.Ordinal);
+            var missing = inputTensorMetadata.TensorNames
+                .Except(concreteNames, StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToList();
+
+            if (missing.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Full learned base-carrier coverage is incomplete for baseline '{quant.BaseQuant.Names[0]}'. " +
+                    $"Missing={missing.Count}. Examples=[{string.Join(", ", missing.Take(15))}]. " +
+                    "Run with --relearn-baseline-mappings.");
+            }
         }
 
         var args = new List<string>(capacity: 256);
@@ -2162,34 +2182,25 @@ private List<RequestedTensorOverride> BuildRequestedTensorOverrides(
 
     bool hasTemporaryCarrierOverrides = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0;
     bool hasExplicitGroupOverrides = quant.Tensors != null && quant.Tensors.Count > 0;
+    bool shouldApplyBaseCarrierBlanket = ShouldApplyLearnedBaseCarrierBlanket(quant, temporaryCarrierOverrides);
 
-    if (!hasTemporaryCarrierOverrides && !hasExplicitGroupOverrides && !quant.BaseQuant.IsExternalRepositoryBaseline)
+    if (!shouldApplyBaseCarrierBlanket)
         return result;
 
     var baseScheme = TryResolveBaseTensorScheme(quant.BaseQuant);
+    var blanket = LoadBaseCarrierTensorMappingsOrThrow(
+        quant: quant,
+        temporaryCarrierOverrides: temporaryCarrierOverrides,
+        requireFullCoverage: shouldApplyBaseCarrierBlanket);
 
-    if (quant.BaseQuant.IsExternalRepositoryBaseline || hasTemporaryCarrierOverrides)
+    foreach (var kv in blanket.OrderBy(x => x.Key, StringComparer.Ordinal))
     {
-        var blanket = hasTemporaryCarrierOverrides
-            ? new Dictionary<string, string>(temporaryCarrierOverrides!, StringComparer.Ordinal)
-            : TryLoadAllLearnedTensorMappings(
-                canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
-                preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
-                allowDominantFallback: false);
-
-        if ((quant.BaseQuant.IsExternalRepositoryBaseline || hasTemporaryCarrierOverrides) && blanket.Count == 0)
-            throw new InvalidOperationException(
-                $"Missing blanket learned mapping for custom carrier baseline '{quant.BaseQuant.Names[0]}'. Custom carrier baselines must be learned once before they can participate in hybrid quantization.");
-
-        foreach (var kv in blanket.OrderBy(x => x.Key, StringComparer.Ordinal))
+        result.Add(new RequestedTensorOverride
         {
-            result.Add(new RequestedTensorOverride
-            {
-                GroupName = "base_carrier",
-                TensorName = kv.Key,
-                SchemeName = kv.Value
-            });
-        }
+            GroupName = "base_carrier",
+            TensorName = kv.Key,
+            SchemeName = kv.Value
+        });
     }
 
     if (!hasExplicitGroupOverrides)
@@ -2273,6 +2284,40 @@ private List<RequestedTensorOverride> BuildRequestedTensorOverrides(
     }
 
     return result;
+}
+
+private bool ShouldApplyLearnedBaseCarrierBlanket(
+    HybridQuant quant,
+    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
+{
+    bool hasTemporaryCarrierOverrides = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0;
+    bool hasExplicitGroupOverrides = quant.Tensors != null && quant.Tensors.Count > 0;
+
+    return hasTemporaryCarrierOverrides ||
+           quant.BaseQuant.IsExternalRepositoryBaseline ||
+           hasExplicitGroupOverrides;
+}
+
+private Dictionary<string, string> LoadBaseCarrierTensorMappingsOrThrow(
+    HybridQuant quant,
+    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides,
+    bool requireFullCoverage)
+{
+    var blanket = temporaryCarrierOverrides != null && temporaryCarrierOverrides.Count > 0
+        ? new Dictionary<string, string>(temporaryCarrierOverrides, StringComparer.Ordinal)
+        : TryLoadAllLearnedTensorMappings(
+            canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+            preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+            allowDominantFallback: false);
+
+    if (requireFullCoverage && blanket.Count == 0)
+    {
+        throw new InvalidOperationException(
+            $"Missing full learned base-carrier mapping for baseline '{quant.BaseQuant.Names[0]}'. " +
+            "Run with --relearn-baseline-mappings before applying learned tensor configurations.");
+    }
+
+    return blanket;
 }
 private Dictionary<string, string> TryLoadAllLearnedTensorMappings(
     string canonicalBaselineKey,
