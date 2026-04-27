@@ -2,6 +2,31 @@ namespace MagicQuant.Helpers;
 
 public static class HardDeleteHelper
 {
+    public static async Task DeleteDirectoryIfExistsAsync(
+        string? directory,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            return;
+
+        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            await DeleteFileIfExistsAsync(file);
+        }
+
+        foreach (var sub in Directory.EnumerateDirectories(directory, "*", SearchOption.AllDirectories)
+                     .OrderByDescending(x => x.Length))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (Directory.Exists(sub))
+                Directory.Delete(sub, recursive: false);
+        }
+
+        if (Directory.Exists(directory))
+            Directory.Delete(directory, recursive: false);
+    }
+
     public static async Task DeleteFileIfExistsAsync(
         string? path,
         int maxAttempts = 6,

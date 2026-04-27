@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MagicQuant.Helpers;
+using MagicQuant.Models.Learning;
+using MagicQuant.Services.Learning;
 using MQ.DB;
 using MQ.DB.Data;
 using MQ.DB.Models;
@@ -50,6 +52,8 @@ public class QuantizationService
     private readonly int _maxConcurrentQuantizations;
     private readonly ImatrixService _imatrixService;
     private readonly HuggingFaceBaselineService _huggingFaceBaselineService;
+    private readonly TensorGroupingAuditService _tensorGroupingAuditService;
+    private readonly TensorLearningDiagnosticWriter _tensorLearningDiagnosticWriter;
 
     private static readonly SemaphoreSlim BaseModelLock = new(1, 1);
     private const byte UnknownTensorGroupId = 255;
@@ -76,6 +80,8 @@ public class QuantizationService
         _benchDir = Path.Combine(Cache.ModelMagicQuantDirectory, "Benchmarks");
         _imatrixService = new ImatrixService();
         _huggingFaceBaselineService = new HuggingFaceBaselineService(_python);
+        _tensorGroupingAuditService = new TensorGroupingAuditService();
+        _tensorLearningDiagnosticWriter = new TensorLearningDiagnosticWriter();
 
         Directory.CreateDirectory(_ggufDir);
         Directory.CreateDirectory(_benchDir);
@@ -638,9 +644,32 @@ private async Task<PreparedExternalBaselineBuild> PrepareExternalBaselineRebuild
             x => new LearnedTensorTruth(x.Key, x.Value, LearningSource.GgufOnly),
             StringComparer.Ordinal);
 
-    var grouped = AssignGroups(truth.Keys);
-    var ambiguous = grouped.Where(x => x.Value.MatchedGroups.Count > 1).ToList();
-    var unresolved = grouped.Where(x => x.Value.PrimaryGroup == null).Select(x => x.Key).OrderBy(x => x, StringComparer.Ordinal).ToList();
+    var verification = new TensorTruthVerificationResult
+    {
+        TruthByTensor = truth
+    };
+    var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
+
+    if (audit.HasFatalIssues)
+    {
+        var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+            baselineName: quant.BaseQuant.Names[0],
+            schemeName: quant.BaseQuant.DefaultTensorScheme?.Names[0] ?? "external",
+            sourceKind: quant.BaseQuant.SourceKind.ToString(),
+            sourceRepository: quant.BaseQuant.SourceRepository,
+            sourceFileName: quant.BaseQuant.SourceFileName,
+            truthByTensor: truth,
+            audit: audit,
+            verification: verification,
+            ct: ct);
+
+        AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+        throw new InvalidOperationException(
+            $"Strict tensor-group learning validation failed for external baseline '{quant.BaseQuant.Names[0]}' " +
+            $"from '{quant.BaseQuant.SourceRepository}/{quant.BaseQuant.SourceFileName}'. " +
+            $"No normalized rebuilt baseline was produced and no learned tensor mappings were persisted. " +
+            $"Diagnostic log: {diagnosticPath}");
+    }
 
     var normalizedOverrides = truth.ToDictionary(
         x => x.Key,
@@ -658,10 +687,12 @@ private async Task<PreparedExternalBaselineBuild> PrepareExternalBaselineRebuild
         BenchmarkModelPath = rebuiltOutputPath,
         DownloadedExternalModelPath = downloadedExternalBaselinePath,
         TruthByTensor = truth,
-        GroupedByTensor = grouped,
+        GroupedByTensor = audit.GroupedByTensor,
         AllTensorNamesInDownloadedArtifact = ggufMetadata.TensorNames,
-        AmbiguousGroupingRows = ambiguous,
-        UnresolvedTensorNames = unresolved,
+        AmbiguousGroupingRows = audit.Ambiguous,
+        UnresolvedTensorNames = audit.IllegalUnresolved.Select(x => x.TensorName).ToList(),
+        BaseQuantExceptionRows = audit.BaseQuantExceptions,
+        Verification = verification,
         HasPreparedLearningTruth = true
     };
 }
@@ -675,6 +706,39 @@ private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
         return;
 
     var tensorScheme = quant.BaseQuant.DefaultTensorScheme!;
+    var verification = prepared.Verification ?? new TensorTruthVerificationResult { TruthByTensor = prepared.TruthByTensor };
+    var audit = new TensorGroupingAuditResult
+    {
+        GroupedByTensor = prepared.GroupedByTensor,
+        Ambiguous = prepared.AmbiguousGroupingRows ?? [],
+        IllegalUnresolved = (prepared.UnresolvedTensorNames ?? []).Select(x => new TensorGroupingAuditIssue
+        {
+            TensorName = x,
+            IssueKind = "IllegalUnresolvedTensor"
+        }).ToList(),
+        BaseQuantExceptions = prepared.BaseQuantExceptionRows ?? []
+    };
+
+    if (audit.HasFatalIssues || verification.HasFatalIssues)
+    {
+        var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+            baselineName: quant.BaseQuant.Names[0],
+            schemeName: tensorScheme.Names[0],
+            sourceKind: quant.BaseQuant.SourceKind.ToString(),
+            sourceRepository: quant.BaseQuant.SourceRepository,
+            sourceFileName: quant.BaseQuant.SourceFileName,
+            truthByTensor: prepared.TruthByTensor,
+            audit: audit,
+            verification: verification,
+            ct: ct);
+
+        AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+        throw new InvalidOperationException(
+            $"Strict tensor-group learning validation failed for external baseline '{quant.BaseQuant.Names[0]}' " +
+            $"from '{quant.BaseQuant.SourceRepository}/{quant.BaseQuant.SourceFileName}'. " +
+            $"No normalized rebuilt baseline was produced and no learned tensor mappings were persisted. " +
+            $"Diagnostic log: {diagnosticPath}");
+    }
 
     await using var db = new MagicQuantContext();
 
@@ -742,7 +806,7 @@ private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
         truthByTensor: prepared.TruthByTensor,
         grouped: prepared.GroupedByTensor,
         allTensorNamesInModel: prepared.AllTensorNamesInDownloadedArtifact ?? prepared.TruthByTensor.Keys.ToList(),
-        ambiguous: prepared.AmbiguousGroupingRows ?? new List<KeyValuePair<string, TensorGroupingResult>>(),
+        ambiguous: audit.Ambiguous,
         unresolved: prepared.UnresolvedTensorNames ?? new List<string>());
 
     AnsiConsole.MarkupLine($"[green]Persisted rebuilt custom-baseline learning truth:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
@@ -1591,14 +1655,34 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     var ggufTruth = metadata.TensorTypes
         .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
 
-    var truth = BuildTruthMapWithVerification(
+    var verification = BuildTruthMapWithVerification(
         logTruth: new Dictionary<string, string>(StringComparer.Ordinal),
         ggufTruth: ggufTruth,
         baselineName: "NATIVE");
+    var truth = verification.TruthByTensor;
 
-    var grouped = AssignGroups(truth.Keys);
-    var ambiguous = grouped.Where(x => x.Value.MatchedGroups.Count > 1).ToList();
-    var unresolved = grouped.Where(x => x.Value.PrimaryGroup == null).Select(x => x.Key).ToList();
+    var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
+
+    if (audit.HasFatalIssues || verification.HasFatalIssues)
+    {
+        var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+            baselineName: $"NATIVE_{nativeScheme.Names[0]}",
+            schemeName: nativeScheme.Names[0],
+            sourceKind: "NativeSource",
+            sourceRepository: null,
+            sourceFileName: Path.GetFileName(nativeGgufPath),
+            truthByTensor: truth,
+            audit: audit,
+            verification: verification,
+            ct: ct);
+
+        AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+        throw new InvalidOperationException(
+            $"Strict tensor-group learning validation failed for baseline 'NATIVE_{nativeScheme.Names[0]}'. " +
+            $"Ambiguous={audit.Ambiguous.Count}, IllegalUnresolved={audit.IllegalUnresolved.Count}, " +
+            $"AllowedBaseQuantFallback={audit.BaseQuantExceptions.Count}. " +
+            $"No learned tensor mappings were persisted. Diagnostic log: {diagnosticPath}");
+    }
 
     await using var db = new MagicQuantContext();
     var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct)
@@ -1642,7 +1726,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         .OrderBy(x => x.Key, StringComparer.Ordinal)
         .Select(x =>
         {
-            var primaryGroup = grouped[x.Key].PrimaryGroup;
+            var primaryGroup = audit.GroupedByTensor[x.Key].PrimaryGroup;
 
             return new LearnedBaselineTensorQuant
             {
@@ -1668,10 +1752,10 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         baselineName: $"NATIVE_{nativeScheme.Names[0]}",
         schemeName: nativeScheme.Names[0],
         truthByTensor: truth,
-        grouped: grouped,
+        grouped: audit.GroupedByTensor,
         allTensorNamesInModel: metadata.TensorNames,
-        ambiguous: ambiguous,
-        unresolved: unresolved);
+        ambiguous: audit.Ambiguous,
+        unresolved: audit.IllegalUnresolved.Select(x => x.TensorName).ToList());
 
     var sourcePrecision = nativeScheme.Names[0];
     var distribution = rows.GroupBy(x => x.FinalQuantType)
@@ -1680,7 +1764,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         .ToList();
 
     AnsiConsole.MarkupLine(
-        $"[green]Native-source learned truth:[/] precision={Markup.Escape(sourcePrecision)}, tensors={rows.Count}, unresolved={unresolved.Count}, ambiguous={ambiguous.Count}, dist={Markup.Escape($"[{string.Join(", ", distribution)}]")}");
+        $"[green]Native-source learned truth:[/] precision={Markup.Escape(sourcePrecision)}, tensors={rows.Count}, unresolved={audit.IllegalUnresolved.Count}, ambiguous={audit.Ambiguous.Count}, baseFallback={audit.BaseQuantExceptions.Count}, dist={Markup.Escape($"[{string.Join(", ", distribution)}]")}");
 }
 
     private static bool IsLearnableBaselineRun(HybridQuant quant)
@@ -1718,25 +1802,33 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             return;
         }
 
-        var truth = BuildTruthMapWithVerification(parsed, ggufTruth, quant.BaseQuant.Names[0]);
+        var verification = BuildTruthMapWithVerification(parsed, ggufTruth, quant.BaseQuant.Names[0]);
+        var truth = verification.TruthByTensor;
         if (truth.Count == 0)
             throw new InvalidOperationException($"No verified tensor truth entries were available for baseline '{quant.BaseQuant.Names[0]}'.");
 
-        var grouped = AssignGroups(truth.Keys);
-        var ambiguous = grouped.Where(x => x.Value.MatchedGroups.Count > 1).ToList();
-        if (ambiguous.Count > 0)
+        var audit = _tensorGroupingAuditService.Audit(truth.Keys.ToList(), truth);
+        if (audit.HasFatalIssues || verification.HasFatalIssues)
         {
-            AnsiConsole.MarkupLine(
-                $"[red]WARNING:[/] {ambiguous.Count} tensor(s) matched multiple groups while learning baseline {Markup.Escape(quant.BaseQuant.Names[0])}.");
-            AnsiConsole.MarkupLine($"[grey]Example: {Markup.Escape(ambiguous[0].Key)} => {Markup.Escape(string.Join(", ", ambiguous[0].Value.MatchedGroups))}[/]");
-        }
+            var diagnosticPath = await _tensorLearningDiagnosticWriter.WriteFailureAsync(
+                baselineName: quant.BaseQuant.Names[0],
+                schemeName: tensorScheme.Names[0],
+                sourceKind: quant.BaseQuant.SourceKind.ToString(),
+                sourceRepository: quant.BaseQuant.SourceRepository,
+                sourceFileName: quant.BaseQuant.SourceFileName,
+                truthByTensor: truth,
+                audit: audit,
+                verification: verification,
+                ct: ct);
 
-        var unresolved = grouped.Where(x => x.Value.PrimaryGroup == null).Select(x => x.Key).ToList();
-        if (unresolved.Count > 0)
-        {
-            AnsiConsole.MarkupLine(
-                $"[yellow]WARNING:[/] {unresolved.Count} tensor(s) had no tensor-group match while learning baseline {Markup.Escape(quant.BaseQuant.Names[0])}. " +
-                $"They will still be saved with TensorGroupId={UnknownTensorGroupId}.");
+            AnsiConsole.MarkupLine($"[red]Tensor group learning failed.[/] See diagnostic log: [yellow]{Markup.Escape(diagnosticPath)}[/]");
+            throw new InvalidOperationException(
+                $"Strict tensor-group learning validation failed for baseline '{quant.BaseQuant.Names[0]}'. " +
+                $"Ambiguous={audit.Ambiguous.Count}, " +
+                $"IllegalUnresolved={audit.IllegalUnresolved.Count}, " +
+                $"AllowedBaseQuantFallback={audit.BaseQuantExceptions.Count}. " +
+                $"No learned tensor mappings were persisted. " +
+                $"Diagnostic log: {diagnosticPath}");
         }
 
         await using var db = new MagicQuantContext();
@@ -1773,7 +1865,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .Select(kv =>
             {
-                var match = grouped[kv.Key];
+                var match = audit.GroupedByTensor[kv.Key];
 
                 return new LearnedBaselineTensorQuant
                 {
@@ -1803,10 +1895,10 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             baselineName: quant.BaseQuant.Names[0],
             schemeName: tensorScheme.Names[0],
             truthByTensor: truth,
-            grouped: grouped,
+            grouped: audit.GroupedByTensor,
             allTensorNamesInModel: ggufMetadata.TensorNames,
-            ambiguous: ambiguous,
-            unresolved: unresolved);
+            ambiguous: audit.Ambiguous,
+            unresolved: audit.IllegalUnresolved.Select(x => x.TensorName).ToList());
 
         AnsiConsole.MarkupLine(
             $"[green]Learned baseline tensor mapping persisted:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
@@ -1842,7 +1934,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         return byTensor;
     }
 
-    private Dictionary<string, LearnedTensorTruth> BuildTruthMapWithVerification(
+    private TensorTruthVerificationResult BuildTruthMapWithVerification(
         IReadOnlyDictionary<string, string> logTruth,
         IReadOnlyDictionary<string, string> ggufTruth,
         string baselineName)
@@ -1854,8 +1946,8 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             .ToList();
 
         var result = new Dictionary<string, LearnedTensorTruth>(StringComparer.Ordinal);
-        var hardMismatches = new List<string>();
-        var softMismatches = new List<string>();
+        var hardMismatches = new List<TensorTruthMismatch>();
+        var softMismatches = new List<TensorTruthMismatch>();
         var logOnly = new List<string>();
 
         foreach (var name in allNames)
@@ -1874,9 +1966,21 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                     result[name] = new LearnedTensorTruth(name, ggufType!, LearningSource.BothWithMismatch);
 
                     if (IsHighSeverityMismatch(logType!, ggufType!))
-                        hardMismatches.Add($"{name}: log={logType} gguf={ggufType}");
+                        hardMismatches.Add(new TensorTruthMismatch
+                        {
+                            TensorName = name,
+                            LogQuantType = logType!,
+                            GgufQuantType = ggufType!,
+                            IsHighSeverity = true
+                        });
                     else
-                        softMismatches.Add($"{name}: log={logType} gguf={ggufType}");
+                        softMismatches.Add(new TensorTruthMismatch
+                        {
+                            TensorName = name,
+                            LogQuantType = logType!,
+                            GgufQuantType = ggufType!,
+                            IsHighSeverity = false
+                        });
                 }
             }
             else if (inGguf)
@@ -1893,14 +1997,14 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {hardMismatches.Count} high-severity GGUF/log mismatches; GGUF truth was used.");
-            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", hardMismatches.Take(6)))}[/]");
+            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", hardMismatches.Take(6).Select(x => $\"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}\")))}[/]");
         }
 
         if (softMismatches.Count > 0)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]WARNING:[/] Baseline [yellow]{Markup.Escape(baselineName)}[/] had {softMismatches.Count} GGUF/log mismatches; GGUF truth was used.");
-            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", softMismatches.Take(6)))}[/]");
+            AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", softMismatches.Take(6).Select(x => $\"{x.TensorName}: log={x.LogQuantType} gguf={x.GgufQuantType}\")))}[/]");
         }
 
         if (logOnly.Count > 0)
@@ -1910,7 +2014,13 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             AnsiConsole.MarkupLine($"[grey]Examples: {Markup.Escape(string.Join(" | ", logOnly.Take(6)))}[/]");
         }
 
-        return result;
+        return new TensorTruthVerificationResult
+        {
+            TruthByTensor = result,
+            HardMismatches = hardMismatches,
+            SoftMismatches = softMismatches,
+            LogOnly = logOnly
+        };
     }
 
     private static bool IsHighSeverityMismatch(string logType, string ggufType)
@@ -1926,7 +2036,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         IReadOnlyDictionary<string, LearnedTensorTruth> truthByTensor,
         IReadOnlyDictionary<string, TensorGroupingResult> grouped,
         IReadOnlyCollection<string> allTensorNamesInModel,
-        IReadOnlyCollection<KeyValuePair<string, TensorGroupingResult>> ambiguous,
+        IReadOnlyCollection<TensorGroupingAuditIssue> ambiguous,
         IReadOnlyCollection<string> unresolved)
     {
         var summaries = new List<object>();
@@ -1966,7 +2076,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                 LearnedTensorCount = learned.Count,
                 UnmatchedExpected = unmatched,
                 UnexpectedLearned = unexpected,
-                Ambiguous = ambiguous.Where(x => x.Value.MatchedGroups.Contains(group.Name)).Select(x => x.Key).Take(20).ToList(),
+                Ambiguous = ambiguous.Where(x => x.MatchedGroups.Contains(group.Name)).Select(x => x.TensorName).Take(20).ToList(),
                 QuantDistribution = distribution,
                 SourceDistribution = sourceCounts
             });
@@ -1986,7 +2096,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                 $"expected={expected.Count} " +
                 $"learned={learned.Count} " +
                 $"unmatched={unmatched.Count} " +
-                $"ambiguous={ambiguous.Count(x => x.Value.MatchedGroups.Contains(group.Name))} " +
+                $"ambiguous={ambiguous.Count(x => x.MatchedGroups.Contains(group.Name))} " +
                 $"dist={Markup.Escape($"[{distShort}]")} " +
                 $"src={Markup.Escape($"[{srcShort}]")}[/]");
 
@@ -2022,30 +2132,6 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                 $"[yellow]WARNING:[/] Baseline learning coverage was incomplete for {severeCoverageIssues.Count} group(s): " +
                 $"{Markup.Escape(string.Join(" | ", severeCoverageIssues.Take(8)))}");
         }
-    }
-
-    private Dictionary<string, TensorGroupingResult> AssignGroups(IEnumerable<string> tensorNames)
-    {
-        var dict = new Dictionary<string, TensorGroupingResult>(StringComparer.Ordinal);
-
-        foreach (var tensorName in tensorNames)
-        {
-            var matched = new List<TensorGroup>();
-
-            foreach (var group in TReg.All)
-            {
-                if (group.Tensors.Any(pattern => Regex.IsMatch(tensorName, $"^{pattern}$")))
-                    matched.Add(group);
-            }
-
-            dict[tensorName] = new TensorGroupingResult
-            {
-                MatchedGroups = matched.Select(x => x.Name).ToList(),
-                PrimaryGroup = matched.FirstOrDefault()
-            };
-        }
-
-        return dict;
     }
 
     private static TensorWeightScheme? TryResolveBaseTensorScheme(BaselineQuants baseQuant)
@@ -2701,10 +2787,12 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
         public string BenchmarkModelPath { get; set; } = string.Empty;
         public string? DownloadedExternalModelPath { get; set; }
         public Dictionary<string, LearnedTensorTruth>? TruthByTensor { get; set; }
-        public Dictionary<string, TensorGroupingResult>? GroupedByTensor { get; set; }
+        public IReadOnlyDictionary<string, TensorGroupingResult>? GroupedByTensor { get; set; }
         public IReadOnlyCollection<string>? AllTensorNamesInDownloadedArtifact { get; set; }
-        public List<KeyValuePair<string, TensorGroupingResult>>? AmbiguousGroupingRows { get; set; }
+        public List<TensorGroupingAuditIssue>? AmbiguousGroupingRows { get; set; }
         public List<string>? UnresolvedTensorNames { get; set; }
+        public List<TensorGroupingAuditIssue>? BaseQuantExceptionRows { get; set; }
+        public TensorTruthVerificationResult? Verification { get; set; }
         public bool HasPreparedLearningTruth { get; set; }
     }
 
@@ -2728,27 +2816,11 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
         public string GroupName { get; set; } = string.Empty;
     }
 
-    private sealed class TensorGroupingResult
-    {
-        public TensorGroup? PrimaryGroup { get; set; }
-        public List<string> MatchedGroups { get; set; } = new();
-    }
-
     private sealed class GgufTensorReadResult
     {
         public string? Error { get; set; }
         public List<string> TensorNames { get; set; } = new();
         public Dictionary<string, string> TensorTypes { get; set; } = new(StringComparer.Ordinal);
-    }
-
-    private sealed record LearnedTensorTruth(string TensorName, string FinalQuantType, LearningSource Source);
-
-    private enum LearningSource
-    {
-        LogOnly = 1,
-        GgufOnly = 2,
-        Both = 3,
-        BothWithMismatch = 4
     }
 
     // ----------------------------------------------------------------

@@ -185,29 +185,10 @@ public sealed class HybridArtifactExportService
         foreach (var directory in Directory.EnumerateDirectories(outputDirectory, "*", SearchOption.TopDirectoryOnly))
         {
             ct.ThrowIfCancellationRequested();
-            await HardDeleteDirectoryAsync(directory);
+            await HardDeleteHelper.DeleteDirectoryIfExistsAsync(directory, ct);
         }
 
         AnsiConsole.MarkupLine($"[grey]Cleaned final export directory:[/] {Markup.Escape(outputDirectory)}");
-    }
-
-    private static async Task HardDeleteDirectoryAsync(string directory)
-    {
-        if (!Directory.Exists(directory))
-            return;
-
-        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
-            await HardDeleteHelper.DeleteFileIfExistsAsync(file);
-
-        foreach (var sub in Directory.EnumerateDirectories(directory, "*", SearchOption.AllDirectories)
-                     .OrderByDescending(x => x.Length))
-        {
-            if (Directory.Exists(sub))
-                Directory.Delete(sub, recursive: false);
-        }
-
-        if (Directory.Exists(directory))
-            Directory.Delete(directory, recursive: false);
     }
 
     private static async Task CleanExportSidecarsAsync(string outputDirectory, CancellationToken ct)
