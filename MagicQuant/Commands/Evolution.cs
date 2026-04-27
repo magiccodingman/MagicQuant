@@ -154,7 +154,9 @@ public class Evolution : ICommand
         string baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
                                    await benchmarkService.TryInitializeDynamicExecutionPlanFromCacheAsync(
-                                       q8QuantizationKey: q8QuantizationKey);
+                                       q8QuantizationKey: q8QuantizationKey,
+                                       nativeModelPath: bf16ModelGgufPath,
+                                       nativeQuantizationKey: baseTypeName);
 
         if (!loadedPlanFromCache)
         {

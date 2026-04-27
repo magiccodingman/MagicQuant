@@ -129,7 +129,11 @@ public class BenchmarkService
             BenchmarkExecutionPlan? plan = null;
             if (!forceRediscovery)
             {
-                plan = await TryLoadCachedExecutionPlanAsync(cacheKey, ct);
+                plan = await TryLoadCachedExecutionPlanAsync(
+                    key: cacheKey,
+                    nativeModelPath: normalizedNativePath,
+                    nativeQuantizationKey: normalizedNativeQuantizationKey,
+                    ct: ct);
                 if (plan != null)
                     AnsiConsole.MarkupLine("[green]Loaded benchmark execution plan from SQLite cache.[/]");
             }
@@ -191,17 +195,23 @@ public class BenchmarkService
     public async Task<bool> TryInitializeExecutionPlanFromCacheAsync(
         int discoveryTokenTarget = 8192,
         string quantizationKey = "Q8_0",
+        string? nativeModelPath = null,
+        string nativeQuantizationKey = "BF16",
         string? preferredPlanModelPath = null,
         CancellationToken ct = default)
         => await TryInitializeDynamicExecutionPlanFromCacheAsync(
             discoveryTokenTarget: discoveryTokenTarget,
             q8QuantizationKey: quantizationKey,
+            nativeModelPath: nativeModelPath,
+            nativeQuantizationKey: nativeQuantizationKey,
             preferredPlanModelPath: preferredPlanModelPath,
             ct: ct);
 
     public async Task<bool> TryInitializeDynamicExecutionPlanFromCacheAsync(
         int discoveryTokenTarget = 8192,
         string q8QuantizationKey = "Q8_0",
+        string? nativeModelPath = null,
+        string nativeQuantizationKey = "BF16",
         string? preferredPlanModelPath = null,
         CancellationToken ct = default)
     {
@@ -217,7 +227,11 @@ public class BenchmarkService
         AnsiConsole.MarkupLine(
             $"[grey]Checking execution-plan cache:[/] quant={Markup.Escape(normalizedQuantizationKey)}, tokens={discoveryTokenTarget}");
 
-        var plan = await TryLoadCachedExecutionPlanAsync(cacheKey, ct);
+        var plan = await TryLoadCachedExecutionPlanAsync(
+            key: cacheKey,
+            nativeModelPath: nativeModelPath,
+            nativeQuantizationKey: nativeQuantizationKey,
+            ct: ct);
         if (plan == null)
         {
             AnsiConsole.MarkupLine("[yellow]Execution-plan cache miss:[/] full Q8 probe will run.");
@@ -305,7 +319,18 @@ public class BenchmarkService
                 AnsiConsole.MarkupLine(
                     "[yellow]Base model could not sustain the discovered GPU ngl. Falling back to a CPU benchmark plan.[/]");
 
-                var cpuPlan = BenchmarkExecutionPlan.CreateCpuPlan(_currentPlan.PlanModelPath);
+                var cpuPlan = BenchmarkExecutionPlan.CreateCpuPlan(_currentPlan.PlanModelPath) with
+                {
+                    ProbeSchemaVersion = _currentPlan.ProbeSchemaVersion,
+                    Q8ModelSizeBytes = _currentPlan.Q8ModelSizeBytes,
+                    Q8StableNgl = 0,
+                    NativeModelSizeBytes = _currentPlan.NativeModelSizeBytes,
+                    NativeStableNgl = 0,
+                    NativeQuantizationKey = _currentPlan.NativeQuantizationKey,
+                    MaxCandidateNgl = _currentPlan.MaxCandidateNgl,
+                    GpuMemoryLimitsJson = _currentPlan.GpuMemoryLimitsJson,
+                    TensorSplitJson = "{}"
+                };
 
                 lock (SlotSync)
                 {
@@ -325,12 +350,7 @@ public class BenchmarkService
 
             if (chosen.Value != _currentPlan.StaticNgl)
             {
-                var updated = new BenchmarkExecutionPlan(
-                    PlanModelPath: _currentPlan.PlanModelPath,
-                    StaticNgl: chosen.Value,
-                    UsesGpu: _currentPlan.UsesGpu,
-                    GroupSize: _currentPlan.GroupSize,
-                    Slots: _currentPlan.Slots);
+                var updated = _currentPlan with { StaticNgl = chosen.Value };
 
                 lock (SlotSync)
                 {
@@ -378,7 +398,7 @@ public class BenchmarkService
             };
         }
 
-        var probeSlot = plan.Slots[0];
+        var probeSlot = BuildAllGpuSlotFromSystemInfo();
         int? nativeStableNgl = await ProbeHighestStableNglAsync(
             nativeModelPath,
             probeSlot,
@@ -388,17 +408,19 @@ public class BenchmarkService
 
         if (!nativeStableNgl.HasValue || nativeStableNgl.Value <= 0)
         {
-            AnsiConsole.MarkupLine("[yellow]Native/BF16 anchor probe failed; falling back to CPU plan.[/]");
-            return BenchmarkExecutionPlan.CreateCpuPlan(q8ModelPath) with
+            AnsiConsole.MarkupLine(
+                "[yellow]Native anchor unavailable; keeping Q8 GPU plan and using conservative Q8-only dynamic NGL fallback.[/]");
+            return plan with
             {
                 ProbeSchemaVersion = DynamicProbeSchemaVersion,
                 Q8ModelSizeBytes = TryGetModelSize(q8ModelPath),
-                Q8StableNgl = 0,
+                Q8StableNgl = plan.StaticNgl,
                 NativeModelSizeBytes = TryGetModelSize(nativeModelPath),
                 NativeStableNgl = 0,
+                NativeQuantizationKey = nativeQuantizationKey,
                 MaxCandidateNgl = NglCandidates.Max(),
                 GpuMemoryLimitsJson = SerializeGpuMemoryLimits(),
-                TensorSplitJson = "{}"
+                TensorSplitJson = SerializeTensorSplitMap(plan.Slots)
             };
         }
 
@@ -409,6 +431,7 @@ public class BenchmarkService
             Q8StableNgl = plan.StaticNgl,
             NativeModelSizeBytes = TryGetModelSize(nativeModelPath),
             NativeStableNgl = nativeStableNgl.Value,
+            NativeQuantizationKey = nativeQuantizationKey,
             MaxCandidateNgl = NglCandidates.Max(),
             GpuMemoryLimitsJson = SerializeGpuMemoryLimits(),
             TensorSplitJson = SerializeTensorSplitMap(plan.Slots)
@@ -496,8 +519,23 @@ public class BenchmarkService
             Slots: new List<BenchmarkSlot> { allGpuSlot });
     }
 
+    private static BenchmarkSlot BuildAllGpuSlotFromSystemInfo()
+    {
+        int gpuCount = Cache.SysInfo?.GpuInfo?
+            .Count(x => x.GpuVendor != GpuVendor.Cpu && x.GpuVendor != GpuVendor.Unknown) ?? 0;
+
+        if (gpuCount <= 0)
+            return new BenchmarkSlot(0, Array.Empty<int>());
+
+        var slot = new BenchmarkSlot(0, Enumerable.Range(0, gpuCount).ToArray());
+        _ = BuildTensorSplitArgs(slot);
+        return slot;
+    }
+
     private async Task<BenchmarkExecutionPlan?> TryLoadCachedExecutionPlanAsync(
         ExecutionPlanCacheKey key,
+        string? nativeModelPath,
+        string nativeQuantizationKey,
         CancellationToken ct)
     {
         await using var db = new MagicQuantContext();
@@ -527,6 +565,23 @@ public class BenchmarkService
         {
             AnsiConsole.MarkupLine("[yellow]Execution-plan cache row GPU memory limits differ from current config; re-probing.[/]");
             return null;
+        }
+
+        string normalizedNativeQuantizationKey = (nativeQuantizationKey ?? string.Empty).Trim().ToUpperInvariant();
+        if (!string.Equals((row.NativeQuantizationKey ?? string.Empty).Trim().ToUpperInvariant(), normalizedNativeQuantizationKey, StringComparison.Ordinal))
+        {
+            AnsiConsole.MarkupLine("[yellow]Execution-plan cache native quantization key changed; re-probing.[/]");
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(nativeModelPath))
+        {
+            ulong nativeSize = TryGetModelSize(Path.GetFullPath(nativeModelPath));
+            if (nativeSize > 0 && row.NativeModelSizeBytes != nativeSize)
+            {
+                AnsiConsole.MarkupLine("[yellow]Execution-plan cache native model size changed; re-probing.[/]");
+                return null;
+            }
         }
 
         List<int[]> slotDevices;
@@ -570,6 +625,7 @@ public class BenchmarkService
             Q8StableNgl: row.Q8StableNgl,
             NativeModelSizeBytes: row.NativeModelSizeBytes,
             NativeStableNgl: row.NativeStableNgl,
+            NativeQuantizationKey: row.NativeQuantizationKey ?? string.Empty,
             MaxCandidateNgl: row.MaxCandidateNgl > 0 ? row.MaxCandidateNgl : NglCandidates.Max(),
             GpuMemoryLimitsJson: row.GpuMemoryLimitsJson ?? "{}",
             TensorSplitJson: row.TensorSplitJson ?? "{}");
@@ -621,6 +677,7 @@ public class BenchmarkService
         existing.Q8StableNgl = plan.Q8StableNgl;
         existing.NativeModelSizeBytes = plan.NativeModelSizeBytes;
         existing.NativeStableNgl = plan.NativeStableNgl;
+        existing.NativeQuantizationKey = plan.NativeQuantizationKey;
         existing.MaxCandidateNgl = plan.MaxCandidateNgl;
         existing.GpuMemoryLimitsJson = plan.GpuMemoryLimitsJson;
         existing.TensorSplitJson = plan.TensorSplitJson;
@@ -975,7 +1032,7 @@ public class BenchmarkService
         }
         else
         {
-            estimateRaw = _currentPlan.StaticNgl;
+            estimateRaw = Math.Floor(_currentPlan.Q8StableNgl * (_currentPlan.Q8ModelSizeBytes / (double)modelSizeBytes));
         }
 
         int estimate = (int)Math.Clamp(estimateRaw, 0, maxNgl);
@@ -2060,8 +2117,9 @@ public class BenchmarkService
 
             if (attempt < attempts && retryable)
             {
+                int retryNgl = ExtractNglFromCommand(cmd);
                 AnsiConsole.MarkupLine(
-                    $"[yellow]Transient benchmark failure detected on slot {slot.SlotId} ({Markup.Escape(slot.DisplayName)}). Retrying same fixed plan...[/]");
+                    $"[yellow]Transient benchmark failure detected at ngl={retryNgl} on slot {slot.SlotId} ({Markup.Escape(slot.DisplayName)}); retrying same NGL once before fallback.[/]");
                 await Task.Delay(1500);
                 continue;
             }
@@ -2107,6 +2165,15 @@ public class BenchmarkService
             return true;
 
         return false;
+    }
+
+    private static int ExtractNglFromCommand(string cmd)
+    {
+        var match = Regex.Match(cmd, @"(?:\s-ngl\s+)(\d+)", RegexOptions.IgnoreCase);
+        if (match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ngl))
+            return ngl;
+
+        return 0;
     }
 
     // ----------------------------------------------------------------
@@ -2382,6 +2449,7 @@ with open(out_path, 'w', encoding='utf-8') as f:
         int Q8StableNgl = 0,
         ulong NativeModelSizeBytes = 0,
         int NativeStableNgl = 0,
+        string NativeQuantizationKey = "",
         int MaxCandidateNgl = 35,
         string GpuMemoryLimitsJson = "{}",
         string TensorSplitJson = "{}")
@@ -2398,6 +2466,7 @@ with open(out_path, 'w', encoding='utf-8') as f:
                 Q8StableNgl: 0,
                 NativeModelSizeBytes: 0,
                 NativeStableNgl: 0,
+                NativeQuantizationKey: string.Empty,
                 MaxCandidateNgl: NglCandidates.Max(),
                 GpuMemoryLimitsJson: SerializeGpuMemoryLimits(),
                 TensorSplitJson: "{}");
