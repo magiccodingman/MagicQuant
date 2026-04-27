@@ -2,6 +2,7 @@ using MagicQuant.Configuration;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MagicQuant.Services;
+using MagicQuant.Services.Progress;
 using MQ.DB;
 using MQ.DB.Data;
 using MQ.DB.Models;
@@ -226,7 +227,17 @@ public class Evolution : ICommand
 
         AnsiConsole.MarkupLine($"[grey]Queued initial startup samples:[/] [cyan]{initialPlan.TotalCount:N0}[/]");
 
-        var initialSummary = await quantizationService.ProcessHybridBatchAsync(initialPlan.Plans);
+        var initialSummary = await quantizationService.ProcessHybridBatchAsync(
+            initialPlan.Plans,
+            new StageProgressOptions
+            {
+                StageName = "Initial isolation startup samples",
+                Total = initialPlan.TotalCount,
+                MinimumNonSkippedSamplesBeforeEta = 2,
+                ShowEta = true,
+                CountSkippedForEta = false
+            },
+            default);
 
         AnsiConsole.MarkupLine("[bold green]Initial startup sampling complete.[/]");
         AnsiConsole.MarkupLine($"  [green]Completed:[/] {initialSummary.Completed:N0}");
@@ -260,7 +271,17 @@ public class Evolution : ICommand
         {
             AnsiConsole.MarkupLine($"[grey]Queued continuation samples:[/] [cyan]{continuationPlan.TotalCount:N0}[/]");
 
-            var continuationSummary = await quantizationService.ProcessHybridBatchAsync(continuationPlan.Plans);
+            var continuationSummary = await quantizationService.ProcessHybridBatchAsync(
+                continuationPlan.Plans,
+                new StageProgressOptions
+                {
+                    StageName = "Continuation isolation samples",
+                    Total = continuationPlan.TotalCount,
+                    MinimumNonSkippedSamplesBeforeEta = 2,
+                    ShowEta = true,
+                    CountSkippedForEta = false
+                },
+                default);
 
             AnsiConsole.MarkupLine("[bold green]Continuation sampling complete.[/]");
             AnsiConsole.MarkupLine($"  [green]Completed:[/] {continuationSummary.Completed:N0}");
@@ -356,7 +377,17 @@ public class Evolution : ICommand
         {
             AnsiConsole.MarkupLine($"[grey]Queued archival isolation samples:[/] [cyan]{archivalCoveragePlan.TotalCount:N0}[/]");
 
-            var archivalCoverageSummary = await quantizationService.ProcessHybridBatchAsync(archivalCoveragePlan.Plans);
+            var archivalCoverageSummary = await quantizationService.ProcessHybridBatchAsync(
+                archivalCoveragePlan.Plans,
+                new StageProgressOptions
+                {
+                    StageName = "Archival isolation coverage samples",
+                    Total = archivalCoveragePlan.TotalCount,
+                    MinimumNonSkippedSamplesBeforeEta = 2,
+                    ShowEta = true,
+                    CountSkippedForEta = false
+                },
+                default);
 
             AnsiConsole.MarkupLine("[bold green]Archival isolation coverage complete.[/]");
             AnsiConsole.MarkupLine($"  [green]Completed:[/] {archivalCoverageSummary.Completed:N0}");

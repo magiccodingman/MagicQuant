@@ -46,6 +46,11 @@ public class BenchmarkService
     private static Queue<BenchmarkSlot> _availableSlots = new();
     private static SemaphoreSlim? _slotSemaphore;
 
+    public int CurrentParallelSlotCount
+    {
+        get { lock (SlotSync) return _currentPlan?.Slots.Count ?? 1; }
+    }
+
     // ----------------------------------------------------------------
     // Construction
     // ----------------------------------------------------------------

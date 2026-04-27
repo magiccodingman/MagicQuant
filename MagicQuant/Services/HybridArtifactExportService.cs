@@ -1,5 +1,6 @@
 using MagicQuant.Helpers;
 using MagicQuant.Models;
+using MagicQuant.Services.Progress;
 using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
@@ -109,18 +110,40 @@ public sealed class HybridArtifactExportService
             localBuilds.Add((record, snap.Quant, fullPath, snap.SizeBytes));
         }
 
+        StageProgressTracker? exportProgress = localBuilds.Count > 0
+            ? new StageProgressTracker(new StageProgressOptions
+            {
+                StageName = "Final artifact export",
+                Total = localBuilds.Count,
+                ShowEta = false,
+                MinimumPrintInterval = TimeSpan.FromSeconds(5),
+                UnitLabel = "local GGUF outputs built"
+            })
+            : null;
+
         // Kick off all exports together. QuantizationService owns the real concurrency gates,
         // so this trusts that service to self-regulate CPU/GPU/process pressure.
         var buildTasks = localBuilds.Select(async item =>
         {
-            await _quantizationService.BuildExportArtifactAsync(item.Quant, item.FullPath, forceRebuild: true, ct: ct);
-
-            ulong actualBytes = File.Exists(item.FullPath) ? (ulong)new FileInfo(item.FullPath).Length : 0UL;
-            item.Record.ActualSizeBytes = actualBytes;
-
-            if (actualBytes != item.ExpectedBytes)
+            string fileName = Path.GetFileName(item.FullPath);
+            try
             {
-                AnsiConsole.MarkupLine($"[yellow]Export byte validation warning:[/] expected [cyan]{item.ExpectedBytes:N0}[/] but got [cyan]{actualBytes:N0}[/] for {Markup.Escape(Path.GetFileName(item.FullPath))}");
+                await _quantizationService.BuildExportArtifactAsync(item.Quant, item.FullPath, forceRebuild: true, ct: ct);
+
+                ulong actualBytes = File.Exists(item.FullPath) ? (ulong)new FileInfo(item.FullPath).Length : 0UL;
+                item.Record.ActualSizeBytes = actualBytes;
+
+                if (actualBytes != item.ExpectedBytes)
+                {
+                    AnsiConsole.MarkupLine($"[yellow]Export byte validation warning:[/] expected [cyan]{item.ExpectedBytes:N0}[/] but got [cyan]{actualBytes:N0}[/] for {Markup.Escape(fileName)}");
+                }
+
+                exportProgress?.ReportFinished(SampleProcessState.Completed, fileName);
+            }
+            catch
+            {
+                exportProgress?.ReportFinished(SampleProcessState.Failed, fileName);
+                throw;
             }
         });
 
