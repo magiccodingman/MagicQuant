@@ -9,7 +9,7 @@ paths:
 flags:
   use_imatrix: true
   force_imatrix_rebuild: false
-  force_relearn_baseline_tensor_mappings: true
+  force_relearn_baseline_tensor_mappings: false
   force_refresh_hardware_probe: false
   allow_high_precision_hybrids: false
 
