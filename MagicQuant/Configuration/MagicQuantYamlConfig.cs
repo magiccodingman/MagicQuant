@@ -15,6 +15,7 @@ public sealed class MagicQuantYamlConfig
     public RuntimeOutputConfig Output { get; set; } = new();
     public RuntimeSurvivalConfig Survival { get; set; } = new();
     public RuntimeCandidateSelectionConfig CandidateSelection { get; set; } = new();
+    public RuntimeHardwareConfig Hardware { get; set; } = new();
 
     public List<string> SensitivityProbeGroups { get; set; } =
     [
@@ -288,4 +289,9 @@ public sealed class ResolvedCustomBaselineSpec
     public bool AllowAsCombinationCarrier { get; set; }
     public bool AllowAsExplicitGroupCandidate { get; set; }
     public IReadOnlyList<byte> BannedGroupIds { get; set; } = Array.Empty<byte>();
+}
+
+public sealed class RuntimeHardwareConfig
+{
+    public Dictionary<int, double> GpuMemoryLimitsGb { get; set; } = new();
 }

@@ -90,6 +90,8 @@ public class Cache
 
     public static bool ForceImatrixRebuild { get; set; }
 
+    public static Dictionary<int, double> GpuMemoryLimitsGb { get; set; } = new();
+
     public static bool IsImatrixAvailable { get; set; }
 
     public static string? ActiveImatrixPath { get; set; }

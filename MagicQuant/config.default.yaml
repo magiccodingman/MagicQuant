@@ -52,6 +52,18 @@ flags:
   # are allowed in hybrid generation logic.
   allow_high_precision_hybrids: false
 
+hardware:
+  # Optional per-GPU usable VRAM limits in GB.
+  # Leave empty for automatic/default llama.cpp placement.
+  # When provided and a benchmark slot uses multiple GPUs, MagicQuant will pass
+  # --tensor-split in visible GPU order.
+  #
+  # Example:
+  # gpu_memory_limits_gb:
+  #   0: 19
+  #   1: 23
+  gpu_memory_limits_gb: {}
+
 imatrix:
   # Optional remote imatrix URL if your flow supports fetching one.
   imatrix_url:
