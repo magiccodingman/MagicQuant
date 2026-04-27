@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
-using System.Linq;
-
+using System.Text.RegularExpressions;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 
 namespace MQ.DB.Models;
 
@@ -11,6 +12,13 @@ public class TensorGroupInfo
 
 /// <summary>
 /// Represents a categorized group of tensors with a unique name and matching patterns.
+/// 
+/// Important:
+/// The group identity itself is intentionally owned by C#.
+/// The regex patterns are loaded from tensor_groups.yaml.
+/// 
+/// This keeps MagicQuant's benchmark identity stable while allowing tensor-name
+/// matching rules to evolve without recompiling the application.
 /// </summary>
 public record TensorGroup(byte UniqueId, string Name, ImmutableArray<string> Tensors)
 {
@@ -33,177 +41,371 @@ public record TensorGroup(byte UniqueId, string Name, ImmutableArray<string> Ten
 }
 
 /// <summary>
-/// Tensor Registry
+/// Tensor Registry.
+/// 
+/// The semantic tensor groups are fixed here on purpose.
+/// The matching regex patterns are loaded from tensor_groups.yaml and cached on first use.
+/// 
+/// Design rule:
+/// MagicQuant should not silently invent tensor-group behavior at runtime.
+/// New groups should be deliberate architecture/benchmark decisions.
+/// Pattern changes, however, are config/schema-level changes and belong in YAML.
 /// </summary>
 public static class TReg
 {
-    public static readonly TensorGroup Embeddings = new(0, "embeddings", [
-        "token_embd\\.weight",
-        "model\\.embed_tokens\\.weight",
-        "embed_tokens\\.weight",
-        "tok_embeddings\\.weight",
-        "word_embeddings\\.weight",
-        "transformer\\.wte\\.weight",
-        "wte\\.weight"
-    ]);
+    private const string DefaultYamlFileName = "tensor_groups.yaml";
 
-    public static readonly TensorGroup LmHead = new(1, "lm_head", [
-        "output\\.weight",
-        "lm_head\\.weight",
-        "final_logits_proj\\.weight",
-        "model\\.embed_out\\.weight",
-        "lm_head\\.decoder\\.weight"
-    ]);
+    private static readonly object CacheLock = new();
 
-    public static readonly TensorGroup AttnQ = new(2, "attn_q", [
-        // Matches blk.0.attn_q.weight
-        "blk\\..*\\.attn_q\\.weight",
-        ".*q_proj.*weight",
-        ".*query\\.weight",
-        ".*self_attn\\.q_proj\\.weight",
-        ".*attention\\.self\\.query\\.weight",
-        ".*SelfAttention\\.q\\.weight",
-        ".*c_attn\\.weight",
-        ".*query_key_value\\.weight"
-    ]);
+    private static TensorGroupYamlFile? _yamlCache;
 
-    public static readonly TensorGroup AttnKV = new(3, "attn_kv", [
-        "blk\\..*\\.attn_k\\.weight",
-        "blk\\..*\\.attn_v\\.weight",
-        ".*k_proj.*weight",
-        ".*v_proj.*weight",
-        ".*key\\.weight",
-        ".*value\\.weight",
-        ".*self_attn\\.k_proj\\.weight",
-        ".*self_attn\\.v_proj\\.weight",
-        ".*attention\\.self\\.key\\.weight",
-        ".*attention\\.self\\.value\\.weight",
-        ".*SelfAttention\\.k\\.weight",
-        ".*SelfAttention\\.v\\.weight",
-        ".*EncDecAttention\\.k\\.weight",
-        ".*EncDecAttention\\.v\\.weight"
-    ]);
+    private static readonly Dictionary<string, TensorGroup> GroupCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
-    public static readonly TensorGroup AttnOutput = new(4, "attn_output", [
-        "blk\\..*\\.attn_output\\.weight",
-        ".*out_proj.*weight",
-        ".*o_proj.*weight",
-        ".*c_proj\\.weight",
-        ".*attention\\.output\\.dense\\.weight",
-        ".*self_attn\\.out_proj\\.weight",
-        ".*SelfAttention\\.o\\.weight",
-        ".*self_attention\\.dense\\.weight",
-        ".*attention\\.proj\\.weight"
-    ]);
+    private static readonly Dictionary<string, ImmutableArray<Regex>> GroupRegexCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
-    public static readonly TensorGroup FfnUpGate = new(5, "ffn_up_gate", [
-        "blk\\..*\\.ffn_up\\.weight",
-        "blk\\..*\\.ffn_gate\\.weight",
+    private static ImmutableArray<string>? _baseQuantExceptionPatternsCache;
 
-        ".*intermediate\\.dense\\.weight",
-        ".*c_fc\\.weight",
-        ".*fc1\\.weight",
-        ".*fc_in\\.weight",
-        ".*dense_h_to_4h\\.weight",
-        ".*wi\\.weight",
-        ".*wi_0\\.weight",
-        ".*wi_1\\.weight",
-        ".*mlp\\.up_proj\\.weight",
-        ".*mlp\\.gate_proj\\.weight",
-        ".*DenseReluDense\\.wi_0\\.weight",
-        ".*DenseReluDense\\.wi_1\\.weight",
-        ".*experts.*wi_0\\.weight",
-        ".*experts.*wi_1\\.weight",
-        "blk\\..*\\.ffn_up_exps\\.weight",
-        "blk\\..*\\.ffn_gate_exps\\.weight",
+    private static ImmutableArray<Regex>? _baseQuantExceptionRegexCache;
 
-        // Qwen3.5 MoE / modern expert forms
-        ".*mlp\\.experts\\.gate_up_proj.*",
-        ".*mlp\\.shared_expert\\.gate_proj\\.weight",
-        ".*mlp\\.shared_expert\\.up_proj\\.weight",
+    /// <summary>
+    /// Future extension point.
+    /// 
+    /// Right now this can remain null and the loader will resolve tensor_groups.yaml
+    /// from the application output directory.
+    /// 
+    /// Later, CLI/config code can set this before first access if users provide
+    /// an override location.
+    /// </summary>
+    public static string? TensorGroupsYamlPathOverride { get; set; }
 
-        // Gemma 4 MoE
-        ".*layers\\..*\\.experts\\.gate_up_proj.*"
-    ]);
+    public static TensorGroup Embeddings => GetRequiredGroup(0, "embeddings");
 
-    public static readonly TensorGroup FfnDown = new(6, "ffn_down", [
-        "blk\\..*\\.ffn_down\\.weight",
-        ".*output\\.dense\\.weight",
-        ".*c_proj\\.weight",
-        ".*fc2\\.weight",
-        ".*fc_out\\.weight",
-        ".*wo\\.weight",
-        ".*dense_4h_to_h\\.weight",
-        ".*mlp\\.down_proj\\.weight",
-        ".*DenseReluDense\\.wo\\.weight",
-        ".*experts.*wo\\.weight",
-        "blk\\..*\\.ffn_down_exps\\.weight",
+    public static TensorGroup LmHead => GetRequiredGroup(1, "lm_head");
 
-        // Qwen3.5 MoE / modern expert forms
-        ".*mlp\\.experts\\.down_proj.*",
-        ".*mlp\\.shared_expert\\.down_proj\\.weight",
+    public static TensorGroup AttnQ => GetRequiredGroup(2, "attn_q");
 
-        // Gemma 4 MoE
-        ".*layers\\..*\\.experts\\.down_proj.*"
-    ]);
+    public static TensorGroup AttnKV => GetRequiredGroup(3, "attn_kv");
 
-    public static readonly TensorGroup MoeExperts = new(7, "moe_experts", [
-        "blk\\..*\\.ffn_.*expert.*",
-        "blk\\..*\\.ffn_.*exps.*",
-        ".*experts?\\..*wi_0.*",
-        ".*experts?\\..*wi_1.*",
-        ".*experts?\\..*wo.*",
-        ".*experts?\\..*fc1.*",
-        ".*experts?\\..*fc2.*",
-        ".*experts?\\..*dense_h_to_4h.*",
-        ".*experts?\\..*dense_4h_to_h.*",
+    public static TensorGroup AttnOutput => GetRequiredGroup(4, "attn_output");
 
-        // Qwen3.5 native HF MoE
-        ".*mlp\\.experts\\.gate_up_proj.*",
-        ".*mlp\\.experts\\.down_proj.*",
-        ".*mlp\\.shared_expert\\.gate_proj\\.weight",
-        ".*mlp\\.shared_expert\\.up_proj\\.weight",
-        ".*mlp\\.shared_expert\\.down_proj\\.weight",
+    public static TensorGroup FfnUpGate => GetRequiredGroup(5, "ffn_up_gate");
 
-        // Gemma 4 MoE
-        ".*layers\\..*\\.experts\\.gate_up_proj.*",
-        ".*layers\\..*\\.experts\\.down_proj.*"
-    ]);
+    public static TensorGroup FfnDown => GetRequiredGroup(6, "ffn_down");
 
-    public static readonly TensorGroup MoeRouter = new(8, "moe_router", [
-        "router.*",
-        "gating.*",
-        "routing.*",
-        ".*(?<!ffn_)gate\\.weight",
-        ".*gating_network\\.weight",
-        ".*moe_gate\\.weight",
-        "blk\\..*\\.ffn_gate_inp\\.weight",
-        "blk\\..*\\.gate_inp\\.weight",
-        "blk\\..*\\.gate_proj\\.weight",
-        "blk\\..*\\.router.*",
-        "blk\\..*\\.router_fc.*",
+    public static TensorGroup MoeExperts => GetRequiredGroup(7, "moe_experts");
 
-        // Qwen3.5 native HF MoE
-        ".*mlp\\.gate\\.weight",
-
-        // Gemma 4 MoE
-        ".*layers\\..*\\.router\\.proj\\.weight",
-        ".*layers\\..*\\.router\\.per_expert_scale",
-        ".*layers\\..*\\.router\\.scale"
-    ]);
+    public static TensorGroup MoeRouter => GetRequiredGroup(8, "moe_router");
 
     /// <summary>
     /// Provides a complete list of all registered tensor groups.
+    /// 
+    /// This remains fixed by design. The regex patterns inside each group come
+    /// from tensor_groups.yaml.
     /// </summary>
-    public static readonly ImmutableArray<TensorGroup> All =
+    public static ImmutableArray<TensorGroup> All =>
     [
-        Embeddings, LmHead, AttnQ, AttnKV, AttnOutput,
-        FfnUpGate, FfnDown, MoeExperts, MoeRouter
+        Embeddings,
+        LmHead,
+        AttnQ,
+        AttnKV,
+        AttnOutput,
+        FfnUpGate,
+        FfnDown,
+        MoeExperts,
+        MoeRouter
     ];
 
     /// <summary>
-    /// Look up a group by its string name (useful when parsing external configs).
+    /// Look up a group by its string name, useful when parsing external configs.
     /// </summary>
     public static TensorGroup? GetByName(string name) =>
-        All.FirstOrDefault(g => g.Name.Equals(name, System.StringComparison.OrdinalIgnoreCase));
+        All.FirstOrDefault(g => g.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Gets compiled regexes for a semantic tensor group.
+    /// 
+    /// This is useful when matching many tensors repeatedly and avoids recompiling
+    /// the same patterns over and over.
+    /// </summary>
+    public static ImmutableArray<Regex> GetRegexesForGroup(TensorGroup group)
+    {
+        lock (CacheLock)
+        {
+            if (GroupRegexCache.TryGetValue(group.Name, out var cached))
+                return cached;
+
+            var regexes = group.Tensors
+                .Select(CreateRegex)
+                .ToImmutableArray();
+
+            GroupRegexCache[group.Name] = regexes;
+            return regexes;
+        }
+    }
+
+    /// <summary>
+    /// Gets regex patterns for tensors that are explicitly allowed to fall back to BaseQuant.
+    /// 
+    /// These are not semantic tensor groups. They are only checked after a tensor fails to
+    /// match any registered semantic group.
+    /// </summary>
+    public static ImmutableArray<string> GetBaseQuantExceptionPatterns()
+    {
+        lock (CacheLock)
+        {
+            if (_baseQuantExceptionPatternsCache is not null)
+                return _baseQuantExceptionPatternsCache.Value;
+
+            var yaml = LoadYamlIfNeeded();
+
+            var patterns = yaml.BaseQuantExceptions?.Patterns ?? [];
+
+            var cleanedPatterns = patterns
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToImmutableArray();
+
+            _baseQuantExceptionPatternsCache = cleanedPatterns;
+            return cleanedPatterns;
+        }
+    }
+
+    /// <summary>
+    /// Gets compiled regexes for tensors that are explicitly allowed to fall back to BaseQuant.
+    /// </summary>
+    public static ImmutableArray<Regex> GetBaseQuantExceptionRegexes()
+    {
+        lock (CacheLock)
+        {
+            if (_baseQuantExceptionRegexCache is not null)
+                return _baseQuantExceptionRegexCache.Value;
+
+            var regexes = GetBaseQuantExceptionPatterns()
+                .Select(CreateRegex)
+                .ToImmutableArray();
+
+            _baseQuantExceptionRegexCache = regexes;
+            return regexes;
+        }
+    }
+
+    /// <summary>
+    /// Returns true when the tensor is explicitly allowed to remain outside all semantic
+    /// tensor groups and fall back to the artifact BaseQuant.
+    /// 
+    /// Important:
+    /// This should only be called after normal group matching returns zero matches.
+    /// It must not be used to resolve group collisions.
+    /// </summary>
+    public static bool IsBaseQuantException(string tensorName)
+    {
+        foreach (var regex in GetBaseQuantExceptionRegexes())
+        {
+            if (regex.IsMatch(tensorName))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Finds all semantic tensor groups that match the provided tensor name.
+    /// 
+    /// If this returns:
+    /// - 0 groups: caller may then check IsBaseQuantException.
+    /// - 1 group: tensor is safely categorized.
+    /// - 2+ groups: caller should treat this as an ambiguity/collision error.
+    /// </summary>
+    public static ImmutableArray<TensorGroup> FindMatchingGroups(string tensorName)
+    {
+        var matches = ImmutableArray.CreateBuilder<TensorGroup>();
+
+        foreach (var group in All)
+        {
+            var regexes = GetRegexesForGroup(group);
+
+            foreach (var regex in regexes)
+            {
+                if (!regex.IsMatch(tensorName))
+                    continue;
+
+                matches.Add(group);
+                break;
+            }
+        }
+
+        return matches.ToImmutable();
+    }
+
+    /// <summary>
+    /// Clears the loaded YAML and materialized group/regex caches.
+    /// 
+    /// This is mainly useful for tests or future reload behavior.
+    /// Normal production runs should not need to call this.
+    /// </summary>
+    public static void ClearCache()
+    {
+        lock (CacheLock)
+        {
+            _yamlCache = null;
+            GroupCache.Clear();
+            GroupRegexCache.Clear();
+            _baseQuantExceptionPatternsCache = null;
+            _baseQuantExceptionRegexCache = null;
+        }
+    }
+
+    private static TensorGroup GetRequiredGroup(byte uniqueId, string name)
+    {
+        lock (CacheLock)
+        {
+            if (GroupCache.TryGetValue(name, out var cached))
+                return cached;
+
+            var yaml = LoadYamlIfNeeded();
+
+            if (yaml.Groups is null || yaml.Groups.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Tensor group YAML did not define any groups. File: {ResolveTensorGroupsYamlPath()}");
+            }
+
+            if (!yaml.Groups.TryGetValue(name, out var groupDef))
+            {
+                throw new InvalidOperationException(
+                    $"Required tensor group '{name}' was not found in {ResolveTensorGroupsYamlPath()}.");
+            }
+
+            if (groupDef.Patterns is null || groupDef.Patterns.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Tensor group '{name}' exists in {ResolveTensorGroupsYamlPath()}, but it has no patterns.");
+            }
+
+            var cleanedPatterns = groupDef.Patterns
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToImmutableArray();
+
+            if (cleanedPatterns.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Tensor group '{name}' exists in {ResolveTensorGroupsYamlPath()}, but all patterns were empty.");
+            }
+
+            var group = new TensorGroup(uniqueId, name, cleanedPatterns);
+            GroupCache[name] = group;
+
+            return group;
+        }
+    }
+
+    private static TensorGroupYamlFile LoadYamlIfNeeded()
+    {
+        if (_yamlCache is not null)
+            return _yamlCache;
+
+        var path = ResolveTensorGroupsYamlPath();
+
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException(
+                $"Could not find {DefaultYamlFileName}. Expected it at: {path}",
+                path);
+        }
+
+        var yamlText = File.ReadAllText(path);
+
+        if (string.IsNullOrWhiteSpace(yamlText))
+        {
+            throw new InvalidOperationException(
+                $"Tensor group YAML file is empty: {path}");
+        }
+
+        var deserializer = new DeserializerBuilder()
+            .WithNamingConvention(UnderscoredNamingConvention.Instance)
+            .IgnoreUnmatchedProperties()
+            .Build();
+
+        TensorGroupYamlFile? parsed;
+
+        try
+        {
+            parsed = deserializer.Deserialize<TensorGroupYamlFile>(yamlText);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to parse tensor group YAML file: {path}",
+                ex);
+        }
+
+        if (parsed is null)
+        {
+            throw new InvalidOperationException(
+                $"Tensor group YAML parsed to null: {path}");
+        }
+
+        if (parsed.SchemaVersion <= 0)
+        {
+            throw new InvalidOperationException(
+                $"Tensor group YAML must define a positive schema_version. File: {path}");
+        }
+
+        _yamlCache = parsed;
+        return _yamlCache;
+    }
+
+    private static string ResolveTensorGroupsYamlPath()
+    {
+        if (!string.IsNullOrWhiteSpace(TensorGroupsYamlPathOverride))
+            return Path.GetFullPath(TensorGroupsYamlPathOverride);
+
+        return Path.Combine(AppContext.BaseDirectory, DefaultYamlFileName);
+    }
+
+    private static Regex CreateRegex(string pattern)
+    {
+        try
+        {
+            return new Regex(
+                pattern,
+                RegexOptions.Compiled |
+                RegexOptions.CultureInvariant);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Invalid tensor group regex pattern: {pattern}",
+                ex);
+        }
+    }
+
+    private sealed class TensorGroupYamlFile
+    {
+        public int SchemaVersion { get; set; }
+
+        public Dictionary<string, TensorGroupYamlDefinition> Groups { get; set; } =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public BaseQuantExceptionYamlDefinition? BaseQuantExceptions { get; set; }
+    }
+
+    private sealed class TensorGroupYamlDefinition
+    {
+        public string? Description { get; set; }
+
+        public List<string> Patterns { get; set; } = [];
+    }
+
+    private sealed class BaseQuantExceptionYamlDefinition
+    {
+        public string? Description { get; set; }
+
+        public List<string> Patterns { get; set; } = [];
+    }
 }

@@ -14,11 +14,19 @@
         <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       </PackageReference>
       <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.1" />
+      <PackageReference Include="YamlDotNet" Version="17.0.1" />
     </ItemGroup>
 
     <ItemGroup>
       <Folder Include="Migrations\" />
       <Folder Include="Services\" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Remove="tensor_groups.yaml" />
+      <EmbeddedResource Include="tensor_groups.yaml">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </EmbeddedResource>
     </ItemGroup>
 
 </Project>
