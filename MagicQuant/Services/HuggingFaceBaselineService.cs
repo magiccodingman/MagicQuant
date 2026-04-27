@@ -308,6 +308,103 @@ public sealed class HuggingFaceBaselineService
         }
     }
 
+
+    public async Task<string> DownloadRepositoryFileAsync(
+        string repoId,
+        string fileName,
+        string destinationPath,
+        bool forceRedownload = true,
+        CancellationToken ct = default)
+    {
+        await EnsureHubSupportAsync();
+
+        if (string.IsNullOrWhiteSpace(repoId))
+            throw new ArgumentException("Hugging Face repo id is required.", nameof(repoId));
+        if (string.IsNullOrWhiteSpace(fileName))
+            throw new ArgumentException("Hugging Face file name is required.", nameof(fileName));
+        if (string.IsNullOrWhiteSpace(destinationPath))
+            throw new ArgumentException("Destination path is required.", nameof(destinationPath));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+
+        string tempDir = Cache.ExternalBaselineCacheDirectory ?? Cache.MagicQuantDirectory ?? AppContext.BaseDirectory;
+        Directory.CreateDirectory(tempDir);
+
+        string payloadPath = Path.Combine(tempDir, $"hf_download_file_{Guid.NewGuid():N}.json");
+        string resultPath = Path.Combine(tempDir, $"hf_download_file_result_{Guid.NewGuid():N}.json");
+        string scriptPath = Path.Combine(tempDir, $"hf_download_file_{Guid.NewGuid():N}.py");
+
+        try
+        {
+            await File.WriteAllTextAsync(payloadPath, JsonSerializer.Serialize(new
+            {
+                repo_id = repoId,
+                file_name = fileName,
+                destination_path = destinationPath,
+                force_redownload = forceRedownload
+            }), ct);
+
+            const string py = """
+            import json
+            import os
+            import shutil
+            import sys
+            from huggingface_hub import hf_hub_download
+
+            payload_path = sys.argv[1]
+            with open(payload_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+
+            target_path = payload['destination_path']
+            result_path = target_path + '.download_result.json'
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
+            try:
+                downloaded = hf_hub_download(
+                    repo_id=payload['repo_id'],
+                    filename=payload['file_name'],
+                    local_dir=os.path.dirname(target_path),
+                    force_download=payload.get('force_redownload', True),
+                )
+
+                if os.path.abspath(downloaded) != os.path.abspath(target_path):
+                    if os.path.exists(target_path):
+                        os.remove(target_path)
+                    shutil.copy2(downloaded, target_path)
+
+                result = {'ok': True, 'downloaded_path': target_path, 'size_bytes': os.path.getsize(target_path)}
+            except Exception as ex:
+                result = {'ok': False, 'error': str(ex)}
+
+            with open(result_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f)
+            """;
+
+            await File.WriteAllTextAsync(scriptPath, py, ct);
+            await _python.RunPythonScriptAsync(scriptPath, $"\"{payloadPath}\"");
+
+            string pythonResultPath = destinationPath + ".download_result.json";
+            File.Move(pythonResultPath, resultPath, overwrite: true);
+
+            var json = JsonDocument.Parse(await File.ReadAllTextAsync(resultPath, ct)).RootElement;
+            if (!json.GetProperty("ok").GetBoolean())
+                throw new InvalidOperationException($"Hugging Face file download failed: {json.GetProperty("error").GetString()}");
+
+            if (!File.Exists(destinationPath) || new FileInfo(destinationPath).Length == 0)
+                throw new InvalidOperationException($"Hugging Face file download completed but produced no file: {destinationPath}");
+
+            AnsiConsole.MarkupLine($"[green]Downloaded repository file:[/] {Markup.Escape(repoId)}/{Markup.Escape(fileName)} -> {Markup.Escape(destinationPath)}");
+            return destinationPath;
+        }
+        finally
+        {
+            TryDelete(payloadPath);
+            TryDelete(scriptPath);
+            TryDelete(resultPath);
+            TryDelete(destinationPath + ".download_result.json");
+        }
+    }
+
     private async Task EnsureHubSupportAsync()
     {
         string? version = await _python.GetInstalledVersionAsync("huggingface_hub");

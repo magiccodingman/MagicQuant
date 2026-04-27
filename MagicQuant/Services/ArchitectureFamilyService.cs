@@ -71,6 +71,17 @@ public sealed class ArchitectureFamilyService
                 throw new InvalidOperationException($"Architecture family '{matchingName.DisplayName}' already exists, but the current model tensor names/count do not match the previously registered architecture. Expected count={matchingName.TensorCount}, actual count={tensorCount}.");
             }
 
+            bool familyAlreadyHasHashes = await db.Set<ArchitectureFamilyModelHash>()
+                .AnyAsync(x => x.ArchitectureFamilyId == matchingName.Id, ct);
+
+            if (familyAlreadyHasHashes && !Cache.AllowArchitectureFamilyAliasOverride)
+            {
+                throw new InvalidOperationException(
+                    $"Architecture family '{matchingName.DisplayName}' already has one or more model hashes attached. " +
+                    "Adding the current hash means you are manually asserting these different model hashes share the same tensor architecture/truth. " +
+                    "Rerun with --allow-architecture-family-alias-override only if you intentionally approve this shared-family linkage.");
+            }
+
             db.Add(new ArchitectureFamilyModelHash
             {
                 ArchitectureFamilyId = matchingName.Id,
@@ -118,6 +129,26 @@ public sealed class ArchitectureFamilyService
         Cache.CurrentArchitectureFamilyId = family.Id;
         Cache.CurrentArchitectureFamilyName = family.DisplayName;
         AnsiConsole.MarkupLine($"[green]Architecture family created:[/] [cyan]{Markup.Escape(family.DisplayName)}[/] tensors={tensorCount:N0}");
+    }
+
+    public static async Task<uint?> ResolveExactCurrentAiModelHashIdOrNullAsync(MagicQuantContext db, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
+            return null;
+
+        return await db.AiModelHashes
+            .AsNoTracking()
+            .Where(x => x.UniqueHash == Cache.CurrentModelId)
+            .Select(x => (uint?)x.Id)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    public static async Task<uint> ResolveExactCurrentAiModelHashIdAsync(MagicQuantContext db, CancellationToken ct = default)
+    {
+        var id = await ResolveExactCurrentAiModelHashIdOrNullAsync(db, ct);
+        if (id == null)
+            throw new InvalidOperationException("Unable to resolve the exact current AiModelHashId.");
+        return id.Value;
     }
 
     public static async Task<uint?> ResolveScopedAiModelHashIdOrNullAsync(MagicQuantContext db, CancellationToken ct = default)

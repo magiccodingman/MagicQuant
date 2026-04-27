@@ -53,6 +53,7 @@ public sealed class ReadmeGenerationService
         sb.AppendLine("- [Final survivor metrics](./../../resolve/main/magicquant.final-survivors.json?download=true) — full file names, KLD, PPL delta %, byte sizes, download targets, and replacement lineage. PPL delta % is measured against the native/reference PPL when available; negative is better and larger positive values are worse.");
         sb.AppendLine("- [Hybrid tensor map](./../../resolve/main/magicquant.hybrid-map.json?download=true) — tensor-group assignments and effective-state details for MagicQuant hybrid GGUFs.");
         sb.AppendLine("- [Replacement details](./../../resolve/main/magicquant.replacements.json?download=true) — structured details for baselines or anchors removed from the final download table, including reason codes, KLD deltas, PPL delta %, and size deltas.");
+        sb.AppendLine("- [Clone tensor configs](./../../resolve/main/magicquant.clone-configs.json?download=true) — exact per-GGUF tensor quantization maps for reproducing this final output list in repository clone mode.");
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();

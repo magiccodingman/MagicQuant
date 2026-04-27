@@ -469,7 +469,7 @@ with open(args.out, 'w', encoding='utf-8') as f:
         var psi = new System.Diagnostics.ProcessStartInfo
         {
             FileName = imatrixBin,
-            Arguments = $"-m \"{baseModelPath}\" -f \"{datasetPath}\" -o \"{datPath}\"",
+            Arguments = $"--no-mmap -m \"{baseModelPath}\" -f \"{datasetPath}\" -o \"{datPath}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
@@ -487,7 +487,7 @@ with open(args.out, 'w', encoding='utf-8') as f:
 
         using var writeLock = new SemaphoreSlim(1, 1);
         var startedUtc = DateTime.UtcNow;
-        var maxRuntime = TimeSpan.FromHours(2);
+        var maxRuntime = TimeSpan.FromHours(168);
         int outputLineCount = 0;
         bool datDetected = false;
         long lastDatSize = -1;
@@ -495,13 +495,15 @@ with open(args.out, 'w', encoding='utf-8') as f:
         Task stdoutTask = PumpProcessStreamAsync(p.StandardOutput, "stdout", buildLog, writeLock, line =>
         {
             outputLineCount++;
-            AnsiConsole.MarkupLine($"[grey]llama-imatrix stdout:[/] {Markup.Escape(line)}");
+            if (Cache.VerboseProcessOutput)
+                AnsiConsole.MarkupLine($"[grey]llama-imatrix stdout:[/] {Markup.Escape(line)}");
         }, ct);
 
         Task stderrTask = PumpProcessStreamAsync(p.StandardError, "stderr", buildLog, writeLock, line =>
         {
             outputLineCount++;
-            AnsiConsole.MarkupLine($"[grey]llama-imatrix stderr:[/] {Markup.Escape(line)}");
+            if (Cache.VerboseProcessOutput)
+                AnsiConsole.MarkupLine($"[grey]llama-imatrix stderr:[/] {Markup.Escape(line)}");
         }, ct);
 
         while (!p.HasExited)

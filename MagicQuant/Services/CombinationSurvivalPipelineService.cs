@@ -20,6 +20,7 @@ public sealed class CombinationSurvivalPipelineService
     private readonly HybridMapGenerationService _hybridMapService;
     private readonly SelectionDiagnosticsLogService _diagnosticsLogService;
     private readonly FinalReleaseMetadataService _releaseMetadataService;
+    private readonly CloneConfigManifestGenerationService _cloneConfigManifestService;
     private readonly FinalArtifactNamingService _namingService;
 
     public CombinationSurvivalPipelineService(QuantizationService quantizationService)
@@ -37,6 +38,7 @@ public sealed class CombinationSurvivalPipelineService
         _hybridMapService = new HybridMapGenerationService();
         _diagnosticsLogService = new SelectionDiagnosticsLogService();
         _releaseMetadataService = new FinalReleaseMetadataService();
+        _cloneConfigManifestService = new CloneConfigManifestGenerationService(_quantizationService);
         _namingService = new FinalArtifactNamingService();
     }
 
@@ -113,6 +115,12 @@ public sealed class CombinationSurvivalPipelineService
             pureBaselines,
             nativeReference,
             ct);
+
+        await _cloneConfigManifestService.GenerateAsync(
+            Cache.OutputDirectory!,
+            exportedArtifacts,
+            nativeReference,
+            ct: ct);
 
         await _readmeService.GenerateAsync(
             Cache.OutputDirectory!,

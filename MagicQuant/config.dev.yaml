@@ -1,6 +1,6 @@
 paths:
   magic_quant_root:
-  model_dir: /mnt/world8/AI/Models/Qwen3-4B-Instruct-2507-unsloth/
+  model_dir: /mnt/world8/AI/Models/Qwen3.6-35B-A3B-Qwen/
   llama_root:
   llama_bin:
   convert_script:
@@ -9,7 +9,7 @@ paths:
 flags:
   use_imatrix: true
   force_imatrix_rebuild: false
-  force_relearn_baseline_tensor_mappings: false
+  force_relearn_baseline_tensor_mappings: true
   force_refresh_hardware_probe: false
   allow_high_precision_hybrids: false
 
@@ -18,7 +18,7 @@ imatrix:
   dataset_repo:
   dataset_split: text
   dataset_config:
-  dataset_local_file: /home/slurp/Documents/Output_Files/Dataset/artifacts/imatrix-general-v1-1m.jsonl
+  dataset_local_file: /home/slurp/Documents/Output_Files/Dataset/artifacts/imatrix-general-v1-1_5m.jsonl
 
 # Legacy evolution survivor knobs were removed from YAML.
 # Final hybrid selection is now driven by rank-safe isolation prediction plus candidate_selection.
@@ -100,14 +100,14 @@ candidate_selection:
 output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
   output_dir:
-  output_name_prefix: Model
+  output_name_prefix: Qwen3.6-35B-A3B
   export_external_learned_baselines: false
 
 # Legacy bit-range bucket survival settings were removed.
 # See candidate_selection above for the active final chooser settings.
 
 identity:
-  architecture_family_name: Qwen3-4B-Instruct-2507
+  architecture_family_name: Qwen3.6-35B-A3B
   allow_architecture_family_alias_override: false
 
 baselines:
@@ -117,7 +117,7 @@ baselines:
   enabled_standard_explicit_group_candidates: []
 
   custom_repositories:
-    - repo_id: unsloth/Qwen3-4B-Instruct-2507-GGUF
+    - repo_id: unsloth/Qwen3.6-35B-A3B-GGUF
       enabled: true
       short_source_name: Unsloth
       source_kind: huggingface_gguf_repository
@@ -131,7 +131,119 @@ baselines:
       allow_as_explicit_group_candidate: false
 
       includes:
-        - file_name: Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf
+        - file_name: Qwen3.6-35B-A3B-MXFP4_MOE.gguf
+          baseline_family: MXFP4_MOE
+          quantize_base_name: MXFP4_MOE
+          display_name: UD-MXFP4_MOE
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-IQ2_M.gguf
+          baseline_family: IQ2_M
+          quantize_base_name: IQ2_M
+          display_name: UD-IQ2_M
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf
+          baseline_family: IQ2_XXS
+          quantize_base_name: IQ2_XXS
+          display_name: UD-IQ2_XXS
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-IQ3_S.gguf
+          baseline_family: IQ3_S
+          quantize_base_name: IQ3_S
+          display_name: UD-IQ3_S
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf
+          baseline_family: IQ3_XXS
+          quantize_base_name: IQ3_XXS
+          display_name: UD-IQ3_XXS
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-IQ4_NL.gguf
+          baseline_family: IQ4_NL
+          quantize_base_name: IQ4_NL
+          display_name: UD-IQ4_NL
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-IQ4_NL_XL.gguf
+          baseline_family: IQ4_NL
+          quantize_base_name: IQ4_NL
+          display_name: UD-IQ4_NL_XL
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-IQ4_XS.gguf
+          baseline_family: IQ4_XS
+          quantize_base_name: IQ4_XS
+          display_name: UD-IQ4_XS
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf
+          baseline_family: IQ2_M
+          quantize_base_name: IQ2_M
+          display_name: UD-Q2_K_XL
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q3_K_M.gguf
+          baseline_family: IQ3_M
+          quantize_base_name: IQ3_M
+          display_name: UD-Q3_K_M
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q3_K_S.gguf
+          baseline_family: IQ3_S
+          quantize_base_name: IQ3_S
+          display_name: UD-Q3_K_S
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf
+          baseline_family: IQ3_M
+          quantize_base_name: IQ3_M
+          display_name: UD-Q3_K_XL
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+          baseline_family: Q4_K_M
+          quantize_base_name: Q4_K_M
+          display_name: UD-Q4_K_M
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q4_K_S.gguf
+          baseline_family: Q4_K_S
+          quantize_base_name: Q4_K_S
+          display_name: UD-Q4_K_S
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
           baseline_family: Q4_K_M
           quantize_base_name: Q4_K_M
           display_name: UD-Q4_K_XL
@@ -139,7 +251,23 @@ baselines:
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3-4B-Instruct-2507-UD-Q5_K_XL.gguf
+        - file_name: Qwen3.6-35B-A3B-UD-Q5_K_M.gguf
+          baseline_family: Q5_K
+          quantize_base_name: Q5_K
+          display_name: UD-Q5_K_M
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q5_K_S.gguf
+          baseline_family: Q5_K_S
+          quantize_base_name: Q5_K_S
+          display_name: UD-Q5_K_S
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf
           baseline_family: Q5_K
           quantize_base_name: Q5_K
           display_name: UD-Q5_K_XL
@@ -147,26 +275,18 @@ baselines:
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3-4B-Instruct-2507-UD-Q6_K_XL.gguf
+        - file_name: Qwen3.6-35B-A3B-UD-Q6_K.gguf
+          baseline_family: Q6_K
+          quantize_base_name: Q6_K
+          display_name: UD-Q6_K
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf
           baseline_family: Q6_K
           quantize_base_name: Q6_K
           display_name: UD-Q6_K_XL
           allow_as_learning_baseline: true
           allow_as_combination_carrier: true
-          allow_as_explicit_group_candidate: true
-
-        - file_name: Qwen3-4B-Instruct-2507-UD-Q3_K_XL.gguf
-          baseline_family: IQ3_S
-          quantize_base_name: IQ3_S
-          display_name: UD-Q3_K_XL
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
-          allow_as_explicit_group_candidate: true
-
-        - file_name: Qwen3-4B-Instruct-2507-UD-IQ3_XXS.gguf
-          baseline_family: IQ3_XS
-          quantize_base_name: IQ3_XS
-          display_name: UD-IQ3_XXS
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true

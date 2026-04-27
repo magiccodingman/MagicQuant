@@ -35,12 +35,8 @@ public static class ImatrixIdentityService
         if (string.IsNullOrWhiteSpace(identityHash))
             return null;
 
-        var scopedAiModelHashId = Cache.CurrentArchitectureFamilyId != null
-            ? await ArchitectureFamilyService.ResolveScopedAiModelHashIdAsync(db, ct)
-            : aiModelHashId;
-
         var existing = await db.ImatrixDefinitions
-            .FirstOrDefaultAsync(x => x.AiModelHashId == scopedAiModelHashId && x.IdentityHash == identityHash, ct);
+            .FirstOrDefaultAsync(x => x.AiModelHashId == aiModelHashId && x.IdentityHash == identityHash, ct);
 
         if (existing != null)
             return existing.Id;
@@ -50,7 +46,7 @@ public static class ImatrixIdentityService
 
         var row = new ImatrixDefinition
         {
-            AiModelHashId = scopedAiModelHashId,
+            AiModelHashId = aiModelHashId,
             IdentityHash = identityHash,
             CanonicalPath = Cache.ActiveImatrixPath,
             SourceKind = "runtime-active",
@@ -62,5 +58,29 @@ public static class ImatrixIdentityService
         db.ImatrixDefinitions.Add(row);
         await db.SaveChangesAsync(ct);
         return row.Id;
+    }
+
+    public static async Task ValidateOwnershipAsync(
+        MagicQuantContext db,
+        uint aiModelHashId,
+        int? imatrixDefinitionId,
+        CancellationToken ct = default)
+    {
+        if (!imatrixDefinitionId.HasValue)
+            return;
+
+        var ownerHashId = await db.ImatrixDefinitions
+            .AsNoTracking()
+            .Where(x => x.Id == imatrixDefinitionId.Value)
+            .Select(x => (uint?)x.AiModelHashId)
+            .FirstOrDefaultAsync(ct);
+
+        if (ownerHashId == null || ownerHashId.Value != aiModelHashId)
+        {
+            throw new InvalidOperationException(
+                $"ImatrixDefinitionId {imatrixDefinitionId.Value} does not belong to AiModelHashId {aiModelHashId}. " +
+                $"Owner AiModelHashId={(ownerHashId.HasValue ? ownerHashId.Value.ToString() : "missing")}. " +
+                "Imatrix identity is exact-model-hash scoped and must not be resolved through architecture family scope.");
+        }
     }
 }

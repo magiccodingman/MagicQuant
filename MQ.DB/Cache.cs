@@ -98,6 +98,19 @@ public class Cache
 
 
     /// <summary>
+    /// When false, long-running llama.cpp child processes write their full stdout/stderr
+    /// to log files only. This keeps the CLI readable during large export/clone runs.
+    /// </summary>
+    public static bool VerboseProcessOutput { get; set; }
+
+    /// <summary>
+    /// Clone/export-only flows may benchmark for release metadata without polluting the
+    /// learning/evolution SQLite truth tables.
+    /// </summary>
+    public static bool SuppressBenchmarkPersistence { get; set; }
+
+
+    /// <summary>
     /// Final export/output directory for selected survivor artifacts.
     /// </summary>
     public static string? OutputDirectory { get; set; }

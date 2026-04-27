@@ -305,12 +305,12 @@ public class QuantizationService
 
         await using var db = new MagicQuantContext();
 
-        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
+        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdOrNullAsync(db, ct);
 
-        if (scopedAiModelHashId == null)
+        if (exactAiModelHashId == null)
             return (null, null);
 
-        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId.Value, createIfMissing: false, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value, createIfMissing: false, ct);
 
         var comboId = await db.TensorCombos
             .AsNoTracking()
@@ -333,7 +333,7 @@ public class QuantizationService
 
         var benchmarkId = await db.AiBenchmarks
             .AsNoTracking()
-             .Where(x => x.AiModelHashId == scopedAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == comboId)
+             .Where(x => x.AiModelHashId == exactAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == comboId)
             .Select(x => x.Id)
             .FirstOrDefaultAsync(ct);
 
@@ -688,10 +688,11 @@ private async Task PersistLearnedBaselineTensorMapFromPreparedAsync(
                          x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
                          x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 && x.MoeRouter == 0, ct);
 
-    var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId.Value, createIfMissing: false, ct);
+    var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+    var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId, createIfMissing: false, ct);
 
     var benchmarkId = await db.AiBenchmarks
-        .Where(x => x.AiModelHashId == scopedAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
+        .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
         .OrderByDescending(x => x.Id)
         .Select(x => (Guid?)x.Id)
         .FirstOrDefaultAsync(ct);
@@ -774,16 +775,16 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
 
         await using var db = new MagicQuantContext();
 
-        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
+        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdOrNullAsync(db, ct);
 
-        if (scopedAiModelHashId == null)
+        if (exactAiModelHashId == null)
             return false;
 
-        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId.Value, createIfMissing: false, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value, createIfMissing: false, ct);
 
         var bench = await db.AiBenchmarks
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId)
+            .Where(x => x.AiModelHashId == exactAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId)
             .Join(
                 db.TensorCombos.AsNoTracking(),
                 benchmark => benchmark.TensorComboId,
@@ -828,6 +829,16 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         return await ArchitectureFamilyService.ResolveScopedAiModelHashIdAsync(db, ct);
     }
 
+    private static async Task<uint?> ResolveCurrentExactAiModelHashIdOrNullAsync(MagicQuantContext db, CancellationToken ct)
+    {
+        return await ArchitectureFamilyService.ResolveExactCurrentAiModelHashIdOrNullAsync(db, ct);
+    }
+
+    private static async Task<uint> ResolveCurrentExactAiModelHashIdAsync(MagicQuantContext db, CancellationToken ct)
+    {
+        return await ArchitectureFamilyService.ResolveExactCurrentAiModelHashIdAsync(db, ct);
+    }
+
 
     private async Task PersistQuantizationRunAsync(
         HybridQuant quant,
@@ -860,9 +871,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             await db.SaveChangesAsync(ct);
         }
 
-        uint scopedAiModelHashId = Cache.CurrentArchitectureFamilyId != null
-            ? await ResolveCurrentScopedAiModelHashIdAsync(db, ct)
-            : aiModelHash.Id;
+        uint persistenceAiModelHashId = aiModelHash.Id;
 
         var tensorCombo = await db.TensorCombos.FirstOrDefaultAsync(x =>
             x.BaseQuant == lookup.BaseQuant &&
@@ -883,17 +892,18 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             await db.SaveChangesAsync(ct);
         }
 
-        imatrixDefinitionId ??= await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId, createIfMissing: true, ct);
+        imatrixDefinitionId ??= await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, persistenceAiModelHashId, createIfMissing: true, ct);
+        await ImatrixIdentityService.ValidateOwnershipAsync(db, persistenceAiModelHashId, imatrixDefinitionId, ct);
 
         Guid? aiBenchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == scopedAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == tensorCombo.Id)
+            .Where(x => x.AiModelHashId == persistenceAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == tensorCombo.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
 
         var row = new QuantizationRun
         {
             Id = Guid.NewGuid(),
-            AiModelHashId = scopedAiModelHashId,
+            AiModelHashId = persistenceAiModelHashId,
             ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = tensorCombo.Id,
             AiBenchmarkId = aiBenchmarkId,
@@ -1047,6 +1057,51 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
         }
     }
 
+
+    public async Task<string> BuildExportArtifactFromExactTensorMapAsync(
+        IReadOnlyDictionary<string, string> tensorTypes,
+        string outputPath,
+        string baseQuantName,
+        bool forceRebuild = false,
+        CancellationToken ct = default)
+    {
+        if (tensorTypes == null || tensorTypes.Count == 0)
+            throw new ArgumentException("A clone tensor map must contain at least one tensor entry.", nameof(tensorTypes));
+
+        if (string.IsNullOrWhiteSpace(outputPath))
+            throw new InvalidOperationException("Export output path is required.");
+
+        var baseQuant = BaselineQuants.ResolveBuiltInStandardBaseline(baseQuantName)
+                       ?? BaselineQuants.Q8_0;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+
+        if (!forceRebuild && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
+            return outputPath;
+
+        if (forceRebuild && File.Exists(outputPath))
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
+
+        await _cpuQuantLock.WaitAsync(ct);
+        try
+        {
+            string nativeBasePath = await EnsureBaseModelFileAsync();
+            await RunLlamaQuantizeWithExactTensorMapAsync(
+                inputFile: nativeBasePath,
+                outputFile: outputPath,
+                tensorTypes: tensorTypes,
+                baseQuant: baseQuant,
+                ct: ct);
+
+            await File.WriteAllTextAsync(outputPath + ".success.json", "{\"status\":\"success\"}", ct);
+            return outputPath;
+        }
+        finally
+        {
+            _cpuQuantLock.Release();
+        }
+    }
+
     public async Task<string> BuildExportArtifactAsync(
         HybridQuant quant,
         string outputPath,
@@ -1186,6 +1241,107 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     // Quantization
     // ----------------------------------------------------------------
 
+
+    private async Task<QuantizationExecutionReport> RunLlamaQuantizeWithExactTensorMapAsync(
+        string inputFile,
+        string outputFile,
+        IReadOnlyDictionary<string, string> tensorTypes,
+        BaselineQuants baseQuant,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
+            throw new FileNotFoundException($"Input GGUF not found: {inputFile}");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
+
+        var inputTensorMetadata = await ReadTensorMetadataFromGgufAsync(inputFile, outputFile);
+        var requestedOverrides = tensorTypes
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .Select(x => new RequestedTensorOverride
+            {
+                GroupName = "clone_exact_tensor_map",
+                TensorName = x.Key,
+                SchemeName = NormalizeQuantName(x.Value)
+            })
+            .ToList();
+
+        var concreteOverrides = ResolveConcreteTensorOverrides(
+            allTensorNames: inputTensorMetadata.TensorNames,
+            requestedOverrides: requestedOverrides);
+
+        var missingInManifest = inputTensorMetadata.TensorNames
+            .Except(tensorTypes.Keys, StringComparer.Ordinal)
+            .Take(20)
+            .ToList();
+
+        var unexpectedInManifest = tensorTypes.Keys
+            .Except(inputTensorMetadata.TensorNames, StringComparer.Ordinal)
+            .Take(20)
+            .ToList();
+
+        if (missingInManifest.Count > 0 || unexpectedInManifest.Count > 0 || inputTensorMetadata.TensorNames.Count != tensorTypes.Count)
+        {
+            throw new InvalidOperationException(
+                $"Clone tensor manifest does not exactly match this model architecture. " +
+                $"MissingInManifest=[{string.Join(", ", missingInManifest)}] UnexpectedInManifest=[{string.Join(", ", unexpectedInManifest)}] " +
+                $"ModelTensorCount={inputTensorMetadata.TensorNames.Count} ManifestTensorCount={tensorTypes.Count}.");
+        }
+
+        var args = new List<string>(capacity: concreteOverrides.Count + 8);
+
+        foreach (var overrideItem in concreteOverrides)
+            args.Add($"--tensor-type \"{overrideItem.TensorName}={overrideItem.SchemeName}\"");
+
+        if (_imatrixService.ShouldUseImatrixForQuant(HybridQuant.CreatePureBaseline(baseQuant)))
+        {
+            string imatrixPath = _imatrixService.GetCanonicalImatrixPath();
+            if (!File.Exists(imatrixPath))
+                throw new InvalidOperationException($"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
+
+            args.Add($"--imatrix \"{imatrixPath}\"");
+        }
+
+        args.Add($"\"{inputFile}\"");
+        args.Add($"\"{outputFile}\"");
+        args.Add(baseQuant.QuantizeBaseArgumentName);
+        args.Add("8");
+
+        string bin = Path.Combine(
+            Cache.LlamaBin!,
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "llama-quantize.exe" : "llama-quantize");
+
+        string quantizeLogPath = outputFile + ".quantize.log";
+        AnsiConsole.MarkupLine($"[cyan]Quantizing clone artifact:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
+
+        var result = await RunLoggedProcessAsync(new ProcessStartInfo
+        {
+            FileName = bin,
+            Arguments = string.Join(" ", args)
+        }, quantizeLogPath, ct);
+
+        if (result.ExitCode != 0)
+        {
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputFile);
+            throw new InvalidOperationException(
+                $"Clone quantization failed for '{outputFile}'. ExitCode={result.ExitCode}. See '{quantizeLogPath}'.");
+        }
+
+        if (!File.Exists(outputFile) || new FileInfo(outputFile).Length == 0)
+        {
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputFile);
+            throw new InvalidOperationException(
+                $"Clone quantization exited successfully but produced no valid GGUF output: {outputFile}");
+        }
+
+        AnsiConsole.MarkupLine($"[green]Clone quantized model ready:[/] {Markup.Escape(outputFile)}");
+
+        return new QuantizationExecutionReport
+        {
+            LogPath = quantizeLogPath,
+            ResolvedOverrides = concreteOverrides
+        };
+    }
+
     private async Task<QuantizationExecutionReport> RunLlamaQuantizeAsync(string inputFile, string outputFile, HybridQuant quant, IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
     {
         if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
@@ -1255,6 +1411,7 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
             Arguments = arguments
         };
 
+        AnsiConsole.MarkupLine($"[cyan]Quantizing:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
         var result = await RunLoggedProcessAsync(psi, quantizeLogPath);
 
         if (result.ExitCode != 0)
@@ -1316,6 +1473,16 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     private bool ShouldApplyImatrix(HybridQuant quant)
     {
         return _imatrixService.ShouldUseImatrixForQuant(quant);
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> ReadExactTensorTypesAsync(
+        string ggufPath,
+        CancellationToken ct = default)
+    {
+        var meta = await ReadTensorMetadataFromGgufAsync(ggufPath, ggufPath);
+        return meta.TensorTypes
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
     }
 
     public async Task ClearLearnedBaselineTensorMappingsAsync(CancellationToken ct = default)
@@ -1447,14 +1614,15 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
     if (combo == null)
         throw new InvalidOperationException("Native-source benchmark TensorCombo is missing; benchmark base model first.");
 
+    var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
     var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
         db,
-        scopedAiModelHashId,
+        exactAiModelHashId,
         createIfMissing: false,
         ct);
 
     var benchmarkId = await db.AiBenchmarks
-        .Where(x => x.AiModelHashId == scopedAiModelHashId &&
+        .Where(x => x.AiModelHashId == exactAiModelHashId &&
                     x.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.TensorComboId == combo.Id)
         .OrderByDescending(x => x.Id)
@@ -1583,10 +1751,11 @@ private async Task CleanupExternalBaselineDownloadArtifactsAsync(string download
                              x.Embeddings == 0 && x.LmHead == 0 && x.AttnQ == 0 && x.AttnKV == 0 &&
                              x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 && x.MoeRouter == 0, ct);
 
-        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId.Value, createIfMissing: false, ct);
+        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId, createIfMissing: false, ct);
 
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
+            .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId && x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
@@ -2381,14 +2550,15 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
         await db.SaveChangesAsync(ct);
     }
 
+    var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
     var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
         db,
-        scopedAiModelHashId.Value,
+        exactAiModelHashId,
         createIfMissing: true,
         ct);
 
     var existing = await db.AiBenchmarks
-        .FirstOrDefaultAsync(x => x.AiModelHashId == scopedAiModelHashId.Value &&
+        .FirstOrDefaultAsync(x => x.AiModelHashId == exactAiModelHashId &&
                                   x.ImatrixDefinitionId == imatrixDefinitionId &&
                                   x.TensorComboId == duplicateCombo.Id, ct);
 
@@ -2402,7 +2572,7 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
         SizeBytes = sourceBench.SizeBytes,
         TokensPerSecond = sourceBench.TokensPerSecond,
         TensorComboId = duplicateCombo.Id,
-        AiModelHashId = scopedAiModelHashId.Value,
+        AiModelHashId = exactAiModelHashId,
         ImatrixDefinitionId = imatrixDefinitionId
     };
     db.AiBenchmarks.Add(clonedBenchmark);
@@ -2423,7 +2593,7 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
     db.QuantizationRuns.Add(new QuantizationRun
     {
         Id = Guid.NewGuid(),
-        AiModelHashId = scopedAiModelHashId.Value,
+        AiModelHashId = exactAiModelHashId,
         ImatrixDefinitionId = imatrixDefinitionId,
         TensorComboId = duplicateCombo.Id,
         AiBenchmarkId = clonedBenchmark.Id,
@@ -2440,7 +2610,7 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
         db.BenchmarkRuns.Add(new BenchmarkRun
         {
             Id = Guid.NewGuid(),
-            AiModelHashId = scopedAiModelHashId.Value,
+            AiModelHashId = exactAiModelHashId,
             ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = duplicateCombo.Id,
             AiBenchmarkId = clonedBenchmark.Id,
@@ -2729,7 +2899,8 @@ private async Task<bool> CloneEquivalentIsolationBenchmarkAsync(
                 logWriter?.WriteLine(line);
             }
 
-            AnsiConsole.WriteLine(line);
+            if (Cache.VerboseProcessOutput)
+                AnsiConsole.WriteLine(line);
         }
 
         process.OutputDataReceived += (_, e) => HandleLine(e.Data, isError: false);

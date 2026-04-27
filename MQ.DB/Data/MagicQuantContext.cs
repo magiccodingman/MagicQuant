@@ -207,6 +207,80 @@ public class MagicQuantContext : DbContext
     public DbSet<ArchitectureFamily> ArchitectureFamilies { get; set; }
     public DbSet<ArchitectureFamilyModelHash> ArchitectureFamilyModelHashes { get; set; }
 
+
+    // --------------------------------------------------------
+    // Imatrix Ownership Guard
+    // --------------------------------------------------------
+
+    public override int SaveChanges()
+    {
+        ValidateImatrixOwnershipBeforeSaveAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return base.SaveChanges();
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        ValidateImatrixOwnershipBeforeSaveAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        await ValidateImatrixOwnershipBeforeSaveAsync(cancellationToken);
+        return await base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        await ValidateImatrixOwnershipBeforeSaveAsync(cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private async Task ValidateImatrixOwnershipBeforeSaveAsync(CancellationToken ct)
+    {
+        var pairs = ChangeTracker.Entries()
+            .Where(e => e.State is EntityState.Added or EntityState.Modified)
+            .Select(e => e.Entity)
+            .Select(entity => entity switch
+            {
+                AiBenchmark x => (EntityName: nameof(AiBenchmark), x.AiModelHashId, x.ImatrixDefinitionId),
+                BenchmarkRun x => (EntityName: nameof(BenchmarkRun), x.AiModelHashId, x.ImatrixDefinitionId),
+                QuantizationRun x => (EntityName: nameof(QuantizationRun), x.AiModelHashId, x.ImatrixDefinitionId),
+                ExecutionPlanProbeCache x => (EntityName: nameof(ExecutionPlanProbeCache), x.AiModelHashId, x.ImatrixDefinitionId),
+                _ => default
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.EntityName) && x.ImatrixDefinitionId.HasValue)
+            .Distinct()
+            .ToList();
+
+        if (pairs.Count == 0)
+            return;
+
+        var ids = pairs
+            .Select(x => x.ImatrixDefinitionId!.Value)
+            .Distinct()
+            .ToList();
+
+        var owners = await ImatrixDefinitions
+            .AsNoTracking()
+            .Where(x => ids.Contains(x.Id))
+            .Select(x => new { x.Id, x.AiModelHashId })
+            .ToDictionaryAsync(x => x.Id, x => x.AiModelHashId, ct);
+
+        foreach (var pair in pairs)
+        {
+            if (!owners.TryGetValue(pair.ImatrixDefinitionId!.Value, out var ownerHashId) ||
+                ownerHashId != pair.AiModelHashId)
+            {
+                throw new InvalidOperationException(
+                    $"{pair.EntityName} attempted to save AiModelHashId={pair.AiModelHashId} with " +
+                    $"ImatrixDefinitionId={pair.ImatrixDefinitionId.Value}, but that imatrix belongs to " +
+                    $"AiModelHashId={(owners.TryGetValue(pair.ImatrixDefinitionId.Value, out var found) ? found.ToString() : "missing")}. " +
+                    "ImatrixDefinition ownership is exact-model-hash scoped.");
+            }
+        }
+    }
+
     // --------------------------------------------------------
     // Configuration
     // --------------------------------------------------------

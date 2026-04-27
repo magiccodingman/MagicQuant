@@ -512,9 +512,6 @@ public class BenchmarkService
             await db.SaveChangesAsync(ct);
         }
 
-        if (Cache.CurrentArchitectureFamilyId != null)
-            return await ArchitectureFamilyService.ResolveScopedAiModelHashIdAsync(db, ct);
-
         return model.Id;
     }
 
@@ -808,6 +805,19 @@ public class BenchmarkService
         var requestedDomains = ResolveRequestedDomains(quantConfig, domainsOverride);
         bool requireKld = RequiresKld(quantConfig);
 
+        if (Cache.SuppressBenchmarkPersistence)
+        {
+            return await RunAllBenchmarksTransientAsync(
+                quantConfig: quantConfig,
+                modelPath: modelPath,
+                benchDir: benchDir,
+                tokenTarget: tokenTarget,
+                klLogitsDir: klLogitsDir,
+                saveLogits: saveLogits,
+                requestedDomains: requestedDomains,
+                requireKld: requireKld);
+        }
+
         using var db = new MagicQuantContext();
 
         var identity = await GetOrCreateBenchmarkIdentityAsync(db, quantConfig);
@@ -986,16 +996,19 @@ public class BenchmarkService
             {
                 sw.Stop();
 
-                await PersistFailedBenchmarkRunAsync(
-                    db: db,
-                    aiModelHashId: aiModelHash.Id,
-                    tensorComboId: tensorCombo.Id,
-                    aiBenchmarkId: trackedBench.Id,
-                    imatrixDefinitionId: identity.ImatrixDefinitionId,
-                    category: DomainToCategory(domain),
-                    startedUtc: startedUtc,
-                    completedUtc: DateTime.UtcNow,
-                    error: ex.ToString());
+                if (!Cache.SuppressBenchmarkPersistence)
+                {
+                    await PersistFailedBenchmarkRunAsync(
+                        db: db,
+                        aiModelHashId: aiModelHash.Id,
+                        tensorComboId: tensorCombo.Id,
+                        aiBenchmarkId: trackedBench.Id,
+                        imatrixDefinitionId: identity.ImatrixDefinitionId,
+                        category: DomainToCategory(domain),
+                        startedUtc: startedUtc,
+                        completedUtc: DateTime.UtcNow,
+                        error: ex.ToString());
+                }
 
                 throw;
             }
@@ -1012,6 +1025,100 @@ public class BenchmarkService
             modelPath: modelPath,
             executedRunTimings: executedRunTimings);
 
+        return result;
+    }
+
+
+    private async Task<BenchmarkResult> RunAllBenchmarksTransientAsync(
+        HybridQuant quantConfig,
+        string modelPath,
+        string benchDir,
+        int tokenTarget,
+        string? klLogitsDir,
+        bool saveLogits,
+        IReadOnlyCollection<string> requestedDomains,
+        bool requireKld)
+    {
+        if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var reused))
+        {
+            reused.ModelSizeBytes ??= TryGetModelSize(modelPath);
+            await WriteMetricsJsonAsync(benchDir, reused);
+            return reused;
+        }
+
+        if (_currentPlan == null)
+        {
+            throw new InvalidOperationException(
+                "No benchmark execution plan has been discovered yet. " +
+                "You must call EnsureExecutionPlanAsync() with the pure Q8 model first.");
+        }
+
+        await using var slotLease = await AcquireBenchmarkSlotAsync();
+        var slot = slotLease.Slot;
+
+        int effectiveNgl = slot.UsesGpu
+            ? _currentPlan.StaticNgl
+            : 0;
+
+        var result = new BenchmarkResult
+        {
+            ModelSizeBytes = TryGetModelSize(modelPath),
+            LlamaBench = new LlamaBenchMetrics
+            {
+                LogPath = null,
+                Backend = slot.UsesGpu ? "disabled" : "cpu-disabled",
+                Ngl = effectiveNgl,
+                Test = "disabled",
+                Tps = 0
+            }
+        };
+
+        var corporaRoot = Path.Combine(Path.GetDirectoryName(benchDir)!, "_ppl_corpora");
+        Directory.CreateDirectory(corporaRoot);
+
+        if (saveLogits && !string.IsNullOrEmpty(klLogitsDir))
+            Directory.CreateDirectory(klLogitsDir);
+
+        foreach (var domain in requestedDomains)
+        {
+            if (TryReadExistingPplLog(
+                    benchDir: benchDir,
+                    domain: domain,
+                    allowMissingKld: !requireKld,
+                    requirePositiveKld: requireKld,
+                    metrics: out var existingPpl))
+            {
+                result.Perplexity[domain] = existingPpl;
+                continue;
+            }
+
+            string corpusPath = Path.Combine(corporaRoot, $"ppl_corpus_{domain}.txt");
+            await PreparePplCorpusAsync(domain, corpusPath, tokenTarget);
+
+            AnsiConsole.MarkupLine(
+                $"[yellow]Running transient Perplexity ({Markup.Escape(domain)})[/] [grey]({Markup.Escape(slot.DisplayName)}, ngl={effectiveNgl})[/]");
+
+            var metrics = await RunPplBenchmarkAsync(
+                modelPath: modelPath,
+                benchDir: benchDir,
+                domain: domain,
+                corpusPath: corpusPath,
+                fixedNgl: effectiveNgl,
+                slot: slot,
+                klLogitsDir: klLogitsDir,
+                saveLogits: saveLogits);
+
+            if (requireKld && !HasMeaningfulKld(metrics.Kld))
+            {
+                throw new InvalidOperationException(
+                    $"Non-base transient benchmark produced invalid KLD for domain '{domain}'. " +
+                    $"KLD must exist and be > 0. Parsed value: {(metrics.Kld.HasValue ? metrics.Kld.Value.ToString(CultureInfo.InvariantCulture) : "null")}");
+            }
+
+            result.Perplexity[domain] = metrics;
+        }
+
+        await WriteMetricsJsonAsync(benchDir, result);
         return result;
     }
 

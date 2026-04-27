@@ -9,13 +9,29 @@ using Spectre.Console;
 #if DEBUG
 if (args.Length == 0)
 {
-    args = new[] { "evolution", "--architecture-family", @"""Qwen3-4B-Instruct-2507""" };
+    const string debugMode = "evolution"; // switch to "evolution" to use the full learning/search pipeline again. Or use "Clone" for cloning mode.
+
+    if (string.Equals(debugMode, "clone", StringComparison.OrdinalIgnoreCase))
+    {
+        args =
+        [
+            "clone-repository-quants",
+            "--architecture-family", @"""Qwen3-4B-Instruct-2507""",
+            "--source-repo", @"""magiccodingman/Qwen3-4B-Instruct-2507-Unsloth-MagicQuant-v2-GGUF"""
+        ];
+    }
+    else
+    {
+        // Previous DEBUG harness kept intact for quick full-pipeline testing.
+        args = ["evolution", "--architecture-family", @"""Qwen3.6-35B-A3B"""];
+    }
 }
 else if (args.Length > 0 &&
-         string.Equals(args[0], "evolution", StringComparison.OrdinalIgnoreCase) &&
+         (string.Equals(args[0], "evolution", StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(args[0], "clone-repository-quants", StringComparison.OrdinalIgnoreCase)) &&
          !args.Any(x => string.Equals(x, "--architecture-family", StringComparison.OrdinalIgnoreCase)))
 {
-    args = args.Concat(new[] { "--architecture-family", @"""Qwen3-4B-Instruct-2507""" }).ToArray();
+    args = args.Concat(["--architecture-family", @"""Qwen3-4B-Instruct-2507"""]).ToArray();
 }
 #endif
 
@@ -24,6 +40,7 @@ var commands = new Dictionary<string, (string Description, Func<ICommand> Factor
     { "evolution", ("Run the full evolutionary quantization search", () => new Evolution()) },
     { "validate-predictions", ("Validate rank-safe KLD predictions against existing SQLite benchmarks", () => new ValidatePredictions()) },
     { "build-hybrids", ("Export specific hybrid models with polished README", () => new BuildHybrids()) },
+    { "clone-repository-quants", ("Clone final MagicQuant tensor configurations from a compatible repository/json", () => new CloneRepositoryQuants()) },
     { "initialize-llama-cpp", ("Initialize or update llama.cpp", () => new InitializeLlamaCpp()) }
 };
 
