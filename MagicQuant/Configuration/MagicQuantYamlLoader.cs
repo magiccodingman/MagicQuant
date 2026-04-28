@@ -62,12 +62,9 @@ public static class MagicQuantYamlLoader
         Cache.LlamaRoot = NormalizeNullOrFullPath(config.Paths.LlamaRoot);
         Cache.LlamaBin = NormalizeNullOrFullPath(config.Paths.LlamaBin);
         Cache.ConvertScript = NormalizeNullOrFullPath(config.Paths.ConvertScript);
-        Cache.ExternalBaselineCacheDirectory = Path.Combine(
-            config.Paths.MagicQuantRoot!,
-            string.IsNullOrWhiteSpace(config.Paths.ExternalBaselineCacheDirName) ? "ExternalBaselines" : config.Paths.ExternalBaselineCacheDirName);
+        Cache.ScratchRoots = NormalizeScratchRoots(config.Paths.ScratchRoots);
 
         Directory.CreateDirectory(Cache.MagicQuantDirectory!);
-        Directory.CreateDirectory(Cache.ExternalBaselineCacheDirectory!);
 
         Cache.UseImatrix = config.Flags.UseImatrix;
         Cache.ForceImatrixRebuild = config.Flags.ForceImatrixRebuild;
@@ -301,6 +298,18 @@ public static class MagicQuantYamlLoader
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), MagicConstants.MagicQuantFolder);
     }
 
+
+    private static List<string> NormalizeScratchRoots(IEnumerable<string>? roots)
+    {
+        if (roots == null)
+            return new List<string>();
+
+        return roots
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => Path.GetFullPath(x.Trim()))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
     private static string? NormalizeNullOrFullPath(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))

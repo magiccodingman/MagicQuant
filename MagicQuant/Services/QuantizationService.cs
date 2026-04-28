@@ -46,8 +46,8 @@ public sealed class SampleProcessingSummary
 public class QuantizationService
 {
     private readonly BenchmarkService _benchmarker;
-    private readonly string _ggufDir;
-    private readonly string _benchDir;
+    private readonly ModelArtifactPathService _paths;
+    private readonly ScratchStorageService _scratchStorage;
     private readonly PythonManager _python;
     private readonly SemaphoreSlim _cpuQuantLock;
     private readonly int _quantThreadsPerProcess;
@@ -78,25 +78,22 @@ public class QuantizationService
         if (string.IsNullOrWhiteSpace(Cache.LlamaBin))
             throw new Exception("Cache.LlamaBin not set. Initialization must complete before quantization starts.");
 
-        _ggufDir = Path.Combine(Cache.ModelMagicQuantDirectory, "GGUF");
-        _benchDir = Path.Combine(Cache.ModelMagicQuantDirectory, "Benchmarks");
+        _paths = new ModelArtifactPathService();
+        _scratchStorage = new ScratchStorageService(_paths);
         _imatrixService = new ImatrixService();
         _huggingFaceBaselineService = new HuggingFaceBaselineService(_python);
         _tensorGroupingAuditService = new TensorGroupingAuditService();
         _tensorLearningDiagnosticWriter = new TensorLearningDiagnosticWriter();
 
-        Directory.CreateDirectory(_ggufDir);
-        Directory.CreateDirectory(_benchDir);
+        Directory.CreateDirectory(_paths.GgufDir);
+        Directory.CreateDirectory(_paths.BenchDir);
+        Directory.CreateDirectory(_paths.QuantizationLogsDir);
 
         int threadCount = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
 
 // Minimum desired threads per llama-quantize process.
 // This is used to decide the natural concurrency first.
-        const int minimumQuantThreadsPerProcess = 8;
-
-// Hard safety cap for large GGUF quantization.
-// More than 2 concurrent 35B quantizers can overwhelm the output NVMe queue.
-        const int maxConcurrentQuantizationCap = 1;
+        const int minimumQuantThreadsPerProcess = 4;
 
 // Keep a little workstation breathing room.
         int reservedThreads = threadCount switch
@@ -115,9 +112,10 @@ public class QuantizationService
             usableThreads / minimumQuantThreadsPerProcess);
 
 // Then cap it to avoid hammering the output drive with too many giant writers.
+        int scratchWriterCapacity = _scratchStorage.WriterCapacity;
         _maxConcurrentQuantizations = Math.Max(
             1,
-            Math.Min(maxConcurrentQuantizationCap, naturalConcurrentQuantizations));
+            Math.Min(naturalConcurrentQuantizations, scratchWriterCapacity));
 
 // Divide the usable thread budget evenly across the allowed quantization processes.
 // Example on 7950X3D:
@@ -137,6 +135,7 @@ public class QuantizationService
             $"[grey]Quantization CPU plan:[/] " +
             $"threads={threadCount}, reserved={reservedThreads}, usable={usableThreads}, " +
             $"naturalConcurrent={naturalConcurrentQuantizations}, " +
+            $"scratchWriterCapacity={scratchWriterCapacity}, " +
             $"concurrent={_maxConcurrentQuantizations}, " +
             $"threads/process={_quantThreadsPerProcess}");
     }
@@ -465,56 +464,51 @@ public class QuantizationService
         CancellationToken ct = default)
     {
         string modelName = GenerateHybridName(quant);
-        string quantPath = Path.Combine(_ggufDir, $"{modelName}.gguf");
-        string modelBenchDir = Path.Combine(_benchDir, modelName);
+        string modelBenchDir = _paths.GetBenchmarkDir(modelName);
         string baseLogitsDir = GetBaseLogitsDirectory();
 
         DateTime startedUtc = DateTime.UtcNow;
-        var stopwatch = Stopwatch.StartNew();
         var forceBaselineRelearn = Cache.ForceRelearnBaselineTensorMappings && IsLearnableBaselineRun(quant);
         bool pureExternalBaseline = ShouldDownloadExternalBaselineInsteadOfQuantizing(quant);
         bool baselineLearnedTruthExists =
             !forceBaselineRelearn && await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
-        string benchmarkModelPath = quantPath;
-        PreparedExternalBaselineBuild? preparedExternalBaseline = null;
-        string? transientExternalDownloadPath = null;
 
         if (!forceBaselineRelearn && baselineLearnedTruthExists && await _benchmarker.TryReuseExistingBenchmarksAsync(
                 quantConfig: quant,
-                modelPath: quantPath,
+                modelPath: string.Empty,
                 benchDir: modelBenchDir,
                 klLogitsDir: baseLogitsDir,
                 domainsOverride: new[] { "general" }))
         {
             AnsiConsole.MarkupLine($"[grey]Reused existing benchmark artifacts:[/] {Markup.Escape(modelName)}");
-
-            if (!IsProtectedModel(modelName))
-                await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
-
             return SampleProcessState.Skipped;
         }
 
         if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
         {
             AnsiConsole.MarkupLine($"[grey]Skipping already completed sample:[/] {Markup.Escape(modelName)}");
-
-            if (!IsProtectedModel(modelName))
-                await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
-
             return SampleProcessState.Skipped;
         }
 
+        string inputPath = await GetEffectiveInputModelPathAsync(
+            quant,
+            forceBaselineRelearn,
+            baselineLearnedTruthExists,
+            ct);
+
+        ScratchArtifactKind leaseKind = pureExternalBaseline
+            ? ScratchArtifactKind.ExternalBaselineRebuild
+            : quant.BaseQuant.IsExternalRepositoryBaseline
+                ? ScratchArtifactKind.ExternalBaselineNormalizedSample
+                : ScratchArtifactKind.QuantizedSample;
+
+        await using var lease = await _scratchStorage.AcquireAsync(leaseKind, modelName, ct: ct);
+        string benchmarkModelPath = lease.GgufPath;
+
         try
         {
-            string inputPath = await GetEffectiveInputModelPathAsync(
-                quant,
-                forceBaselineRelearn,
-                baselineLearnedTruthExists,
-                ct);
-            if (pureExternalBaseline && IsPathInsideExternalBaselineCacheRoot(inputPath))
-                transientExternalDownloadPath = inputPath;
-
             QuantizationExecutionReport? quantizationReport = null;
+            PreparedExternalBaselineBuild? preparedExternalBaseline = null;
 
             await _cpuQuantLock.WaitAsync(ct);
             try
@@ -524,50 +518,54 @@ public class QuantizationService
                     preparedExternalBaseline = await PrepareExternalBaselineRebuildAsync(
                         quant,
                         downloadedExternalBaselinePath: inputPath,
-                        rebuiltOutputPath: quantPath,
+                        rebuiltOutputPath: lease.GgufPath,
+                        logPath: lease.PrimaryLogPath,
+                        metadataWorkingDirectory: lease.LeaseDirectory,
                         forceBaselineRelearn: forceBaselineRelearn,
                         ct: ct);
-
                     benchmarkModelPath = preparedExternalBaseline.BenchmarkModelPath;
                 }
                 else
                 {
-                    benchmarkModelPath = quantPath;
-                    if (!File.Exists(quantPath) || forceBaselineRelearn)
+                    var quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
+                        ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
+                        : quant;
+
+                    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
+
+                    if (quant.BaseQuant.IsExternalRepositoryBaseline)
                     {
-                        var quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
-                            ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
-                            : quant;
+                        temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
+                            canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                            preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                            allowDominantFallback: true);
 
-                        var effectiveInputPath = quant.BaseQuant.IsExternalRepositoryBaseline
-                            ? await EnsureBaseModelFileAsync()
-                            : inputPath;
-
-                        if (quant.BaseQuant.IsExternalRepositoryBaseline)
+                        if (temporaryCarrierOverrides.Count == 0)
                         {
-                            AnsiConsole.MarkupLine(
-                                $"[cyan]Building sample:[/] {Markup.Escape(modelName)} [grey](native input, surrogate carrier={Markup.Escape(quantToExecute.BaseQuant.Names[0])})[/]");
+                            throw new InvalidOperationException(
+                                $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
+                                "External baseline hybrids require learned tensor mappings before sampling. " +
+                                "Run with --relearn-baseline-mappings.");
                         }
-                        else
-                        {
-                            AnsiConsole.MarkupLine($"[cyan]Building sample:[/] {Markup.Escape(modelName)}");
-                        }
-
-                        quantizationReport = await RunLlamaQuantizeAsync(effectiveInputPath, quantPath, quantToExecute);
                     }
+
+                    var effectiveInputPath = quant.BaseQuant.IsExternalRepositoryBaseline
+                        ? await EnsureBaseModelFileAsync()
+                        : inputPath;
+
+                    quantizationReport = await RunLlamaQuantizeAsync(
+                        effectiveInputPath,
+                        lease.GgufPath,
+                        quantToExecute,
+                        temporaryCarrierOverrides: temporaryCarrierOverrides,
+                        logPath: lease.PrimaryLogPath,
+                        metadataWorkingDirectory: lease.LeaseDirectory,
+                        ct: ct);
                 }
             }
             finally
             {
                 _cpuQuantLock.Release();
-            }
-
-            if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
-            {
-                if (!IsProtectedModel(modelName) && benchmarkModelPath == quantPath)
-                    await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
-
-                return SampleProcessState.Skipped;
             }
 
             AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {Markup.Escape(modelName)}");
@@ -580,7 +578,13 @@ public class QuantizationService
                 saveLogits: false,
                 domainsOverride: new[] { "general" });
 
-            stopwatch.Stop();
+            if (IsLearnableBaselineRun(quant))
+            {
+                if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
+                    await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
+                else if (!baselineLearnedTruthExists || forceBaselineRelearn)
+                    await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
+            }
 
             await PersistQuantizationRunAsync(
                 quant: quant,
@@ -592,19 +596,10 @@ public class QuantizationService
                 error: null,
                 ct: ct);
 
-            if (IsLearnableBaselineRun(quant))
-            {
-                if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
-                    await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
-                else if (!baselineLearnedTruthExists || forceBaselineRelearn)
-                    await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
-            }
-
             return SampleProcessState.Completed;
         }
         catch (Exception ex)
         {
-            stopwatch.Stop();
             try
             {
                 await PersistQuantizationRunAsync(
@@ -622,14 +617,6 @@ public class QuantizationService
             }
 
             throw;
-        }
-        finally
-        {
-            if (pureExternalBaseline && !string.IsNullOrWhiteSpace(transientExternalDownloadPath))
-                await CleanupExternalBaselineDownloadArtifactsAsync(transientExternalDownloadPath);
-
-            if (!IsProtectedModel(modelName) && benchmarkModelPath == quantPath)
-                await HardDeleteHelper.DeleteFileIfExistsAsync(quantPath);
         }
     }
 
@@ -680,25 +667,16 @@ public class QuantizationService
 
     private string GetExternalBaselineCachePath(BaselineQuants baseline)
     {
-        string root = Cache.ExternalBaselineCacheDirectory ??
-                      Path.Combine(Cache.ModelMagicQuantDirectory!, "ExternalBaselines");
+        string root = _paths.ExternalBaselinesDir;
         Directory.CreateDirectory(root);
-        string safe =
-            string.Concat(baseline.CanonicalKey.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
-        string extension = Path.GetExtension(baseline.SourceFileName ?? string.Empty);
-        if (string.IsNullOrWhiteSpace(extension))
-            extension = ".gguf";
-
-        string stagingDirectory = Path.Combine(root, $"{safe}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(stagingDirectory);
-        return Path.Combine(stagingDirectory, safe + extension);
+        return _paths.GetExternalBaselineDurablePath(baseline);
     }
 
     private async Task ValidateExternalBaselineTensorParityOrThrow(string baseModelPath, string externalBaselinePath)
     {
-        var baseMeta = await ReadTensorMetadataFromGgufAsync(baseModelPath, externalBaselinePath + ".nativecheck");
+        var baseMeta = await ReadTensorMetadataFromGgufAsync(baseModelPath, Path.GetDirectoryName(externalBaselinePath)!);
         var externalMeta =
-            await ReadTensorMetadataFromGgufAsync(externalBaselinePath, externalBaselinePath + ".externalcheck");
+            await ReadTensorMetadataFromGgufAsync(externalBaselinePath, Path.GetDirectoryName(externalBaselinePath)!);
 
         var baseNames = baseMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
         var externalNames = externalMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
@@ -743,6 +721,8 @@ public class QuantizationService
         HybridQuant quant,
         string downloadedExternalBaselinePath,
         string rebuiltOutputPath,
+        string logPath,
+        string metadataWorkingDirectory,
         bool forceBaselineRelearn,
         CancellationToken ct)
     {
@@ -768,7 +748,14 @@ public class QuantizationService
             {
                 AnsiConsole.MarkupLine(
                     $"[cyan]Rebuilding normalized custom baseline from learned truth:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-                await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, blanket);
+                await RunLlamaQuantizeAsync(
+                    nativeBasePath,
+                    rebuiltOutputPath,
+                    quant,
+                    blanket,
+                    logPath: logPath,
+                    metadataWorkingDirectory: metadataWorkingDirectory,
+                    ct: ct);
             }
 
             return new PreparedExternalBaselineBuild
@@ -784,7 +771,7 @@ public class QuantizationService
         await ValidateExternalBaselineTensorParityOrThrow(nativeBasePath, downloadedExternalBaselinePath);
 
         var ggufMetadata =
-            await ReadTensorMetadataFromGgufAsync(downloadedExternalBaselinePath, rebuiltOutputPath + ".learn");
+            await ReadTensorMetadataFromGgufAsync(downloadedExternalBaselinePath, Path.GetDirectoryName(rebuiltOutputPath)!);
         var ggufTruth = ggufMetadata.TensorTypes
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
 
@@ -838,7 +825,14 @@ public class QuantizationService
 
         AnsiConsole.MarkupLine(
             $"[cyan]Rebuilding normalized benchmark artifact for custom baseline:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-        await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, normalizedOverrides);
+        await RunLlamaQuantizeAsync(
+            nativeBasePath,
+            rebuiltOutputPath,
+            quant,
+            normalizedOverrides,
+            logPath: logPath,
+            metadataWorkingDirectory: metadataWorkingDirectory,
+            ct: ct);
 
         return new PreparedExternalBaselineBuild
         {
@@ -1032,11 +1026,7 @@ public class QuantizationService
 // Benchmark/logit helpers
     // ----------------------------------------------------------------
 
-    private string GetBaseLogitsDirectory()
-    {
-        string typeStr = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
-        return Path.Combine(_benchDir, typeStr, "logits");
-    }
+    private string GetBaseLogitsDirectory() => _paths.GetBaseLogitsDirectory();
 
     private async Task<bool> BenchmarkExistsAsync(HybridQuant quant, CancellationToken ct)
     {
@@ -1215,7 +1205,7 @@ public class QuantizationService
         string outputPath = await EnsureBaseModelFileAsync(deleteProcess);
 
         string typeStr = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
-        string benchPath = Path.Combine(_benchDir, typeStr);
+        string benchPath = Path.Combine(_paths.BenchDir, typeStr);
         string logitsDir = Path.Combine(benchPath, "logits");
 
         AnsiConsole.MarkupLine($"[bold yellow]Benchmarking Base {Markup.Escape(typeStr)} (Saving Logits)...[/]");
@@ -1248,21 +1238,21 @@ public class QuantizationService
             string typeStr = torchType.ToString();
 
             string fileName = $"{modelName}-{typeStr}.gguf";
-            string outputPath = Path.Combine(_ggufDir, fileName);
-            string successFile = Path.Combine(_ggufDir, $"{fileName}.success.json");
+            string outputPath = Path.Combine(_paths.GgufDir, fileName);
+            string successFile = Path.Combine(_paths.GgufDir, $"{fileName}.success.json");
             string convertLogPath = outputPath + ".convert.log";
 
             if (deleteProcess)
             {
-                if (!Directory.Exists(_ggufDir))
-                    Directory.CreateDirectory(_ggufDir);
+                if (!Directory.Exists(_paths.GgufDir))
+                    Directory.CreateDirectory(_paths.GgufDir);
 
                 var normalizedFileName = Path.GetFileName(fileName);
                 var successFileName = normalizedFileName + ".success.json";
-                var successFilePath = Path.Combine(_ggufDir, successFileName);
+                var successFilePath = Path.Combine(_paths.GgufDir, successFileName);
                 bool isImmune = File.Exists(successFilePath);
 
-                foreach (var filePath in Directory.EnumerateFiles(_ggufDir, "*.gguf", SearchOption.TopDirectoryOnly))
+                foreach (var filePath in Directory.EnumerateFiles(_paths.GgufDir, "*.gguf", SearchOption.TopDirectoryOnly))
                 {
                     var currentFileName = Path.GetFileName(filePath);
                     var currentModelName = Path.GetFileNameWithoutExtension(currentFileName);
@@ -1362,8 +1352,6 @@ public class QuantizationService
         if (forceRebuild && File.Exists(outputPath))
             await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
 
-        string? transientExternalDownloadPath = null;
-
         await _cpuQuantLock.WaitAsync(ct);
         try
         {
@@ -1404,45 +1392,45 @@ public class QuantizationService
         if (forceRebuild && File.Exists(outputPath))
             await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
 
-        string? transientExternalDownloadPath = null;
+        HybridQuant quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
+            ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
+            : quant;
+
+        IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
+
+        if (quant.BaseQuant.IsExternalRepositoryBaseline)
+        {
+            string durableExternalPath = GetExternalBaselineCachePath(quant.BaseQuant);
+            await _huggingFaceBaselineService.DownloadBaselineAsync(
+                quant.BaseQuant,
+                durableExternalPath,
+                forceRedownload: false,
+                ct: ct);
+
+            temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
+                canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                allowDominantFallback: true);
+
+            if (temporaryCarrierOverrides.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
+                    "MagicQuant cannot export a hybrid from an external baseline until that baseline has been learned.");
+            }
+        }
 
         await _cpuQuantLock.WaitAsync(ct);
         try
         {
             string nativeBasePath = await EnsureBaseModelFileAsync();
-            HybridQuant quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
-                ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
-                : quant;
-
-            IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
-
-            if (quant.BaseQuant.IsExternalRepositoryBaseline)
-            {
-                transientExternalDownloadPath = GetExternalBaselineCachePath(quant.BaseQuant);
-                await _huggingFaceBaselineService.DownloadBaselineAsync(
-                    quant.BaseQuant,
-                    transientExternalDownloadPath,
-                    forceRedownload: false,
-                    ct: ct);
-
-                temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
-                    canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
-                    preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
-                    allowDominantFallback: true);
-
-                if (temporaryCarrierOverrides.Count == 0)
-                {
-                    throw new InvalidOperationException(
-                        $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
-                        "MagicQuant cannot export a hybrid from an external baseline until that baseline has been learned.");
-                }
-            }
 
             await RunLlamaQuantizeAsync(
                 inputFile: nativeBasePath,
                 outputFile: outputPath,
                 quant: quantToExecute,
-                temporaryCarrierOverrides: temporaryCarrierOverrides);
+                temporaryCarrierOverrides: temporaryCarrierOverrides,
+                ct: ct);
 
             await File.WriteAllTextAsync(outputPath + ".success.json", "{\"status\":\"success\"}", ct);
             return outputPath;
@@ -1450,14 +1438,11 @@ public class QuantizationService
         finally
         {
             _cpuQuantLock.Release();
-
-            if (!string.IsNullOrWhiteSpace(transientExternalDownloadPath))
-                await CleanupExternalBaselineDownloadArtifactsAsync(transientExternalDownloadPath);
         }
     }
 
 
-    public async Task<string> EnsurePureQ8ModelAsync()
+    public async Task<ScratchArtifactLease> BuildPureQ8ProbeLeaseAsync(CancellationToken ct = default)
     {
         string basePath = await EnsureBaseModelFileAsync();
 
@@ -1468,62 +1453,38 @@ public class QuantizationService
         };
 
         string modelName = GenerateHybridName(pureQ8);
-        string q8Path = Path.Combine(_ggufDir, $"{modelName}.gguf");
-        string successFile = Path.Combine(_ggufDir, $"{Path.GetFileName(q8Path)}.success.json");
+        var lease = await _scratchStorage.AcquireAsync(ScratchArtifactKind.PureQ8Probe, modelName, ct: ct);
 
-        if (!File.Exists(q8Path) || !File.Exists(successFile))
+        try
         {
-            await _cpuQuantLock.WaitAsync();
+            await _cpuQuantLock.WaitAsync(ct);
             try
             {
-                if (!File.Exists(q8Path))
-                {
-                    AnsiConsole.MarkupLine($"[cyan]Building pure Q8 baseline:[/] {Markup.Escape(modelName)}");
-                    await RunLlamaQuantizeAsync(basePath, q8Path, pureQ8);
-                    AnsiConsole.MarkupLine(
-                        $"[green]Pure Q8 baseline quantization finished:[/] {Markup.Escape(q8Path)}");
-                }
+                AnsiConsole.MarkupLine($"[cyan]Building pure Q8 probe baseline:[/] {Markup.Escape(modelName)}");
+                await RunLlamaQuantizeAsync(
+                    basePath,
+                    lease.GgufPath,
+                    pureQ8,
+                    logPath: lease.PrimaryLogPath,
+                    metadataWorkingDirectory: lease.LeaseDirectory,
+                    ct: ct);
             }
             finally
             {
                 _cpuQuantLock.Release();
             }
 
-            await File.WriteAllTextAsync(successFile, "{\"status\":\"success\"}");
+            return lease;
         }
-        else
+        catch
         {
-            AnsiConsole.MarkupLine($"[grey]Pure Q8 baseline already exists:[/] {Markup.Escape(q8Path)}");
+            await lease.DisposeAsync();
+            throw;
         }
-
-        return q8Path;
     }
 
-    public async Task CleanupPureQ8ModelAsync()
-    {
-        var pureQ8 = new HybridQuant
-        {
-            BaseQuant = BaselineQuants.Q8_0,
-            Tensors = new List<HybridTensor>()
-        };
-
-        string modelName = GenerateHybridName(pureQ8);
-        string q8Path = Path.Combine(_ggufDir, $"{modelName}.gguf");
-        string successFile = Path.Combine(_ggufDir, $"{Path.GetFileName(q8Path)}.success.json");
-        string quantLog = q8Path + ".quantize.log";
-
-        bool hadQ8 = File.Exists(q8Path) || File.Exists(successFile) || File.Exists(quantLog);
-
-        await HardDeleteHelper.DeleteFileIfExistsAsync(q8Path);
-        await HardDeleteHelper.DeleteFileIfExistsAsync(successFile);
-        await HardDeleteHelper.DeleteFileIfExistsAsync(quantLog);
-
-        if (hadQ8)
-            AnsiConsole.MarkupLine($"[grey]Removed probe-only Q8 artifacts:[/] {Markup.Escape(modelName)}");
-        else
-            AnsiConsole.MarkupLine("[grey]No probe-only Q8 artifacts to clean up.[/]");
-    }
-
+    // ----------------------------------------------------------------
+    // Quantization
     // ----------------------------------------------------------------
     // Quantization
     // ----------------------------------------------------------------
@@ -1534,14 +1495,16 @@ public class QuantizationService
         string outputFile,
         IReadOnlyDictionary<string, string> tensorTypes,
         BaselineQuants baseQuant,
-        CancellationToken ct)
+        string? logPath = null,
+        string? metadataWorkingDirectory = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
             throw new FileNotFoundException($"Input GGUF not found: {inputFile}");
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
 
-        var inputTensorMetadata = await ReadTensorMetadataFromGgufAsync(inputFile, outputFile);
+        var inputTensorMetadata = await ReadTensorMetadataFromGgufAsync(inputFile, metadataWorkingDirectory ?? Path.GetDirectoryName(outputFile)!);
         var requestedOverrides = tensorTypes
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .Select(x => new RequestedTensorOverride
@@ -1599,7 +1562,8 @@ public class QuantizationService
             Cache.LlamaBin!,
             RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "llama-quantize.exe" : "llama-quantize");
 
-        string quantizeLogPath = outputFile + ".quantize.log";
+        string quantizeLogPath = string.IsNullOrWhiteSpace(logPath) ? outputFile + ".quantize.log" : logPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(quantizeLogPath)!);
         AnsiConsole.MarkupLine(
             $"[cyan]Quantizing clone artifact:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
 
@@ -1632,29 +1596,32 @@ public class QuantizationService
         };
     }
 
-    private async Task<QuantizationExecutionReport> RunLlamaQuantizeAsync(string inputFile, string outputFile,
-        HybridQuant quant, IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null)
+    private async Task<QuantizationExecutionReport> RunLlamaQuantizeAsync(
+        string inputFile,
+        string outputFile,
+        HybridQuant quant,
+        IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null,
+        string? logPath = null,
+        string? metadataWorkingDirectory = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
             throw new FileNotFoundException($"Input GGUF not found: {inputFile}");
 
-        if (!string.IsNullOrWhiteSpace(Cache.ExternalBaselineCacheDirectory))
+        if (temporaryCarrierOverrides != null || quant.BaseQuant.IsExternalRepositoryBaseline)
         {
-            string fullInput = Path.GetFullPath(inputFile);
-            string fullExternalRoot = Path.GetFullPath(Cache.ExternalBaselineCacheDirectory);
-
-            if (fullInput.StartsWith(fullExternalRoot, StringComparison.OrdinalIgnoreCase) &&
-                (temporaryCarrierOverrides != null || quant.BaseQuant.IsExternalRepositoryBaseline))
+            string nativeBase = await EnsureBaseModelFileAsync();
+            if (!string.Equals(Path.GetFullPath(inputFile), Path.GetFullPath(nativeBase), StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    $"Quantization attempted to use staged external GGUF '{inputFile}' as the carrier input. " +
-                    "External/custom baselines must rebuild from the native base GGUF instead.");
+                    $"Quantization attempted to use non-native carrier input '{inputFile}' for external/override execution. " +
+                    "External/custom baseline rebuilds must use the native base GGUF as input.");
             }
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
 
-        var inputTensorMetadata = await ReadTensorMetadataFromGgufAsync(inputFile, outputFile);
+        var inputTensorMetadata = await ReadTensorMetadataFromGgufAsync(inputFile, metadataWorkingDirectory ?? Path.GetDirectoryName(outputFile)!);
         var requestedOverrides =
             BuildRequestedTensorOverrides(quant, inputTensorMetadata.TensorNames, temporaryCarrierOverrides);
         var concreteOverrides = ResolveConcreteTensorOverrides(
@@ -1716,7 +1683,8 @@ public class QuantizationService
             Cache.LlamaBin!,
             RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "llama-quantize.exe" : "llama-quantize");
 
-        string quantizeLogPath = outputFile + ".quantize.log";
+        string quantizeLogPath = string.IsNullOrWhiteSpace(logPath) ? outputFile + ".quantize.log" : logPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(quantizeLogPath)!);
 
         var psi = new ProcessStartInfo
         {
@@ -1726,7 +1694,7 @@ public class QuantizationService
 
         AnsiConsole.MarkupLine(
             $"[cyan]Quantizing:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
-        var result = await RunLoggedProcessAsync(psi, quantizeLogPath);
+        var result = await RunLoggedProcessAsync(psi, quantizeLogPath, ct);
 
         if (result.ExitCode != 0)
         {
@@ -1793,7 +1761,7 @@ public class QuantizationService
         string ggufPath,
         CancellationToken ct = default)
     {
-        var meta = await ReadTensorMetadataFromGgufAsync(ggufPath, ggufPath);
+        var meta = await ReadTensorMetadataFromGgufAsync(ggufPath, Path.GetDirectoryName(ggufPath)!);
         return meta.TensorTypes
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
@@ -1815,20 +1783,20 @@ public class QuantizationService
         {
             var pure = HybridQuant.CreatePureBaseline(baseline);
             var name = GenerateHybridName(pure);
-            var ggufPath = Path.Combine(_ggufDir, $"{name}.gguf");
-            var success = Path.Combine(_ggufDir, $"{name}.gguf.success.json");
+            var ggufPath = Path.Combine(_paths.GgufDir, $"{name}.gguf");
+            var success = Path.Combine(_paths.GgufDir, $"{name}.gguf.success.json");
             var log = ggufPath + ".quantize.log";
 
             await HardDeleteHelper.DeleteFileIfExistsAsync(ggufPath);
             await HardDeleteHelper.DeleteFileIfExistsAsync(success);
             await HardDeleteHelper.DeleteFileIfExistsAsync(log);
 
-            string benchDir = Path.Combine(_benchDir, name);
+            string benchDir = Path.Combine(_paths.BenchDir, name);
             if (Directory.Exists(benchDir))
                 Directory.Delete(benchDir, recursive: true);
         }
 
-        string debugDir = Path.Combine(_benchDir, "_learning_debug");
+        string debugDir = Path.Combine(_paths.BenchDir, "_learning_debug");
         if (Directory.Exists(debugDir))
             Directory.Delete(debugDir, recursive: true);
 
@@ -1838,12 +1806,12 @@ public class QuantizationService
 
         string nativeType = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
-        string nativeBaseFile = Path.Combine(_ggufDir, $"{modelName}-{nativeType}.gguf");
+        string nativeBaseFile = Path.Combine(_paths.GgufDir, $"{modelName}-{nativeType}.gguf");
         await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile);
         await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile + ".success.json");
         await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile + ".convert.log");
 
-        string nativeBenchDir = Path.Combine(_benchDir, nativeType);
+        string nativeBenchDir = Path.Combine(_paths.BenchDir, nativeType);
         if (Directory.Exists(nativeBenchDir))
             Directory.Delete(nativeBenchDir, recursive: true);
 
@@ -1904,7 +1872,7 @@ public class QuantizationService
             }
         }
 
-        var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, nativeGgufPath);
+        var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, Path.GetDirectoryName(nativeGgufPath)!);
         var ggufTruth = metadata.TensorTypes
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
 
@@ -2049,7 +2017,7 @@ public class QuantizationService
         var tensorScheme = quant.BaseQuant.DefaultTensorScheme!;
         string logPath = report?.LogPath ?? (quantizedModelPath + ".quantize.log");
         var parsed = ParseQuantizeLogForTensorTypes(logPath);
-        var ggufMetadata = await ReadTensorMetadataFromGgufAsync(quantizedModelPath, quantizedModelPath);
+        var ggufMetadata = await ReadTensorMetadataFromGgufAsync(quantizedModelPath, Path.GetDirectoryName(quantizedModelPath)!);
         var ggufTruth = ggufMetadata.TensorTypes
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
 
@@ -2393,7 +2361,7 @@ public class QuantizationService
             Groups = summaries
         };
 
-        string debugDir = Path.Combine(_benchDir, "_learning_debug");
+        string debugDir = Path.Combine(_paths.BenchDir, "_learning_debug");
         Directory.CreateDirectory(debugDir);
         string path = Path.Combine(debugDir, $"{baselineName}_{schemeName}_learned_map.json");
         await File.WriteAllTextAsync(path,
@@ -2763,9 +2731,9 @@ public class QuantizationService
             .ToList();
     }
 
-    private async Task<GgufTensorReadResult> ReadTensorMetadataFromGgufAsync(string ggufPath, string outputFilePath)
+    private async Task<GgufTensorReadResult> ReadTensorMetadataFromGgufAsync(string ggufPath, string workingDirectory)
     {
-        string workingDir = Path.GetDirectoryName(outputFilePath)!;
+        string workingDir = workingDirectory;
         string unique = Guid.NewGuid().ToString("N");
         string payloadPath = Path.Combine(workingDir, $"read_gguf_tensors_{unique}.json");
         string resultPath = Path.Combine(workingDir, $"read_gguf_tensors_result_{unique}.json");
