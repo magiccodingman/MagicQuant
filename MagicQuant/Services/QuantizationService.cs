@@ -1392,37 +1392,38 @@ public class QuantizationService
         if (forceRebuild && File.Exists(outputPath))
             await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
 
+        HybridQuant quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
+            ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
+            : quant;
+
+        IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
+
+        if (quant.BaseQuant.IsExternalRepositoryBaseline)
+        {
+            string durableExternalPath = GetExternalBaselineCachePath(quant.BaseQuant);
+            await _huggingFaceBaselineService.DownloadBaselineAsync(
+                quant.BaseQuant,
+                durableExternalPath,
+                forceRedownload: false,
+                ct: ct);
+
+            temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
+                canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                allowDominantFallback: true);
+
+            if (temporaryCarrierOverrides.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
+                    "MagicQuant cannot export a hybrid from an external baseline until that baseline has been learned.");
+            }
+        }
+
         await _cpuQuantLock.WaitAsync(ct);
         try
         {
             string nativeBasePath = await EnsureBaseModelFileAsync();
-            HybridQuant quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
-                ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
-                : quant;
-
-            IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
-
-            if (quant.BaseQuant.IsExternalRepositoryBaseline)
-            {
-                string durableExternalPath = GetExternalBaselineCachePath(quant.BaseQuant);
-                await _huggingFaceBaselineService.DownloadBaselineAsync(
-                    quant.BaseQuant,
-                    durableExternalPath,
-                    forceRedownload: false,
-                    ct: ct);
-
-                temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
-                    canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
-                    preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
-                    allowDominantFallback: true);
-
-                if (temporaryCarrierOverrides.Count == 0)
-                {
-                    throw new InvalidOperationException(
-                        $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
-                        "MagicQuant cannot export a hybrid from an external baseline until that baseline has been learned.");
-                }
-            }
 
             await RunLlamaQuantizeAsync(
                 inputFile: nativeBasePath,
@@ -1454,24 +1455,32 @@ public class QuantizationService
         string modelName = GenerateHybridName(pureQ8);
         var lease = await _scratchStorage.AcquireAsync(ScratchArtifactKind.PureQ8Probe, modelName, ct: ct);
 
-        await _cpuQuantLock.WaitAsync(ct);
         try
         {
-            AnsiConsole.MarkupLine($"[cyan]Building pure Q8 probe baseline:[/] {Markup.Escape(modelName)}");
-            await RunLlamaQuantizeAsync(
-                basePath,
-                lease.GgufPath,
-                pureQ8,
-                logPath: lease.PrimaryLogPath,
-                metadataWorkingDirectory: lease.LeaseDirectory,
-                ct: ct);
-        }
-        finally
-        {
-            _cpuQuantLock.Release();
-        }
+            await _cpuQuantLock.WaitAsync(ct);
+            try
+            {
+                AnsiConsole.MarkupLine($"[cyan]Building pure Q8 probe baseline:[/] {Markup.Escape(modelName)}");
+                await RunLlamaQuantizeAsync(
+                    basePath,
+                    lease.GgufPath,
+                    pureQ8,
+                    logPath: lease.PrimaryLogPath,
+                    metadataWorkingDirectory: lease.LeaseDirectory,
+                    ct: ct);
+            }
+            finally
+            {
+                _cpuQuantLock.Release();
+            }
 
-        return lease;
+            return lease;
+        }
+        catch
+        {
+            await lease.DisposeAsync();
+            throw;
+        }
     }
 
     // ----------------------------------------------------------------

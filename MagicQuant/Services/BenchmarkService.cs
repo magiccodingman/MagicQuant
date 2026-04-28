@@ -1093,6 +1093,13 @@ public class BenchmarkService
                 reused.ModelSizeBytes = actualSize;
         }
 
+        if (!reused.ModelSizeBytes.HasValue || reused.ModelSizeBytes.Value == 0)
+        {
+            // Reuse cannot safely persist DB truth with unknown size.
+            // This is expected for transient scratch samples where modelPath may be intentionally empty.
+            return false;
+        }
+
         using var db = new MagicQuantContext();
 
         var identity = await GetOrCreateBenchmarkIdentityAsync(db, quantConfig);
