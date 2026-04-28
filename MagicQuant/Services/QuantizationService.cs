@@ -490,17 +490,23 @@ public class QuantizationService
             return SampleProcessState.Skipped;
         }
 
-        await using var lease = await _scratchStorage.AcquireAsync(ScratchArtifactKind.QuantizedSample, modelName, ct: ct);
+        string inputPath = await GetEffectiveInputModelPathAsync(
+            quant,
+            forceBaselineRelearn,
+            baselineLearnedTruthExists,
+            ct);
+
+        ScratchArtifactKind leaseKind = pureExternalBaseline
+            ? ScratchArtifactKind.ExternalBaselineRebuild
+            : quant.BaseQuant.IsExternalRepositoryBaseline
+                ? ScratchArtifactKind.ExternalBaselineNormalizedSample
+                : ScratchArtifactKind.QuantizedSample;
+
+        await using var lease = await _scratchStorage.AcquireAsync(leaseKind, modelName, ct: ct);
         string benchmarkModelPath = lease.GgufPath;
 
         try
         {
-            string inputPath = await GetEffectiveInputModelPathAsync(
-                quant,
-                forceBaselineRelearn,
-                baselineLearnedTruthExists,
-                ct);
-
             QuantizationExecutionReport? quantizationReport = null;
             PreparedExternalBaselineBuild? preparedExternalBaseline = null;
 
@@ -513,6 +519,8 @@ public class QuantizationService
                         quant,
                         downloadedExternalBaselinePath: inputPath,
                         rebuiltOutputPath: lease.GgufPath,
+                        logPath: lease.PrimaryLogPath,
+                        metadataWorkingDirectory: lease.LeaseDirectory,
                         forceBaselineRelearn: forceBaselineRelearn,
                         ct: ct);
                     benchmarkModelPath = preparedExternalBaseline.BenchmarkModelPath;
@@ -523,6 +531,24 @@ public class QuantizationService
                         ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
                         : quant;
 
+                    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
+
+                    if (quant.BaseQuant.IsExternalRepositoryBaseline)
+                    {
+                        temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
+                            canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                            preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                            allowDominantFallback: true);
+
+                        if (temporaryCarrierOverrides.Count == 0)
+                        {
+                            throw new InvalidOperationException(
+                                $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
+                                "External baseline hybrids require learned tensor mappings before sampling. " +
+                                "Run with --relearn-baseline-mappings.");
+                        }
+                    }
+
                     var effectiveInputPath = quant.BaseQuant.IsExternalRepositoryBaseline
                         ? await EnsureBaseModelFileAsync()
                         : inputPath;
@@ -531,6 +557,7 @@ public class QuantizationService
                         effectiveInputPath,
                         lease.GgufPath,
                         quantToExecute,
+                        temporaryCarrierOverrides: temporaryCarrierOverrides,
                         logPath: lease.PrimaryLogPath,
                         metadataWorkingDirectory: lease.LeaseDirectory,
                         ct: ct);
@@ -551,6 +578,14 @@ public class QuantizationService
                 saveLogits: false,
                 domainsOverride: new[] { "general" });
 
+            if (IsLearnableBaselineRun(quant))
+            {
+                if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
+                    await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
+                else if (!baselineLearnedTruthExists || forceBaselineRelearn)
+                    await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
+            }
+
             await PersistQuantizationRunAsync(
                 quant: quant,
                 imatrixDefinitionId: null,
@@ -560,14 +595,6 @@ public class QuantizationService
                 outputModelPath: benchmarkModelPath,
                 error: null,
                 ct: ct);
-
-            if (IsLearnableBaselineRun(quant))
-            {
-                if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
-                    await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
-                else if (!baselineLearnedTruthExists || forceBaselineRelearn)
-                    await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
-            }
 
             return SampleProcessState.Completed;
         }
@@ -694,6 +721,8 @@ public class QuantizationService
         HybridQuant quant,
         string downloadedExternalBaselinePath,
         string rebuiltOutputPath,
+        string logPath,
+        string metadataWorkingDirectory,
         bool forceBaselineRelearn,
         CancellationToken ct)
     {
@@ -719,7 +748,14 @@ public class QuantizationService
             {
                 AnsiConsole.MarkupLine(
                     $"[cyan]Rebuilding normalized custom baseline from learned truth:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-                await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, blanket, metadataWorkingDirectory: Path.GetDirectoryName(rebuiltOutputPath), ct: ct);
+                await RunLlamaQuantizeAsync(
+                    nativeBasePath,
+                    rebuiltOutputPath,
+                    quant,
+                    blanket,
+                    logPath: logPath,
+                    metadataWorkingDirectory: metadataWorkingDirectory,
+                    ct: ct);
             }
 
             return new PreparedExternalBaselineBuild
@@ -789,7 +825,14 @@ public class QuantizationService
 
         AnsiConsole.MarkupLine(
             $"[cyan]Rebuilding normalized benchmark artifact for custom baseline:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-        await RunLlamaQuantizeAsync(nativeBasePath, rebuiltOutputPath, quant, normalizedOverrides, metadataWorkingDirectory: Path.GetDirectoryName(rebuiltOutputPath), ct: ct);
+        await RunLlamaQuantizeAsync(
+            nativeBasePath,
+            rebuiltOutputPath,
+            quant,
+            normalizedOverrides,
+            logPath: logPath,
+            metadataWorkingDirectory: metadataWorkingDirectory,
+            ct: ct);
 
         return new PreparedExternalBaselineBuild
         {

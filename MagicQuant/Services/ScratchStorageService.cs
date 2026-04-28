@@ -189,8 +189,46 @@ public sealed class ScratchStorageService
             foreach (var child in Directory.EnumerateDirectories(tmpRoot))
             {
                 ct.ThrowIfCancellationRequested();
-                await HardDeleteHelper.DeleteDirectoryIfExistsAsync(child);
+                // Legacy single-level lease folder support.
+                if (IsLeaseDirectory(child))
+                {
+                    await HardDeleteHelper.DeleteDirectoryIfExistsAsync(child);
+                    continue;
+                }
+
+                // Model namespace folder: only remove known lease children.
+                bool containsOnlyLeaseDirs = !Directory.EnumerateFiles(child).Any();
+                foreach (var leaseDir in Directory.EnumerateDirectories(child))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (!IsLeaseDirectory(leaseDir))
+                    {
+                        containsOnlyLeaseDirs = false;
+                        continue;
+                    }
+
+                    await HardDeleteHelper.DeleteDirectoryIfExistsAsync(leaseDir);
+                }
+
+                if (containsOnlyLeaseDirs &&
+                    !Directory.EnumerateDirectories(child).Any() &&
+                    !Directory.EnumerateFiles(child).Any())
+                {
+                    await HardDeleteHelper.DeleteDirectoryIfExistsAsync(child);
+                }
             }
         }
+    }
+
+    private static bool IsLeaseDirectory(string directoryPath)
+    {
+        if (!Directory.Exists(directoryPath))
+            return false;
+
+        string name = Path.GetFileName(directoryPath);
+        if (!Guid.TryParseExact(name, "N", out _))
+            return false;
+
+        return File.Exists(Path.Combine(directoryPath, "lease.json"));
     }
 }
