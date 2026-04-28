@@ -123,7 +123,7 @@ static async Task CleanupExternalBaselineCacheDirectoryAsync()
         await HardDeleteHelper.DeleteFileIfExistsAsync(file);
 
     foreach (var directory in Directory.EnumerateDirectories(fullRoot))
-        Directory.Delete(directory, recursive: true);
+        await HardDeleteHelper.DeleteDirectoryIfExistsAsync(directory);
 
     Directory.CreateDirectory(fullRoot);
 }

@@ -985,7 +985,7 @@ public class QuantizationService
                     !string.Equals(fullStagingDir, fullRoot, StringComparison.OrdinalIgnoreCase) &&
                     Directory.Exists(fullStagingDir))
                 {
-                    Directory.Delete(fullStagingDir, recursive: true);
+                    await HardDeleteHelper.DeleteDirectoryIfExistsAsync(fullStagingDir);
                     return;
                 }
             }
