@@ -34,6 +34,7 @@ public sealed class ValidatePredictions : ICommand
 
         Cache.ModelDirectory = modelDir;
         Cache.ModelMagicQuantDirectory = Path.Combine(modelDir, "MagicQuant");
+        ModelRuntimePathService.InitializeForCurrentModel();
         Directory.CreateDirectory(Cache.ModelMagicQuantDirectory);
 
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(modelDir);

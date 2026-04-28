@@ -4,6 +4,10 @@ paths:
   llama_root:
   llama_bin:
   convert_script:
+  scratch_roots:
+    - /mnt/world8/
+    - /tmp/
+    - /mnt/world7/
   external_baseline_cache_dir_name: ExternalBaselines
 
 flags:

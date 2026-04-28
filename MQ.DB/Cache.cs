@@ -51,6 +51,13 @@ public class Cache
     /// </summary>
     public static string? ExternalBaselineCacheDirectory { get; set; }
 
+
+    /// <summary>
+    /// Normalized configured scratch roots for transient heavy GGUF writes.
+    /// </summary>
+    public static List<string> ScratchRoots { get; set; } = new();
+
+
     /// <summary>
     /// Aka BF16, F16, or F32
     /// </summary>

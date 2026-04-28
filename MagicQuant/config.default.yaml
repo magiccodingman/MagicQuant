@@ -32,7 +32,13 @@ paths:
   llama_bin:
   convert_script:
 
-  # Folder name created under the MagicQuant root for external/custom GGUF downloads.
+  # Scratch roots for temporary heavy GGUF writes.
+  # MagicQuant creates .MagicQuant_tmp under each root and enforces one heavy writer per root.
+  # Roots are not validated as separate physical disks; choose paths intentionally.
+  # When blank, MagicQuant falls back to single-root model-local scratch behavior.
+  scratch_roots: []
+
+  # Folder name created under the current model's MagicQuant directory for durable external/custom GGUF downloads.
   external_baseline_cache_dir_name: ExternalBaselines
 
 flags:

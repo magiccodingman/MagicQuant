@@ -57,6 +57,7 @@ public sealed class CloneRepositoryQuants : ICommand
 
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
+        ModelRuntimePathService.InitializeForCurrentModel();
         Cache.ForceRelearnBaselineTensorMappings = false;
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;
@@ -129,16 +130,16 @@ public sealed class CloneRepositoryQuants : ICommand
             Path.Combine(Cache.OutputDirectory!, CloneConfigManifestGenerationService.FileName),
             JsonSerializer.Serialize(manifest, JsonOptions));
 
-        string q8Path = await quantizationService.EnsurePureQ8ModelAsync();
+        await using var q8Lease = await quantizationService.BuildPureQ8ProbeLeaseAsync();
         await benchmarkService.EnsureExecutionPlanAsync(
-            q8ModelPath: q8Path,
+            q8ModelPath: q8Lease.GgufPath,
             discoveryTokenTarget: 8192,
             quantizationKey: "Q8_0",
             forceRediscovery: Cache.ForceRefreshHardwareProbe);
 
         var q8Reference = await benchmarkService.RunAllBenchmarksAsync(
             quantConfig: HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0),
-            modelPath: q8Path,
+            modelPath: q8Lease.GgufPath,
             benchDir: Path.Combine(Cache.ModelMagicQuantDirectory!, "CloneBenchmarks", "_reference_q8"),
             domainsOverride: new[] { "general" });
 

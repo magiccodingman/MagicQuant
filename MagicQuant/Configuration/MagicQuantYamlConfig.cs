@@ -86,6 +86,7 @@ public sealed class RuntimePathConfig
     public string? LlamaRoot { get; set; }
     public string? LlamaBin { get; set; }
     public string? ConvertScript { get; set; }
+    public List<string> ScratchRoots { get; set; } = new();
     public string ExternalBaselineCacheDirName { get; set; } = "ExternalBaselines";
 }
 

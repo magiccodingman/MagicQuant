@@ -61,6 +61,7 @@ public class Evolution : ICommand
 
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
+        ModelRuntimePathService.InitializeForCurrentModel();
         Cache.ForceRelearnBaselineTensorMappings = Config.Current.Flags.ForceRelearnBaselineTensorMappings;
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;
@@ -161,22 +162,13 @@ public class Evolution : ICommand
         if (!loadedPlanFromCache)
         {
             AnsiConsole.MarkupLine("[grey]Dynamic execution-plan cache not usable; probing Q8 + native anchors...[/]");
-            string? q8ModelGgufPath = null;
-
-            try
-            {
-                q8ModelGgufPath = await quantizationService.EnsurePureQ8ModelAsync();
-                await benchmarkService.EnsureDynamicExecutionPlanAsync(
-                    q8ModelPath: q8ModelGgufPath,
-                    nativeModelPath: bf16ModelGgufPath,
-                    q8QuantizationKey: q8QuantizationKey,
-                    nativeQuantizationKey: baseTypeName,
-                    forceRediscovery: Cache.ForceRefreshHardwareProbe);
-            }
-            finally
-            {
-                await quantizationService.CleanupPureQ8ModelAsync();
-            }
+            await using var q8Lease = await quantizationService.BuildPureQ8ProbeLeaseAsync();
+            await benchmarkService.EnsureDynamicExecutionPlanAsync(
+                q8ModelPath: q8Lease.GgufPath,
+                nativeModelPath: bf16ModelGgufPath,
+                q8QuantizationKey: q8QuantizationKey,
+                nativeQuantizationKey: baseTypeName,
+                forceRediscovery: Cache.ForceRefreshHardwareProbe);
         }
 
         bool nativeTruthAlreadyLearned =
