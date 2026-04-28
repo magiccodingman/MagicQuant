@@ -136,13 +136,7 @@ baselines:
       allow_as_explicit_group_candidate: false
 
       includes:
-        - file_name: Qwen3.6-35B-A3B-MXFP4_MOE.gguf
-          baseline_family: MXFP4_MOE
-          quantize_base_name: MXFP4_MOE
-          display_name: UD-MXFP4_MOE
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
-          allow_as_explicit_group_candidate: true
+
 
         - file_name: Qwen3.6-35B-A3B-UD-IQ2_M.gguf
           baseline_family: IQ2_M
