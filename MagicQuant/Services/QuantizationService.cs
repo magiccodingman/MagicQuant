@@ -656,9 +656,26 @@ public class QuantizationService
             return basePath;
 
         string externalPath = GetExternalBaselineCachePath(quant.BaseQuant);
-        await _huggingFaceBaselineService.DownloadBaselineAsync(quant.BaseQuant, externalPath, forceRefresh, ct);
-        await ValidateExternalBaselineTensorParityOrThrow(basePath, externalPath);
-        return externalPath;
+        try
+        {
+            await _huggingFaceBaselineService.DownloadBaselineAsync(quant.BaseQuant, externalPath, forceRefresh, ct);
+            await ValidateExternalBaselineTensorParityOrThrow(basePath, externalPath);
+            return externalPath;
+        }
+        catch
+        {
+            try
+            {
+                await CleanupExternalBaselineDownloadArtifactsAsync(externalPath);
+            }
+            catch (Exception cleanupEx)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Warning:[/] failed to clean external baseline staging after failed download/validation: {Markup.Escape(cleanupEx.Message)}");
+            }
+
+            throw;
+        }
     }
 
     private string GetExternalBaselineCachePath(BaselineQuants baseline)
