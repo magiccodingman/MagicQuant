@@ -6,7 +6,7 @@ paths:
   convert_script:
   scratch_roots:
     - /mnt/world8/
-    - /tmp/
+    - /home/slurp/
     - /mnt/world7/
   external_baseline_cache_dir_name: ExternalBaselines
 
