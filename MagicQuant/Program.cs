@@ -3,6 +3,7 @@ using MagicQuant.Configuration;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MagicQuant.Services;
+using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
 
@@ -65,6 +66,7 @@ List<CliArg> parsedArgs = CliHelpers.ParseArguments(remainingArgsString);
 try
 {
     var loadedConfig = MagicQuantYamlLoader.LoadAndApply(commandInput, parsedArgs);
+    await CleanupExternalBaselineCacheDirectoryAsync();
 
     TensorWeightScheme.ValidateSmallestConfiguration();
     BaselineQuants.ValidateIntegrityOrThrow();
@@ -103,4 +105,64 @@ try
 catch (Exception ex)
 {
     AnsiConsole.WriteException(ex);
+}
+
+static async Task CleanupExternalBaselineCacheDirectoryAsync()
+{
+    var root = Cache.ExternalBaselineCacheDirectory;
+    if (string.IsNullOrWhiteSpace(root))
+        return;
+
+    var fullRoot = Path.GetFullPath(root);
+    if (!IsSafeExternalBaselineCacheRoot(fullRoot))
+        return;
+
+    Directory.CreateDirectory(fullRoot);
+
+    foreach (var file in Directory.EnumerateFiles(fullRoot))
+        await HardDeleteHelper.DeleteFileIfExistsAsync(file);
+
+    foreach (var directory in Directory.EnumerateDirectories(fullRoot))
+        await HardDeleteHelper.DeleteDirectoryIfExistsAsync(directory);
+
+    Directory.CreateDirectory(fullRoot);
+}
+
+static bool IsSafeExternalBaselineCacheRoot(string fullRoot)
+{
+    if (string.IsNullOrWhiteSpace(fullRoot))
+        return false;
+
+    var normalizedRoot = Path.GetFullPath(fullRoot)
+        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    if (Path.GetPathRoot(normalizedRoot)?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        .Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase) == true)
+    {
+        return false;
+    }
+
+    if (!string.IsNullOrWhiteSpace(Cache.MagicQuantDirectory))
+    {
+        var magicRoot = Path.GetFullPath(Cache.MagicQuantDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (string.Equals(normalizedRoot, magicRoot, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsPathInside(normalizedRoot, magicRoot))
+            return false;
+    }
+
+    return true;
+}
+
+static bool IsPathInside(string childPath, string parentPath)
+{
+    var child = Path.GetFullPath(childPath)
+        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    var parent = Path.GetFullPath(parentPath)
+        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    return child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 }

@@ -116,7 +116,7 @@ public record BaselineQuants(
         Create(6, false, "IQ4_XS", "IQ4_XS", TensorWeightScheme.IQ4_XS, [TensorWeightScheme.IQ4_XS], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 9);
 
     public static readonly BaselineQuants MXFP4_MOE =
-        Create(15, false, "MXFP4_MOE", "MXFP4_MOE", TensorWeightScheme.MXFP4, [TensorWeightScheme.MXFP4, TensorWeightScheme.IQ3_S, TensorWeightScheme.IQ3_XS], [TReg.MoeRouter.UniqueId], true, false, true, false, 4, 8);
+        Create(15, false, "MXFP4_MOE", "MXFP4_MOE", TensorWeightScheme.MXFP4, [TensorWeightScheme.MXFP4, TensorWeightScheme.IQ3_S, TensorWeightScheme.IQ3_XS], [TReg.MoeRouter.UniqueId], false, false, false, false, 4, 8);
 
     public static readonly BaselineQuants IQ3_M =
         Create(17, true, "IQ3_M", "IQ3_M", TensorWeightScheme.IQ3_S, [TensorWeightScheme.IQ3_S], [TReg.Embeddings.UniqueId, TReg.LmHead.UniqueId, TReg.MoeRouter.UniqueId], true, false, true, false, 3, 7);

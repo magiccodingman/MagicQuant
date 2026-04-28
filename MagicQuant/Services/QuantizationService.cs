@@ -506,8 +506,12 @@ public class QuantizationService
 
         try
         {
-            string inputPath = await GetEffectiveInputModelPathAsync(quant, forceBaselineRelearn, ct);
-            if (pureExternalBaseline)
+            string inputPath = await GetEffectiveInputModelPathAsync(
+                quant,
+                forceBaselineRelearn,
+                baselineLearnedTruthExists,
+                ct);
+            if (pureExternalBaseline && IsPathInsideExternalBaselineCacheRoot(inputPath))
                 transientExternalDownloadPath = inputPath;
 
             QuantizationExecutionReport? quantizationReport = null;
@@ -632,7 +636,10 @@ public class QuantizationService
     private bool ShouldDownloadExternalBaselineInsteadOfQuantizing(HybridQuant quant)
         => quant.BaseQuant.IsExternalRepositoryBaseline && quant.Tensors.Count == 0;
 
-    private async Task<string> GetEffectiveInputModelPathAsync(HybridQuant quant, bool forceRefresh,
+    private async Task<string> GetEffectiveInputModelPathAsync(
+        HybridQuant quant,
+        bool forceRefresh,
+        bool baselineLearnedTruthExists,
         CancellationToken ct)
     {
         string basePath = await EnsureBaseModelFileAsync();
@@ -645,10 +652,30 @@ public class QuantizationService
         if (quant.Tensors.Count > 0)
             return basePath;
 
+        if (!forceRefresh && baselineLearnedTruthExists)
+            return basePath;
+
         string externalPath = GetExternalBaselineCachePath(quant.BaseQuant);
-        await _huggingFaceBaselineService.DownloadBaselineAsync(quant.BaseQuant, externalPath, forceRefresh, ct);
-        await ValidateExternalBaselineTensorParityOrThrow(basePath, externalPath);
-        return externalPath;
+        try
+        {
+            await _huggingFaceBaselineService.DownloadBaselineAsync(quant.BaseQuant, externalPath, forceRefresh, ct);
+            await ValidateExternalBaselineTensorParityOrThrow(basePath, externalPath);
+            return externalPath;
+        }
+        catch
+        {
+            try
+            {
+                await CleanupExternalBaselineDownloadArtifactsAsync(externalPath);
+            }
+            catch (Exception cleanupEx)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Warning:[/] failed to clean external baseline staging after failed download/validation: {Markup.Escape(cleanupEx.Message)}");
+            }
+
+            throw;
+        }
     }
 
     private string GetExternalBaselineCachePath(BaselineQuants baseline)
@@ -661,7 +688,10 @@ public class QuantizationService
         string extension = Path.GetExtension(baseline.SourceFileName ?? string.Empty);
         if (string.IsNullOrWhiteSpace(extension))
             extension = ".gguf";
-        return Path.Combine(root, safe + extension);
+
+        string stagingDirectory = Path.Combine(root, $"{safe}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stagingDirectory);
+        return Path.Combine(stagingDirectory, safe + extension);
     }
 
     private async Task ValidateExternalBaselineTensorParityOrThrow(string baseModelPath, string externalBaselinePath)
@@ -951,12 +981,51 @@ public class QuantizationService
             $"[green]Persisted rebuilt custom-baseline learning truth:[/] [cyan]{rows.Count:N0}[/] row(s) for [yellow]{Markup.Escape(quant.BaseQuant.Names[0])}[/].");
     }
 
-    private async Task CleanupExternalBaselineDownloadArtifactsAsync(string downloadedExternalBaselinePath)
+    private async Task CleanupExternalBaselineDownloadArtifactsAsync(string? downloadedExternalBaselinePath)
     {
         if (string.IsNullOrWhiteSpace(downloadedExternalBaselinePath))
             return;
 
-        await HardDeleteHelper.DeleteFileIfExistsAsync(downloadedExternalBaselinePath);
+        string fullFile = Path.GetFullPath(downloadedExternalBaselinePath);
+        string? root = Cache.ExternalBaselineCacheDirectory;
+
+        if (!string.IsNullOrWhiteSpace(root))
+        {
+            string fullRoot = Path.GetFullPath(root);
+            string? stagingDir = Path.GetDirectoryName(fullFile);
+
+            if (!string.IsNullOrWhiteSpace(stagingDir))
+            {
+                string fullStagingDir = Path.GetFullPath(stagingDir);
+
+                if (IsPathInside(fullStagingDir, fullRoot) &&
+                    !string.Equals(fullStagingDir, fullRoot, StringComparison.OrdinalIgnoreCase) &&
+                    Directory.Exists(fullStagingDir))
+                {
+                    await HardDeleteHelper.DeleteDirectoryIfExistsAsync(fullStagingDir);
+                    return;
+                }
+            }
+        }
+
+        await HardDeleteHelper.DeleteFileIfExistsAsync(fullFile);
+        await HardDeleteHelper.DeleteFileIfExistsAsync(fullFile + ".nativecheck");
+        await HardDeleteHelper.DeleteFileIfExistsAsync(fullFile + ".externalcheck");
+    }
+
+    private bool IsPathInsideExternalBaselineCacheRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(Cache.ExternalBaselineCacheDirectory))
+            return false;
+
+        return IsPathInside(path, Cache.ExternalBaselineCacheDirectory);
+    }
+
+    private static bool IsPathInside(string childPath, string parentPath)
+    {
+        var child = Path.GetFullPath(childPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var parent = Path.GetFullPath(parentPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
 // ----------------------------------------------------------------
@@ -1293,6 +1362,8 @@ public class QuantizationService
         if (forceRebuild && File.Exists(outputPath))
             await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
 
+        string? transientExternalDownloadPath = null;
+
         await _cpuQuantLock.WaitAsync(ct);
         try
         {
@@ -1333,6 +1404,8 @@ public class QuantizationService
         if (forceRebuild && File.Exists(outputPath))
             await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
 
+        string? transientExternalDownloadPath = null;
+
         await _cpuQuantLock.WaitAsync(ct);
         try
         {
@@ -1345,10 +1418,10 @@ public class QuantizationService
 
             if (quant.BaseQuant.IsExternalRepositoryBaseline)
             {
-                string downloadedExternalBaselinePath = GetExternalBaselineCachePath(quant.BaseQuant);
+                transientExternalDownloadPath = GetExternalBaselineCachePath(quant.BaseQuant);
                 await _huggingFaceBaselineService.DownloadBaselineAsync(
                     quant.BaseQuant,
-                    downloadedExternalBaselinePath,
+                    transientExternalDownloadPath,
                     forceRedownload: false,
                     ct: ct);
 
@@ -1377,6 +1450,9 @@ public class QuantizationService
         finally
         {
             _cpuQuantLock.Release();
+
+            if (!string.IsNullOrWhiteSpace(transientExternalDownloadPath))
+                await CleanupExternalBaselineDownloadArtifactsAsync(transientExternalDownloadPath);
         }
     }
 
