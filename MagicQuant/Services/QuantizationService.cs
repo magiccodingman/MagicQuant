@@ -96,7 +96,7 @@ public class QuantizationService
 
 // Hard safety cap for large GGUF quantization.
 // More than 2 concurrent 35B quantizers can overwhelm the output NVMe queue.
-        const int maxConcurrentQuantizationCap = 2;
+        const int maxConcurrentQuantizationCap = 1;
 
 // Keep a little workstation breathing room.
         int reservedThreads = threadCount switch
