@@ -343,28 +343,31 @@ public class QuantizationService
             Plan = plan,
             ModelName = GenerateHybridName(plan.Quant)
         };
+        var sw = Stopwatch.StartNew();
 
         try
         {
             var state = await ProcessHybridQuantAsync(plan.Quant, ct);
+            sw.Stop();
             record.State = state;
 
             var identity = await ResolveBenchmarkIdentityAsync(plan.Quant, ct);
             record.TensorComboId = identity.TensorComboId;
             record.BenchmarkId = identity.BenchmarkId;
 
-            progress?.ReportFinished(state, record.ModelName);
+            progress?.ReportFinished(state, record.ModelName, sw.Elapsed);
             return record;
         }
         catch (Exception ex)
         {
+            sw.Stop();
             record.State = SampleProcessState.Failed;
             record.Error = ex.Message;
 
             AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(record.ModelName)}");
             AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
 
-            progress?.ReportFinished(SampleProcessState.Failed, record.ModelName);
+            progress?.ReportFinished(SampleProcessState.Failed, record.ModelName, sw.Elapsed);
             return record;
         }
     }
@@ -380,6 +383,7 @@ public class QuantizationService
             Plan = duplicatePlan,
             ModelName = GenerateHybridName(duplicatePlan.Quant)
         };
+        var sw = Stopwatch.StartNew();
 
         try
         {
@@ -391,21 +395,28 @@ public class QuantizationService
                 record.State = SampleProcessState.Completed;
                 record.TensorComboId = identity.TensorComboId;
                 record.BenchmarkId = identity.BenchmarkId;
-                progress?.ReportFinished(SampleProcessState.Completed, record.ModelName);
+                progress?.ReportFinished(
+                    SampleProcessState.Completed,
+                    record.ModelName,
+                    duration: TimeSpan.Zero,
+                    countForEtaOverride: false);
+                sw.Stop();
                 return record;
             }
 
+            sw.Stop();
             return await ExecutePlanAsync(duplicatePlan, progress, ct);
         }
         catch (Exception ex)
         {
+            sw.Stop();
             record.State = SampleProcessState.Failed;
             record.Error = ex.Message;
 
             AnsiConsole.MarkupLine($"[red]Sample failed:[/] {Markup.Escape(record.ModelName)}");
             AnsiConsole.MarkupLine($"[grey]{Markup.Escape(ex.Message)}[/]");
 
-            progress?.ReportFinished(SampleProcessState.Failed, record.ModelName);
+            progress?.ReportFinished(SampleProcessState.Failed, record.ModelName, sw.Elapsed);
             return record;
         }
     }

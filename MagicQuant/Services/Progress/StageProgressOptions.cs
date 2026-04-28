@@ -9,6 +9,7 @@ public sealed class StageProgressOptions
     public int PrintEveryNFinished { get; init; } = 1;
     public bool ShowEta { get; init; } = true;
     public bool CountSkippedForEta { get; init; } = false;
+    public TimeSpan MinimumEtaSampleDuration { get; init; } = TimeSpan.FromSeconds(1);
     public bool PrintFinalSummary { get; init; } = true;
     public string? UnitLabel { get; init; }
 }

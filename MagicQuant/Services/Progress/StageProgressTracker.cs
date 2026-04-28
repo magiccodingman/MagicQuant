@@ -10,6 +10,7 @@ public sealed class StageProgressTracker
     private int _completed;
     private int _skipped;
     private int _failed;
+    private int _etaSamples;
     private int _lastPrintedFinished;
     private DateTime _lastPrintedUtc;
 
@@ -52,7 +53,11 @@ public sealed class StageProgressTracker
         }
     }
 
-    public void ReportFinished(SampleProcessState state, string? itemName = null)
+    public void ReportFinished(
+        SampleProcessState state,
+        string? itemName = null,
+        TimeSpan? duration = null,
+        bool? countForEtaOverride = null)
     {
         switch (state)
         {
@@ -67,7 +72,25 @@ public sealed class StageProgressTracker
                 break;
         }
 
+        bool countForEta = countForEtaOverride ?? ShouldCountForEta(state, duration);
+        if (countForEta)
+            Interlocked.Increment(ref _etaSamples);
+
         MaybePrint(state, itemName);
+    }
+
+    private bool ShouldCountForEta(SampleProcessState state, TimeSpan? duration)
+    {
+        if (!duration.HasValue || duration.Value < _options.MinimumEtaSampleDuration)
+            return false;
+
+        return state switch
+        {
+            SampleProcessState.Completed => true,
+            SampleProcessState.Failed => true,
+            SampleProcessState.Skipped => _options.CountSkippedForEta,
+            _ => false
+        };
     }
 
     private void MaybePrint(SampleProcessState justFinishedState, string? itemName)
@@ -110,7 +133,7 @@ public sealed class StageProgressTracker
                 var elapsed = now - StartedUtc;
                 string elapsedText = FormatDuration(elapsed);
 
-                int etaSampleCount = _options.CountSkippedForEta ? finished : completed + failed;
+                int etaSampleCount = Volatile.Read(ref _etaSamples);
                 string etaText = "ETA warming up...";
                 string estFinishText = "est finish UTC n/a";
 
