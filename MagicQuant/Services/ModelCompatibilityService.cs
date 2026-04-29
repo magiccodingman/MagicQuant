@@ -104,8 +104,8 @@ public class ModelCompatibilityService
             }
 
             var failuresByGroupAndScheme = result.Failures
-                .GroupBy(x => (x.Group, x.Scheme), StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(x => x.Key, x => x.ToList());
+                .GroupBy(x => $"{x.Group}::{x.Scheme}", StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.ToList(), StringComparer.OrdinalIgnoreCase);
 
             foreach (var failure in result.Incompatible)
             {
@@ -129,7 +129,7 @@ public class ModelCompatibilityService
                         $"group={group.Name}(id={group.UniqueId}) candidate={candidate.Names[0]}(id={candidate.UniqueId}) scheme={candidate.DefaultTensorScheme?.Names[0] ?? "<none>"} block={candidate.DefaultTensorScheme?.BlockNeo?.ToString() ?? "<none>"} staticBanned={candidate.BannedGroupIds.Contains(group.UniqueId)} runtimeBannedBefore={beforeRuntimeBan} result=restricted reason=Block Alignment");
                 }
 
-                if (failuresByGroupAndScheme.TryGetValue((failure.Group, failure.Scheme), out var details) && details.Count > 0)
+                if (failuresByGroupAndScheme.TryGetValue($"{failure.Group}::{failure.Scheme}", out var details) && details.Count > 0)
                 {
                     LogFailureSummary(group, candidate, details);
                 }
