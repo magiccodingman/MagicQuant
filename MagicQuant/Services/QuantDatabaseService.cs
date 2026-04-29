@@ -84,13 +84,12 @@ public class QuantDatabaseService
 
     public async Task<List<TensorConfig>> GetRemainingTensorConfigsAsync(CancellationToken ct = default)
     {
-        long count = await GetRemainingCombinationCountAsync(ct);
-        if (count > Config.MaxInMemoryCombinationLoadRows)
-            throw new InvalidOperationException($"Refusing to load {count:N0} DuckDB tensor configs into memory. Use SQL-native filtering/streaming instead.");
-
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
+        long count = await GetRowCountAsync(connection, ct);
+        if (count > Config.MaxInMemoryCombinationLoadRows)
+            throw new InvalidOperationException($"Refusing to load {count:N0} DuckDB tensor configs into memory. Use SQL-native filtering/streaming instead.");
 
         var results = new List<TensorConfig>();
 
@@ -239,6 +238,7 @@ public class QuantDatabaseService
         using (var pruneCmd = connection.CreateCommand())
         {
             pruneCmd.CommandText = $@"
+DROP TABLE IF EXISTS tensor_configs_pruned;
 CREATE TABLE tensor_configs_pruned AS
 SELECT t.*
 FROM {TableName} t
@@ -288,6 +288,7 @@ ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = $@"
+DROP TABLE IF EXISTS tensor_configs_pruned;
 CREATE TABLE tensor_configs_pruned AS
 SELECT *
 FROM {TableName}
@@ -580,7 +581,7 @@ ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
     private static async Task<BigInteger> InsertBaselineCombinationsSqlAsync(DuckDBConnection connection, BaselineQuants baseline, CancellationToken ct)
     {
         var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseline);
-        if (allowed.Length != 9 || allowed.Any(x => x.IsDefaultOrEmpty))
+        if (allowed.Length != 9 || allowed.Any(x => x == null || x.Length == 0))
             throw new InvalidOperationException($"Invalid allowed candidate dimensions for baseline {baseline.Names[0]}.");
         await CreateTempDimensionTableAsync(connection, "temp_dim_embeddings", allowed[0], ct);
         await CreateTempDimensionTableAsync(connection, "temp_dim_lm_head", allowed[1], ct);
@@ -658,7 +659,7 @@ FROM {BuildValuesSql(values)};";
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static BigInteger ProductOfDimensionLengths(ImmutableArray<byte>[] allowed)
+    private static BigInteger ProductOfDimensionLengths(ImmutableArray<byte[]> allowed)
     {
         BigInteger product = BigInteger.One;
         foreach (var dim in allowed)
