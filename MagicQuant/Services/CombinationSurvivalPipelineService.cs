@@ -52,6 +52,10 @@ public sealed class CombinationSurvivalPipelineService
         AnsiConsole.Write(new Rule("[yellow]Rank-Safe Prediction / Hybrid Selection Pipeline[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"[green]Remaining DuckDB combinations available to score:[/] [cyan]{report.StartingCount:N0}[/]");
         AnsiConsole.MarkupLine("[grey]Old MDA bucket survival is disabled. DuckDB now defines the allowed search space; rank-safe isolation prediction selects what deserves real benchmarking.[/]");
+        AnsiConsole.MarkupLine("[grey]Note: final prediction/selection is currently guarded for small in-memory runs only; trillion-scale support requires DuckDB-backed prediction materialization + projection.[/]");
+
+        if (report.StartingCount > Config.MaxInMemoryCombinationLoadRows)
+            throw new InvalidOperationException($"Final prediction selection still requires DuckDB-backed prediction materialization. Refusing to load {report.StartingCount:N0} combinations into memory.");
 
         var remainingConfigs = await _combinationStore.LoadAllAsync(ct);
         var pureBaselines = await _benchmarkRepository.LoadPureBaselineSnapshotsAsync(ct);

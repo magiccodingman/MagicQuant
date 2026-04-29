@@ -37,6 +37,7 @@ public static class Config
 
     public static double PredictionDefaultBitStressThreshold => Current.Prediction.DefaultBitStressThreshold;
     public static int PredictionMinimumFitRows => Math.Max(2, Current.Prediction.MinimumFitRows);
+    public static long MaxInMemoryCombinationLoadRows => Math.Max(1L, Current.Prediction.MaxInMemoryCombinationLoadRows);
 
     public static double SelectionNearBaselineMaxSizeGrowthPercent =>
         Math.Max(0d, Current.CandidateSelection.NearBaselineMaxSizeGrowthPercent);

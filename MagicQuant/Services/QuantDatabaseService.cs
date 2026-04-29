@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Numerics;
 using DuckDB.NET.Data;
@@ -14,12 +15,6 @@ public class QuantDatabaseService
 {
     private const string DbFileNamePrefix = "MagicQuant_Combinations";
     private const string TableName = "tensor_configs";
-
-    // Keep this moderate so generation still yields often enough for progress.
-    private const int GeneratorBatchSize = 250_000;
-
-    // Appender heartbeat. Lower = chattier.
-    private const long InsertProgressLogEveryRows = 50_000;
 
     private static readonly string[] ExpectedColumnTypes =
     [
@@ -93,6 +88,9 @@ public class QuantDatabaseService
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
+        long count = await GetRowCountAsync(connection, ct);
+        if (count > Config.MaxInMemoryCombinationLoadRows)
+            throw new InvalidOperationException($"Refusing to load {count:N0} DuckDB tensor configs into memory. Use SQL-native filtering/streaming instead.");
 
         var results = new List<TensorConfig>();
 
@@ -231,81 +229,42 @@ public class QuantDatabaseService
             return 0;
         }
 
-        var rows = new List<TensorConfig>();
-
-        using (var select = connection.CreateCommand())
-        {
-            select.CommandText = $@"
-                SELECT BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter
-                FROM {TableName};";
-
-            using var reader = await select.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                rows.Add(new TensorConfig(
-                    baseQuant: Convert.ToByte(reader.GetValue(0)),
-                    embeddings: Convert.ToByte(reader.GetValue(1)),
-                    lmHead: Convert.ToByte(reader.GetValue(2)),
-                    attnQ: Convert.ToByte(reader.GetValue(3)),
-                    attnKV: Convert.ToByte(reader.GetValue(4)),
-                    attnOutput: Convert.ToByte(reader.GetValue(5)),
-                    ffnUpGate: Convert.ToByte(reader.GetValue(6)),
-                    ffnDown: Convert.ToByte(reader.GetValue(7)),
-                    moeExperts: Convert.ToByte(reader.GetValue(8)),
-                    moeRouter: Convert.ToByte(reader.GetValue(9))
-                ));
-            }
-        }
-
-        var kept = new List<TensorConfig>(rows.Count);
-        var predictedByBase = new Dictionary<byte, List<ulong>>();
+        long beforeCount = await GetRowCountAsync(connection, ct);
 
         ulong sizeCeilingBytes = Config.ManualMaxPredictedSizeBytes > 0
             ? Config.ManualMaxPredictedSizeBytes
             : predictionContext.PureQ8BaseSize;
+        await BuildPredictedSizeLookupTablesAsync(connection, predictionContext, ct);
 
-        foreach (var row in rows)
+        using (var pruneCmd = connection.CreateCommand())
         {
-            ulong predicted = predictionContext.Predict(row);
-
-            if (!predictedByBase.TryGetValue(row.BaseQuant, out var bucket))
-            {
-                bucket = new List<ulong>();
-                predictedByBase[row.BaseQuant] = bucket;
-            }
-
-            bucket.Add(predicted);
-
-            if (predicted <= sizeCeilingBytes)
-                kept.Add(row);
+            pruneCmd.CommandText = $@"
+DROP TABLE IF EXISTS tensor_configs_pruned;
+CREATE TABLE tensor_configs_pruned AS
+SELECT t.*
+FROM {TableName} t
+JOIN temp_base_predicted_size b ON b.BaseQuant = t.BaseQuant
+LEFT JOIN temp_group_size_delta de   ON de.BaseQuant = t.BaseQuant AND de.GroupName = 'Embeddings' AND de.StoredSlot = t.Embeddings
+LEFT JOIN temp_group_size_delta dl   ON dl.BaseQuant = t.BaseQuant AND dl.GroupName = 'LmHead' AND dl.StoredSlot = t.LmHead
+LEFT JOIN temp_group_size_delta daq  ON daq.BaseQuant = t.BaseQuant AND daq.GroupName = 'AttnQ' AND daq.StoredSlot = t.AttnQ
+LEFT JOIN temp_group_size_delta dakv ON dakv.BaseQuant = t.BaseQuant AND dakv.GroupName = 'AttnKV' AND dakv.StoredSlot = t.AttnKV
+LEFT JOIN temp_group_size_delta dao  ON dao.BaseQuant = t.BaseQuant AND dao.GroupName = 'AttnOutput' AND dao.StoredSlot = t.AttnOutput
+LEFT JOIN temp_group_size_delta dfu  ON dfu.BaseQuant = t.BaseQuant AND dfu.GroupName = 'FfnUpGate' AND dfu.StoredSlot = t.FfnUpGate
+LEFT JOIN temp_group_size_delta dfd  ON dfd.BaseQuant = t.BaseQuant AND dfd.GroupName = 'FfnDown' AND dfd.StoredSlot = t.FfnDown
+LEFT JOIN temp_group_size_delta dme  ON dme.BaseQuant = t.BaseQuant AND dme.GroupName = 'MoeExperts' AND dme.StoredSlot = t.MoeExperts
+LEFT JOIN temp_group_size_delta dmr  ON dmr.BaseQuant = t.BaseQuant AND dmr.GroupName = 'MoeRouter' AND dmr.StoredSlot = t.MoeRouter
+WHERE CAST(b.BaseSizeBytes AS BIGINT)
+    + COALESCE(de.DeltaBytes, 0) + COALESCE(dl.DeltaBytes, 0) + COALESCE(daq.DeltaBytes, 0)
+    + COALESCE(dakv.DeltaBytes, 0) + COALESCE(dao.DeltaBytes, 0) + COALESCE(dfu.DeltaBytes, 0)
+    + COALESCE(dfd.DeltaBytes, 0) + COALESCE(dme.DeltaBytes, 0) + COALESCE(dmr.DeltaBytes, 0)
+    <= CAST({sizeCeilingBytes} AS BIGINT);
+DROP TABLE {TableName};
+ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
+            await pruneCmd.ExecuteNonQueryAsync(ct);
         }
 
-        if (predictedByBase.Count > 0)
-        {
-            ulong globalMin = predictedByBase.Values.SelectMany(x => x).Min();
-            ulong globalMax = predictedByBase.Values.SelectMany(x => x).Max();
-            AnsiConsole.MarkupLine($"[grey]Stage-1 predicted size spread:[/] [cyan]{globalMin / 1024d / 1024d / 1024d:F2}[/] [grey]GB ..[/] [cyan]{globalMax / 1024d / 1024d / 1024d:F2}[/] [grey]GB[/]");
-
-            foreach (var kv in predictedByBase.OrderBy(x => BaselineQuants.FromId(x.Key).BitRange).ThenBy(x => x.Key))
-            {
-                var baseline = BaselineQuants.FromId(kv.Key);
-                ulong min = kv.Value.Min();
-                ulong max = kv.Value.Max();
-                AnsiConsole.MarkupLine(
-                    $"[grey]Stage-1 base {Markup.Escape(baseline.Names[0])} (BitRange {baseline.BitRange}) ->[/] [cyan]{kv.Value.Count:N0}[/] [grey]candidate(s),[/] [cyan]{min / 1024d / 1024d / 1024d:F2}[/] [grey]GB ..[/] [cyan]{max / 1024d / 1024d / 1024d:F2}[/] [grey]GB[/]");
-            }
-        }
-
-        long removed = rows.Count - kept.Count;
-
-        if (removed <= 0)
-        {
-            AnsiConsole.MarkupLine("[green]Predicted-size pruning removed 0 combinations.[/]");
-            return 0;
-        }
-
-        await RecreateTableAsync(connection, ct);
-        await BulkAppendAsync(connection, kept, "predicted-size-prune", ct);
+        long afterCount = await GetRowCountAsync(connection, ct);
+        long removed = beforeCount - afterCount;
 
         string ceilingLabel = Config.ManualMaxPredictedSizeBytes > 0
             ? $"manual ceiling {Config.ManualMaxPredictedSizeBytes:N0} bytes"
@@ -324,26 +283,31 @@ public class QuantDatabaseService
         await connection.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
 
-        var rows = await GetRemainingTensorConfigsAsync(ct);
-        var kept = rows.Where(x =>
-            x.Embeddings != BaselineQuants.BF16_Hybrid.UniqueId && x.Embeddings != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.LmHead != BaselineQuants.BF16_Hybrid.UniqueId && x.LmHead != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.AttnQ != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnQ != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.AttnKV != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnKV != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.AttnOutput != BaselineQuants.BF16_Hybrid.UniqueId && x.AttnOutput != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.FfnUpGate != BaselineQuants.BF16_Hybrid.UniqueId && x.FfnUpGate != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.FfnDown != BaselineQuants.BF16_Hybrid.UniqueId && x.FfnDown != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.MoeExperts != BaselineQuants.BF16_Hybrid.UniqueId && x.MoeExperts != BaselineQuants.F16_Hybrid.UniqueId &&
-            x.MoeRouter != BaselineQuants.BF16_Hybrid.UniqueId && x.MoeRouter != BaselineQuants.F16_Hybrid.UniqueId).ToList();
-
-        long removed = rows.Count - kept.Count;
-        if (removed <= 0)
-            return 0;
-
-        await RecreateTableAsync(connection, ct);
-        await BulkAppendAsync(connection, kept, "high-precision-prune", ct);
-
-        return removed;
+        long beforeCount = await GetRowCountAsync(connection, ct);
+        byte bf16Stored = BaselineQuants.EncodeTensorConfigGroupSlotBaselineId(BaselineQuants.BF16_Hybrid.UniqueId);
+        byte f16Stored = BaselineQuants.EncodeTensorConfigGroupSlotBaselineId(BaselineQuants.F16_Hybrid.UniqueId);
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = $@"
+DROP TABLE IF EXISTS tensor_configs_pruned;
+CREATE TABLE tensor_configs_pruned AS
+SELECT *
+FROM {TableName}
+WHERE Embeddings NOT IN ({bf16Stored}, {f16Stored})
+  AND LmHead NOT IN ({bf16Stored}, {f16Stored})
+  AND AttnQ NOT IN ({bf16Stored}, {f16Stored})
+  AND AttnKV NOT IN ({bf16Stored}, {f16Stored})
+  AND AttnOutput NOT IN ({bf16Stored}, {f16Stored})
+  AND FfnUpGate NOT IN ({bf16Stored}, {f16Stored})
+  AND FfnDown NOT IN ({bf16Stored}, {f16Stored})
+  AND MoeExperts NOT IN ({bf16Stored}, {f16Stored})
+  AND MoeRouter NOT IN ({bf16Stored}, {f16Stored});
+DROP TABLE {TableName};
+ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        long afterCount = await GetRowCountAsync(connection, ct);
+        return beforeCount - afterCount;
     }
 
     private async Task<bool> HasExpectedTableShapeAsync(DuckDBConnection connection, CancellationToken ct)
@@ -394,89 +358,47 @@ public class QuantDatabaseService
         BigInteger expectedTotal,
         CancellationToken ct)
     {
-        long totalTarget = (long)expectedTotal;
-
-        AnsiConsole.MarkupLine($"[yellow]Starting bulk insert of {totalTarget:N0} rows...[/]");
-        AnsiConsole.MarkupLine(
-            $"[grey]Generator batch size:[/] {GeneratorBatchSize:N0}  [grey]| Appender heartbeat:[/] every {InsertProgressLogEveryRows:N0} rows");
+        AnsiConsole.MarkupLine($"[yellow]Starting SQL-native tensor combination generation for {expectedTotal:N0} rows...[/]");
 
         await RecreateTableAsync(connection, ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
 
-        long insertedGrandTotal = 0;
+        BigInteger insertedGrandTotal = BigInteger.Zero;
         var overallSw = Stopwatch.StartNew();
-
-        using DuckDBAppender appender = connection.CreateAppender(TableName);
 
         foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
         {
             ct.ThrowIfCancellationRequested();
 
-            long baseInserted = 0;
-            int baseBatchNumber = 0;
             var baseSw = Stopwatch.StartNew();
             string baseName = baseline.Names.FirstOrDefault() ?? baseline.UniqueId.ToString();
-
-            AnsiConsole.MarkupLine($"[cyan]Generating + inserting base:[/] [bold]{Markup.Escape(baseName)}[/]");
-
-            foreach (var batch in TensorConfigGenerator.GenerateTensorConfigBatches(baseline, batchSize: GeneratorBatchSize))
-            {
-                ct.ThrowIfCancellationRequested();
-
-                baseBatchNumber++;
-                int batchCount = batch.Count;
-                var batchSw = Stopwatch.StartNew();
-
-                AnsiConsole.MarkupLine(
-                    $"  [grey]Base batch #{baseBatchNumber} generated:[/] {batchCount:N0} rows  [grey]| Base inserted before batch:[/] {baseInserted:N0}");
-
-                var progress = new InsertProgress
-                {
-                    InsertedTotal = insertedGrandTotal,
-                    LastLoggedTotal = insertedGrandTotal,
-                    ProgressLogEveryRows = InsertProgressLogEveryRows,
-                    TotalTarget = totalTarget,
-                    BaseName = baseName,
-                    BatchNumber = baseBatchNumber
-                };
-
-                AppendRows(appender, batch, progress, overallSw, ct);
-
-                insertedGrandTotal = progress.InsertedTotal;
-                baseInserted += batchCount;
-
-                batchSw.Stop();
-
-                double grandPct = totalTarget == 0 ? 100d : insertedGrandTotal * 100d / totalTarget;
-
-                AnsiConsole.MarkupLine(
-                    $"  [green]Base batch #{baseBatchNumber} done:[/] {batchCount:N0} rows in {batchSw.Elapsed.TotalSeconds:N1}s  " +
-                    $"[grey]| Base running:[/] {baseInserted:N0}  [grey]| Grand total:[/] {insertedGrandTotal:N0}/{totalTarget:N0} ({grandPct:N2}%)");
-
-                batch.Clear();
-            }
+            long before = await GetRowCountAsync(connection, ct);
+            BigInteger expectedForBase = await InsertBaselineCombinationsSqlAsync(connection, baseline, ct);
+            long after = await GetRowCountAsync(connection, ct);
+            BigInteger delta = new(after - before);
+            if (delta != expectedForBase)
+                throw new InvalidOperationException($"Baseline {baseName} inserted {delta} rows, expected {expectedForBase}.");
+            insertedGrandTotal += delta;
 
             baseSw.Stop();
 
             double rowsPerSec = baseSw.Elapsed.TotalSeconds <= 0
-                ? 0
-                : baseInserted / baseSw.Elapsed.TotalSeconds;
+                ? 0 : (double)(long)expectedForBase / baseSw.Elapsed.TotalSeconds;
 
             AnsiConsole.MarkupLine(
                 $"[bold green]Base complete:[/] {Markup.Escape(baseName)}  " +
-                $"[grey]| Inserted:[/] {baseInserted:N0} rows  " +
+                $"[grey]| Inserted:[/] {expectedForBase:N0} rows  " +
                 $"[grey]| Time:[/] {baseSw.Elapsed.TotalMinutes:N2} min  " +
                 $"[grey]| Rate:[/] {rowsPerSec:N0} rows/sec");
         }
 
-        appender.Close();
         overallSw.Stop();
 
         long finalCount = await GetRowCountAsync(connection, ct);
 
         double finalRate = overallSw.Elapsed.TotalSeconds <= 0
             ? 0
-            : insertedGrandTotal / overallSw.Elapsed.TotalSeconds;
+            : (double)(long)insertedGrandTotal / overallSw.Elapsed.TotalSeconds;
 
         AnsiConsole.MarkupLine(
             $"[bold green]DuckDB rebuild complete.[/] " +
@@ -484,6 +406,8 @@ public class QuantDatabaseService
             $"[grey]| Final row count:[/] {finalCount:N0}  " +
             $"[grey]| Time:[/] {overallSw.Elapsed.TotalMinutes:N2} min  " +
             $"[grey]| Avg rate:[/] {finalRate:N0} rows/sec");
+        if (new BigInteger(finalCount) != expectedTotal)
+            throw new InvalidOperationException($"Final tensor_configs row count mismatch. actual={finalCount:N0}, expected={expectedTotal:N0}.");
     }
 
     private async Task BulkAppendAsync(
@@ -492,6 +416,7 @@ public class QuantDatabaseService
         string label,
         CancellationToken ct)
     {
+        // Emergency/small debug use only. Do NOT use for full search-space generation or trillion-scale pruning.
         if (rows.Count == 0)
             return;
 
@@ -499,66 +424,16 @@ public class QuantDatabaseService
 
         using DuckDBAppender appender = connection.CreateAppender(TableName);
 
-        var progress = new InsertProgress
-        {
-            InsertedTotal = 0,
-            LastLoggedTotal = 0,
-            ProgressLogEveryRows = InsertProgressLogEveryRows,
-            TotalTarget = rows.Count,
-            BaseName = label,
-            BatchNumber = 1
-        };
-
-        AppendRows(appender, rows, progress, Stopwatch.StartNew(), ct);
-        appender.Close();
-    }
-
-    private static void AppendRows(
-        DuckDBAppender appender,
-        IReadOnlyCollection<TensorConfig> rows,
-        InsertProgress progress,
-        Stopwatch overallSw,
-        CancellationToken ct)
-    {
         foreach (var row in rows)
         {
             ct.ThrowIfCancellationRequested();
-
             appender.CreateRow()
-                .AppendValue(row.BaseQuant)
-                .AppendValue(row.Embeddings)
-                .AppendValue(row.LmHead)
-                .AppendValue(row.AttnQ)
-                .AppendValue(row.AttnKV)
-                .AppendValue(row.AttnOutput)
-                .AppendValue(row.FfnUpGate)
-                .AppendValue(row.FfnDown)
-                .AppendValue(row.MoeExperts)
-                .AppendValue(row.MoeRouter)
-                .EndRow();
-
-            progress.InsertedTotal++;
-
-            if (progress.InsertedTotal - progress.LastLoggedTotal >= progress.ProgressLogEveryRows)
-            {
-                double elapsedSeconds = Math.Max(0.001, overallSw.Elapsed.TotalSeconds);
-                double rowsPerSecond = progress.InsertedTotal / elapsedSeconds;
-                double pct = progress.TotalTarget <= 0 ? 100d : progress.InsertedTotal * 100d / progress.TotalTarget;
-
-                long remaining = Math.Max(0, progress.TotalTarget - progress.InsertedTotal);
-                double etaSeconds = rowsPerSecond <= 0 ? 0 : remaining / rowsPerSecond;
-                var eta = TimeSpan.FromSeconds(etaSeconds);
-
-                AnsiConsole.MarkupLine(
-                    $"    [grey]Progress[/] [green]{progress.InsertedTotal:N0}[/]/[yellow]{progress.TotalTarget:N0}[/] " +
-                    $"({pct:N2}%)  [grey]| Rate:[/] {rowsPerSecond:N0}/sec  " +
-                    $"[grey]| ETA:[/] {eta:hh\\:mm\\:ss}  " +
-                    $"[grey]| Label:[/] {Markup.Escape(progress.BaseName)}  " +
-                    $"[grey]| Batch:[/] {progress.BatchNumber}");
-
-                progress.LastLoggedTotal = progress.InsertedTotal;
-            }
+                .AppendValue(row.BaseQuant).AppendValue(row.Embeddings).AppendValue(row.LmHead)
+                .AppendValue(row.AttnQ).AppendValue(row.AttnKV).AppendValue(row.AttnOutput)
+                .AppendValue(row.FfnUpGate).AppendValue(row.FfnDown).AppendValue(row.MoeExperts)
+                .AppendValue(row.MoeRouter).EndRow();
         }
+        appender.Close();
     }
 
     private async Task<PredictionContext?> BuildPredictionContextAsync(
@@ -704,19 +579,93 @@ public class QuantDatabaseService
         return new BenchmarkRow { SizeBytes = row.b.SizeBytes };
     }
 
+    private static async Task<BigInteger> InsertBaselineCombinationsSqlAsync(DuckDBConnection connection, BaselineQuants baseline, CancellationToken ct)
+    {
+        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseline);
+        if (allowed.Length != 9 || allowed.Any(x => x == null || x.Length == 0))
+            throw new InvalidOperationException($"Invalid allowed candidate dimensions for baseline {baseline.Names[0]}.");
+        await CreateTempDimensionTableAsync(connection, "temp_dim_embeddings", allowed[0], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_lm_head", allowed[1], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_attn_q", allowed[2], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_attn_kv", allowed[3], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_attn_output", allowed[4], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_ffn_up_gate", allowed[5], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_ffn_down", allowed[6], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_moe_experts", allowed[7], ct);
+        await CreateTempDimensionTableAsync(connection, "temp_dim_moe_router", allowed[8], ct);
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = $@"
+INSERT INTO {TableName} (BaseQuant,Embeddings,LmHead,AttnQ,AttnKV,AttnOutput,FfnUpGate,FfnDown,MoeExperts,MoeRouter)
+SELECT CAST({baseline.UniqueId} AS UTINYINT), e.v, lh.v, aq.v, akv.v, ao.v, fu.v, fd.v, me.v, mr.v
+FROM temp_dim_embeddings e
+CROSS JOIN temp_dim_lm_head lh
+CROSS JOIN temp_dim_attn_q aq
+CROSS JOIN temp_dim_attn_kv akv
+CROSS JOIN temp_dim_attn_output ao
+CROSS JOIN temp_dim_ffn_up_gate fu
+CROSS JOIN temp_dim_ffn_down fd
+CROSS JOIN temp_dim_moe_experts me
+CROSS JOIN temp_dim_moe_router mr;";
+        await cmd.ExecuteNonQueryAsync(ct);
+        return ProductOfDimensionLengths(allowed);
+    }
+
+    private static async Task BuildPredictedSizeLookupTablesAsync(DuckDBConnection connection, PredictionContext predictionContext, CancellationToken ct)
+    {
+        using (var create = connection.CreateCommand())
+        {
+            create.CommandText = @"DROP TABLE IF EXISTS temp_base_predicted_size;
+DROP TABLE IF EXISTS temp_group_size_delta;
+CREATE TEMP TABLE temp_base_predicted_size (BaseQuant UTINYINT, BaseSizeBytes UBIGINT);
+CREATE TEMP TABLE temp_group_size_delta (BaseQuant UTINYINT, GroupName VARCHAR, StoredSlot UTINYINT, DeltaBytes BIGINT);";
+            await create.ExecuteNonQueryAsync(ct);
+        }
+        string[] groupNames = ["Embeddings","LmHead","AttnQ","AttnKV","AttnOutput","FfnUpGate","FfnDown","MoeExperts","MoeRouter"];
+        foreach (var baseline in RuntimeSearchSpace.GetActiveCombinationBaselines())
+        {
+            using (var b = connection.CreateCommand())
+            {
+                b.CommandText = $"INSERT INTO temp_base_predicted_size VALUES ({baseline.UniqueId}, {predictionContext.GetBaseSizeForSql(baseline.UniqueId)});";
+                await b.ExecuteNonQueryAsync(ct);
+            }
+            var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(baseline);
+            for (int i = 0; i < groupNames.Length; i++)
+            foreach (byte slot in allowed[i])
+            {
+                long delta = predictionContext.GetRelativeSizeDeltaForSql((byte)(i + 1), baseline.UniqueId, slot);
+                using var d = connection.CreateCommand();
+                d.CommandText = $"INSERT INTO temp_group_size_delta VALUES ({baseline.UniqueId}, '{groupNames[i]}', {slot}, {delta});";
+                await d.ExecuteNonQueryAsync(ct);
+            }
+        }
+    }
+
     private sealed class BenchmarkRow
     {
         public ulong SizeBytes { get; set; }
     }
 
-    private sealed class InsertProgress
+    private static string BuildValuesSql(IReadOnlyList<byte> values) =>
+        $"(VALUES {string.Join(", ", values.Select(v => $"({v})"))}) AS t(v)";
+
+    private static async Task CreateTempDimensionTableAsync(DuckDBConnection connection, string tableName, IReadOnlyList<byte> values, CancellationToken ct)
     {
-        public long InsertedTotal { get; set; }
-        public long LastLoggedTotal { get; set; }
-        public long ProgressLogEveryRows { get; set; }
-        public long TotalTarget { get; set; }
-        public string BaseName { get; set; } = string.Empty;
-        public int BatchNumber { get; set; }
+        if (values.Count == 0)
+            throw new InvalidOperationException($"Dimension {tableName} had zero candidates.");
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = $@"DROP TABLE IF EXISTS {tableName};
+CREATE TEMP TABLE {tableName} AS
+SELECT CAST(v AS UTINYINT) AS v
+FROM {BuildValuesSql(values)};";
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static BigInteger ProductOfDimensionLengths(ImmutableArray<byte[]> allowed)
+    {
+        BigInteger product = BigInteger.One;
+        foreach (var dim in allowed)
+            product *= dim.Length;
+        return product;
     }
 
     private sealed class PredictionContext
@@ -747,22 +696,16 @@ public class QuantDatabaseService
 
         public ulong Predict(TensorConfig config)
         {
-            byte normalizedBaseId = NormalizeBaselineIdForIsolation(config.BaseQuant);
-            long total = (long)(_pureBaselineSizes.TryGetValue(config.BaseQuant, out var directBase)
-                ? directBase
-                : _pureBaselineSizes.TryGetValue(normalizedBaseId, out var normalizedBase)
-                    ? normalizedBase
-                    : PureQ8BaseSize);
-
-            ApplyRelativeDelta(TReg.Embeddings.UniqueId, normalizedBaseId, config.Embeddings, ref total);
-            ApplyRelativeDelta(TReg.LmHead.UniqueId, normalizedBaseId, config.LmHead, ref total);
-            ApplyRelativeDelta(TReg.AttnQ.UniqueId, normalizedBaseId, config.AttnQ, ref total);
-            ApplyRelativeDelta(TReg.AttnKV.UniqueId, normalizedBaseId, config.AttnKV, ref total);
-            ApplyRelativeDelta(TReg.AttnOutput.UniqueId, normalizedBaseId, config.AttnOutput, ref total);
-            ApplyRelativeDelta(TReg.FfnUpGate.UniqueId, normalizedBaseId, config.FfnUpGate, ref total);
-            ApplyRelativeDelta(TReg.FfnDown.UniqueId, normalizedBaseId, config.FfnDown, ref total);
-            ApplyRelativeDelta(TReg.MoeExperts.UniqueId, normalizedBaseId, config.MoeExperts, ref total);
-            ApplyRelativeDelta(TReg.MoeRouter.UniqueId, normalizedBaseId, config.MoeRouter, ref total);
+            long total = (long)GetBaseSizeForSql(config.BaseQuant);
+            total += GetRelativeSizeDeltaForSql(TReg.Embeddings.UniqueId, config.BaseQuant, config.Embeddings);
+            total += GetRelativeSizeDeltaForSql(TReg.LmHead.UniqueId, config.BaseQuant, config.LmHead);
+            total += GetRelativeSizeDeltaForSql(TReg.AttnQ.UniqueId, config.BaseQuant, config.AttnQ);
+            total += GetRelativeSizeDeltaForSql(TReg.AttnKV.UniqueId, config.BaseQuant, config.AttnKV);
+            total += GetRelativeSizeDeltaForSql(TReg.AttnOutput.UniqueId, config.BaseQuant, config.AttnOutput);
+            total += GetRelativeSizeDeltaForSql(TReg.FfnUpGate.UniqueId, config.BaseQuant, config.FfnUpGate);
+            total += GetRelativeSizeDeltaForSql(TReg.FfnDown.UniqueId, config.BaseQuant, config.FfnDown);
+            total += GetRelativeSizeDeltaForSql(TReg.MoeExperts.UniqueId, config.BaseQuant, config.MoeExperts);
+            total += GetRelativeSizeDeltaForSql(TReg.MoeRouter.UniqueId, config.BaseQuant, config.MoeRouter);
 
             if (total < 0)
                 total = 0;
@@ -770,24 +713,32 @@ public class QuantDatabaseService
             return (ulong)total;
         }
 
-        private void ApplyRelativeDelta(byte groupId, byte baseCandidateId, byte candidateId, ref long total)
+        public ulong GetBaseSizeForSql(byte baseQuant)
         {
-            if (BaselineQuants.IsNullTensorConfigGroupSlot(candidateId) ||
-                candidateId == BaselineQuants.BF16_Hybrid.UniqueId ||
-                candidateId == BaselineQuants.F16_Hybrid.UniqueId)
-                return;
+            byte normalizedBaseId = NormalizeBaselineIdForIsolation(baseQuant);
+            return _pureBaselineSizes.TryGetValue(baseQuant, out var directBase)
+                ? directBase
+                : _pureBaselineSizes.TryGetValue(normalizedBaseId, out var normalizedBase)
+                    ? normalizedBase
+                    : PureQ8BaseSize;
+        }
 
-            byte normalizedCandidateId = NormalizeBaselineIdForIsolation(candidateId);
-            if (normalizedCandidateId == baseCandidateId)
-                return;
-
+        public long GetRelativeSizeDeltaForSql(byte groupId, byte baseQuant, byte storedSlot)
+        {
+            if (storedSlot == 0)
+                return 0;
+            byte decoded = BaselineQuants.DecodeTensorConfigGroupSlotToBaselineId(storedSlot);
+            if (decoded == BaselineQuants.BF16_Hybrid.UniqueId || decoded == BaselineQuants.F16_Hybrid.UniqueId)
+                return 0;
+            byte normalizedBase = NormalizeBaselineIdForIsolation(baseQuant);
+            byte normalizedCandidateId = NormalizeBaselineIdForIsolation(decoded);
+            if (normalizedCandidateId == normalizedBase)
+                return 0;
             if (!_sizesByGroupAndCandidate.TryGetValue((groupId, normalizedCandidateId), out var candidateSize))
-                return;
-
-            if (!_sizesByGroupAndCandidate.TryGetValue((groupId, baseCandidateId), out var baseSize))
-                return;
-
-            total += (long)candidateSize - (long)baseSize;
+                return 0;
+            if (!_sizesByGroupAndCandidate.TryGetValue((groupId, normalizedBase), out var baseSize))
+                return 0;
+            return (long)candidateSize - (long)baseSize;
         }
 
         private static byte NormalizeBaselineIdForIsolation(byte baselineId)
