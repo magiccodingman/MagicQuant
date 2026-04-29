@@ -169,6 +169,8 @@ public sealed class RuntimeOutputConfig
     public string? OutputDir { get; set; }
     public string OutputNamePrefix { get; set; } = "Model";
     public bool ExportExternalLearnedBaselines { get; set; } = false;
+    public bool AttemptMmprojBuild { get; set; } = true;
+    public bool RequireMmprojForVisionModels { get; set; } = false;
 }
 
 public sealed class RuntimeSurvivalConfig

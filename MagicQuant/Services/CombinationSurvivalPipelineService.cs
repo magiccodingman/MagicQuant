@@ -1,3 +1,4 @@
+using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
 using MQ.DB.Models;
@@ -33,7 +34,9 @@ public sealed class CombinationSurvivalPipelineService
         _finalEliminator = new FinalRealBenchmarkEliminationService();
         _selectionEngine = new PredictionGuidedHybridSelectionService(_quantizationService, _benchmarkRepository, _finalEliminator);
         _selectionCli = new FinalSurvivorSelectionCliService();
-        _exportService = new HybridArtifactExportService(_quantizationService, _effectiveResolver);
+        var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
+        var sidecarService = new ModelSidecarArtifactService(pyManager);
+        _exportService = new HybridArtifactExportService(_quantizationService, _effectiveResolver, sidecarService);
         _readmeService = new ReadmeGenerationService();
         _hybridMapService = new HybridMapGenerationService();
         _diagnosticsLogService = new SelectionDiagnosticsLogService();
