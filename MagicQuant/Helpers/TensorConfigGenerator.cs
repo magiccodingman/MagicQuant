@@ -116,6 +116,7 @@ public static class TensorConfigGenerator
         AnsiConsole.MarkupLine($"[bold green]Base-only isolation samples required:[/] {result.BaseOnlyIsolationCount:N0}");
         AnsiConsole.MarkupLine($"[bold green]Smallest-probe isolation samples required:[/] {result.GroupIsolationCount:N0}");
         AnsiConsole.MarkupLine($"[bold green]Total initial startup samples:[/] {result.TotalCount:N0}");
+        EmitSamplePlanDiagnostics("initial", result.Plans);
 
         return result;
     }
@@ -139,6 +140,7 @@ public static class TensorConfigGenerator
         var result = BuildIsolationCoverageContinuationPlan(activeGroups, missingIds);
 
         AnsiConsole.MarkupLine($"[bold green]Continuation isolation samples required:[/] {result.GroupIsolationCount:N0}");
+        EmitSamplePlanDiagnostics("continuation", result.Plans);
         return result;
     }
 
@@ -242,6 +244,34 @@ public static class TensorConfigGenerator
         }
 
         return result;
+    }
+
+    private static void EmitSamplePlanDiagnostics(string phase, IReadOnlyCollection<RequiredSamplePlan> plans)
+    {
+        if (!MagicQuantDiagnostics.VerboseIsolationPruning)
+            return;
+
+        var byGroup = plans.Where(x => x.TargetGroupId.HasValue).GroupBy(x => x.TargetGroupId!.Value);
+        foreach (var set in byGroup)
+        {
+            var group = TReg.All.First(x => x.UniqueId == set.Key);
+            if (!MagicQuantDiagnostics.ShouldLogGroup(group))
+                continue;
+            var planned = set.Select(x => BaselineQuants.FromId(x.TestedCandidateId!.Value)).ToList();
+            var smallest = GetSmallestAllowedProbeCandidateForGroup(group);
+            var allowed = RuntimeSearchSpace.GetAllowedRealExplicitCombinationCandidatesForGroup(group);
+            var raw = RuntimeSearchSpace.GetRealExplicitCombinationCandidatesForGroup(group);
+            var staticBanned = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), false)
+                .Where(x => x.BannedGroupIds.Contains(group.UniqueId)).ToList();
+            var runtimeBanned = raw.Where(x => RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x)).ToList();
+            var notAllowed = planned.Where(x => allowed.All(a => a.UniqueId != x.UniqueId)).ToList();
+            MagicQuantDiagnostics.Log("sample-plan", $"phase={phase} group={group.Name}(id={group.UniqueId}) plannedCount={planned.Count} smallestProbe={(smallest == null ? "<none>" : MagicQuantDiagnostics.CandidateLabel(smallest))}");
+            MagicQuantDiagnostics.Log("sample-plan", $"planned={string.Join(", ", planned.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan", $"allowedAtPlan={string.Join(", ", allowed.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan", $"staticBanned={string.Join(", ", staticBanned.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan", $"runtimeBanned={string.Join(", ", runtimeBanned.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan", $"plannedButNotAllowed={string.Join(", ", notAllowed.Select(MagicQuantDiagnostics.CandidateLabel))}");
+        }
     }
 
     public static List<HybridQuant> GenerateRequiredDataSampleCombos(List<TensorGroup>? missingTensorGroups = null)

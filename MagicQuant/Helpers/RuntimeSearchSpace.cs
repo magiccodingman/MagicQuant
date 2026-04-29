@@ -44,8 +44,13 @@ public static class RuntimeSearchSpace
 
     public static bool HasUsableImatrix() => _imatrixAvailable;
 
-    public static void BanCombinationCandidateForGroup(TensorGroup group, BaselineQuants candidate)
+    public static void BanCombinationCandidateForGroup(
+        TensorGroup group,
+        BaselineQuants candidate,
+        string phase = "Unknown",
+        string reason = "unspecified")
     {
+        int before = GetAllowedRealExplicitCombinationCandidatesForGroup(group).Count;
         if (!ExplicitCandidateBansByGroup.TryGetValue(group.UniqueId, out var set))
         {
             set = new HashSet<byte>();
@@ -53,6 +58,8 @@ public static class RuntimeSearchSpace
         }
 
         set.Add(candidate.UniqueId);
+        int after = GetAllowedRealExplicitCombinationCandidatesForGroup(group).Count;
+        MagicQuantDiagnostics.LogRuntimeMutation(phase, group, candidate, reason, before, after);
     }
 
     public static void BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
@@ -62,7 +69,7 @@ public static class RuntimeSearchSpace
         IReadOnlyCollection<byte> matchedTensorWeightSchemeIds,
         string note)
     {
-        BanCombinationCandidateForGroup(group, candidate);
+        BanCombinationCandidateForGroup(group, candidate, phase: "LearnedPrune", reason: note);
 
         if (!LearnedPrunesByGroupAndCandidate.TryGetValue(group.UniqueId, out var byCandidate))
         {
@@ -102,10 +109,10 @@ public static class RuntimeSearchSpace
             LearnedPrunesByGroupAndCandidate.Remove(group.UniqueId);
     }
 
-    public static void BanAllExplicitCombinationCandidatesForGroup(TensorGroup group)
+    public static void BanAllExplicitCombinationCandidatesForGroup(TensorGroup group, string phase = "Unknown", string reason = "ban-all")
     {
         foreach (var candidate in GetRealExplicitCombinationCandidatesForGroup(group))
-            BanCombinationCandidateForGroup(group, candidate);
+            BanCombinationCandidateForGroup(group, candidate, phase, reason);
     }
 
     public static IReadOnlyList<BaselineQuants> GetRuntimeExplicitCandidateBansForGroup(TensorGroup group)
@@ -163,7 +170,12 @@ public static class RuntimeSearchSpace
             .ToList();
     }
 
-    public static void SuppressBf16TensorChoice(TensorGroup group) => Bf16SuppressedTensorChoiceGroupIds.Add(group.UniqueId);
+    public static void SuppressBf16TensorChoice(TensorGroup group, string phase = "Unknown", string reason = "suppressed")
+    {
+        Bf16SuppressedTensorChoiceGroupIds.Add(group.UniqueId);
+        if (MagicQuantDiagnostics.ShouldLogGroup(group))
+            MagicQuantDiagnostics.Log("runtime-ban", $"phase={phase} group={group.Name}(id={group.UniqueId}) bf16Suppressed=true reason=\"{reason}\"");
+    }
 
     public static bool IsBf16TensorChoiceSuppressed(TensorGroup group)
         => Bf16SuppressedTensorChoiceGroupIds.Contains(group.UniqueId) && HasAnyExplicitCombinationCandidateAllowed(group);
@@ -208,7 +220,7 @@ public static class RuntimeSearchSpace
         return active;
     }
 
-    public static bool DisableCombinationBaseline(BaselineQuants baseline, bool allowDisablingLast = false)
+    public static bool DisableCombinationBaseline(BaselineQuants baseline, bool allowDisablingLast = false, string phase = "Unknown", string reason = "disabled")
     {
         if (!baseline.IsCombinationCarrierCandidate || DisabledCombinationBaselineIds.Contains(baseline.UniqueId))
             return false;
@@ -218,6 +230,7 @@ public static class RuntimeSearchSpace
             return false;
 
         DisabledCombinationBaselineIds.Add(baseline.UniqueId);
+        MagicQuantDiagnostics.Log("runtime-ban", $"phase={phase} baseline={baseline.Names[0]}(id={baseline.UniqueId}) reason=\"{reason}\"");
         return true;
     }
 

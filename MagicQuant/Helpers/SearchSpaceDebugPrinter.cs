@@ -95,6 +95,24 @@ public static class SearchSpaceDebugPrinter
                 AnsiConsole.MarkupLine(
                     $"  [cyan]{Markup.Escape(group.Name)}[/] => [green]{ids.Length}[/] choice(s) " +
                     $"[grey][[{Markup.Escape(state)}]][/] :: {Markup.Escape(string.Join(", ", names))}");
+
+                if (MagicQuantDiagnostics.ShouldLogGroup(group))
+                {
+                    var raw = RuntimeSearchSpace.GetRealExplicitCombinationCandidatesForGroup(group);
+                    var runtimeBanned = raw.Where(x => RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x)).ToList();
+                    var staticBanned = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), false)
+                        .Where(x => x.BannedGroupIds.Contains(group.UniqueId))
+                        .OrderBy(x => x.UniqueId)
+                        .ToList();
+                    var allowedReal = RuntimeSearchSpace.GetAllowedRealExplicitCombinationCandidatesForGroup(group);
+                    var why = ids.Length == 1 ? "single final choice after bans/suppression" : "multi-choice";
+                    MagicQuantDiagnostics.Log("search-space",
+                        $"group={group.Name}(id={group.UniqueId}) unused={Cache.UnusedTensorGroups.Any(x=>x.UniqueId==group.UniqueId)} explicitBanned={RuntimeSearchSpace.IsGroupExplicitCandidateBanned(group)} bf16Suppressed={RuntimeSearchSpace.IsBf16TensorChoiceSuppressed(group)} rawExplicit={raw.Count} staticBanned={staticBanned.Count} runtimeBanned={runtimeBanned.Count} allowedExplicit={allowedReal.Count} finalChoices={string.Join(",", names)} why={why}");
+                    if (runtimeBanned.Count > 0)
+                        MagicQuantDiagnostics.Log("search-space", $"group={group.Name} runtimeBanned: {string.Join(", ", runtimeBanned.Select(x => $"{x.Names[0]}(id={x.UniqueId})"))}");
+                    if (staticBanned.Count > 0)
+                        MagicQuantDiagnostics.Log("search-space", $"group={group.Name} staticBanned: {string.Join(", ", staticBanned.Select(x => $"{x.Names[0]}(id={x.UniqueId})"))}");
+                }
             }
 
             AnsiConsole.MarkupLine($"  [bold green]Base total:[/] {baseCount:N0}");
