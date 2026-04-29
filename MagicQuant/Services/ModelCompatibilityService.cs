@@ -118,7 +118,9 @@ public class ModelCompatibilityService
                     continue;
 
                 var beforeRuntimeBan = RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate);
-                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate, phase: "TensorCompatibilityCheck", reason: "Block Alignment");
+                
+                // something is wrong with this. It's not working and this is a luxury not requirement. It's causing down stream issues on moe_experts for Qwen3.6 35B A3B
+                //RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate, phase: "TensorCompatibilityCheck", reason: "Block Alignment");
                 shapeBanCount++;
                 shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{candidate.Names[0]}[/]",
                     "[grey]Block Alignment[/]");
