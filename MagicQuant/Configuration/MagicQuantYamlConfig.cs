@@ -155,6 +155,7 @@ public sealed class RuntimePredictionConfig
 
     public double DefaultBitStressThreshold { get; set; } = 8.0d;
     public int MinimumFitRows { get; set; } = 12;
+    public long MaxInMemoryCombinationLoadRows { get; set; } = 5_000_000;
 }
 
 public sealed class RuntimeIdentityConfig

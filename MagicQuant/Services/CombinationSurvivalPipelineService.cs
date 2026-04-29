@@ -53,6 +53,9 @@ public sealed class CombinationSurvivalPipelineService
         AnsiConsole.MarkupLine($"[green]Remaining DuckDB combinations available to score:[/] [cyan]{report.StartingCount:N0}[/]");
         AnsiConsole.MarkupLine("[grey]Old MDA bucket survival is disabled. DuckDB now defines the allowed search space; rank-safe isolation prediction selects what deserves real benchmarking.[/]");
 
+        if (report.StartingCount > Config.MaxInMemoryCombinationLoadRows)
+            throw new InvalidOperationException($"Final prediction selection still requires DuckDB-backed prediction materialization. Refusing to load {report.StartingCount:N0} combinations into memory.");
+
         var remainingConfigs = await _combinationStore.LoadAllAsync(ct);
         var pureBaselines = await _benchmarkRepository.LoadPureBaselineSnapshotsAsync(ct);
 

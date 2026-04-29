@@ -2,6 +2,7 @@ using DuckDB.NET.Data;
 using MagicQuant.Helpers;
 using MQ.DB;
 using MQ.DB.Models;
+using System.Runtime.CompilerServices;
 
 namespace MagicQuant.Services;
 
@@ -27,6 +28,10 @@ public sealed class RemainingCombinationStore
 
     public async Task<List<TensorConfig>> LoadAllAsync(CancellationToken ct = default)
     {
+        long count = await CountAsync(ct);
+        if (count > Config.MaxInMemoryCombinationLoadRows)
+            throw new InvalidOperationException($"Refusing to load {count:N0} DuckDB tensor configs into memory. Use SQL-native filtering/streaming instead.");
+
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
@@ -56,6 +61,32 @@ ORDER BY BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, Ff
         }
 
         return results;
+    }
+
+    public async IAsyncEnumerable<TensorConfig> StreamAsync(
+        string? whereSql = null,
+        string? orderBySql = null,
+        long? limit = null,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        using var connection = new DuckDBConnection(ConnectionString);
+        await connection.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(connection, ct);
+        string sql = $@"SELECT BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter FROM {TableName}";
+        if (!string.IsNullOrWhiteSpace(whereSql)) sql += $" WHERE {whereSql}";
+        if (!string.IsNullOrWhiteSpace(orderBySql)) sql += $" ORDER BY {orderBySql}";
+        if (limit.HasValue) sql += $" LIMIT {limit.Value}";
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            yield return new TensorConfig(
+                Convert.ToByte(reader.GetValue(0)), Convert.ToByte(reader.GetValue(1)), Convert.ToByte(reader.GetValue(2)),
+                Convert.ToByte(reader.GetValue(3)), Convert.ToByte(reader.GetValue(4)), Convert.ToByte(reader.GetValue(5)),
+                Convert.ToByte(reader.GetValue(6)), Convert.ToByte(reader.GetValue(7)), Convert.ToByte(reader.GetValue(8)),
+                Convert.ToByte(reader.GetValue(9)));
+        }
     }
 
     public async Task ReplaceAllAsync(IReadOnlyCollection<TensorConfig> configs, string reason, CancellationToken ct = default)
