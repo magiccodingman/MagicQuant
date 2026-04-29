@@ -15,6 +15,7 @@ public sealed class RuntimeLearnedBaselineBanInfo
 public static class RuntimeSearchSpace
 {
     private static readonly Dictionary<byte, HashSet<byte>> ExplicitCandidateBansByGroup = new();
+    private static readonly Dictionary<byte, Dictionary<byte, string>> ExplicitCandidateBanReasonsByGroup = new();
     private static readonly Dictionary<byte, Dictionary<byte, RuntimeLearnedBaselineBanInfo>> LearnedPrunesByGroupAndCandidate = new();
     private static readonly HashSet<byte> DisabledCombinationBaselineIds = new();
     private static readonly HashSet<byte> Bf16SuppressedTensorChoiceGroupIds = new();
@@ -25,6 +26,7 @@ public static class RuntimeSearchSpace
     public static void ResetForNewModel()
     {
         ExplicitCandidateBansByGroup.Clear();
+        ExplicitCandidateBanReasonsByGroup.Clear();
         LearnedPrunesByGroupAndCandidate.Clear();
         DisabledCombinationBaselineIds.Clear();
         Bf16SuppressedTensorChoiceGroupIds.Clear();
@@ -37,6 +39,7 @@ public static class RuntimeSearchSpace
     public static void ResetForCompatibilityPass()
     {
         ExplicitCandidateBansByGroup.Clear();
+        ExplicitCandidateBanReasonsByGroup.Clear();
         LearnedPrunesByGroupAndCandidate.Clear();
         DisabledCombinationBaselineIds.Clear();
         Bf16SuppressedTensorChoiceGroupIds.Clear();
@@ -58,6 +61,12 @@ public static class RuntimeSearchSpace
         }
 
         set.Add(candidate.UniqueId);
+        if (!ExplicitCandidateBanReasonsByGroup.TryGetValue(group.UniqueId, out var reasonMap))
+        {
+            reasonMap = new Dictionary<byte, string>();
+            ExplicitCandidateBanReasonsByGroup[group.UniqueId] = reasonMap;
+        }
+        reasonMap[candidate.UniqueId] = reason;
         int after = GetAllowedRealExplicitCombinationCandidatesForGroup(group).Count;
         MagicQuantDiagnostics.LogRuntimeMutation(phase, group, candidate, reason, before, after);
     }
@@ -124,6 +133,13 @@ public static class RuntimeSearchSpace
             .Where(x => set.Contains(x.UniqueId))
             .OrderBy(x => x.UniqueId)
             .ToList();
+    }
+
+    public static IReadOnlyDictionary<byte, string> GetRuntimeExplicitCandidateBanReasonsForGroup(TensorGroup group)
+    {
+        if (!ExplicitCandidateBanReasonsByGroup.TryGetValue(group.UniqueId, out var reasons))
+            return new Dictionary<byte, string>();
+        return reasons;
     }
 
     public static bool IsCombinationCandidateRuntimeBannedForGroup(TensorGroup group, BaselineQuants candidate)
