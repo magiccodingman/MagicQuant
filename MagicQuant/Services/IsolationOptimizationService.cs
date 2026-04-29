@@ -113,7 +113,7 @@ public class IsolationOptimizationService
 
             if (reduction < options.MinMeaningfulGroupReductionRatio)
             {
-                RuntimeSearchSpace.BanAllExplicitCombinationCandidatesForGroup(group);
+                RuntimeSearchSpace.BanAllExplicitCombinationCandidatesForGroup(group, phase: "InitialProbe", reason: "smallest probe savings below threshold");
                 decision.ExplicitQuantBanned = true;
 
                 result.Notes.Add(
@@ -130,7 +130,7 @@ public class IsolationOptimizationService
 
             if (reduction >= IsolationPruningConfig.MinimumIsolationReductionToSuppressBf16Ratio)
             {
-                RuntimeSearchSpace.SuppressBf16TensorChoice(group);
+                RuntimeSearchSpace.SuppressBf16TensorChoice(group, phase: "InitialProbe", reason: "smallest probe savings exceeded BF16 suppression threshold");
                 decision.Bf16Suppressed = true;
 
                 result.Notes.Add(
@@ -185,7 +185,11 @@ public class IsolationOptimizationService
             {
                 var snap = await LoadSnapshotAsync(item.Quant, ct);
                 if (snap == null)
+                {
+                    if (MagicQuantDiagnostics.ShouldLogGroup(group))
+                        MagicQuantDiagnostics.Log("final-load", $"group={group.Name}(id={group.UniqueId}) candidate={BaselineQuants.FromId(item.TestedCandidateId!.Value).Names[0]} key={item.Key} loaded=no");
                     continue;
+                }
 
                 var candidateBaseline = BaselineQuants.FromId(item.TestedCandidateId!.Value);
                 RuntimeSearchSpace.ClearLearnedBaselinePruneForGroupCandidate(group, candidateBaseline);
@@ -199,6 +203,12 @@ public class IsolationOptimizationService
                     Kld = GetAggregateKld(snap),
                     PplDeltaPercent = GetAggregatePplDeltaPercent(snap, nativeBaseline)
                 });
+                if (MagicQuantDiagnostics.ShouldLogGroup(group))
+                {
+                    var cb = candidates[^1];
+                    var allowedNow = RuntimeSearchSpace.GetAllowedRealExplicitCombinationCandidatesForGroup(group).Any(x => x.UniqueId == cb.CandidateBaseline.UniqueId);
+                    MagicQuantDiagnostics.Log("final-load", $"group={group.Name}(id={group.UniqueId}) candidate={cb.CandidateBaseline.Names[0]}(id={cb.CandidateBaseline.UniqueId}) loaded=yes sizeGB={(cb.SizeBytes / 1024d / 1024d / 1024d):F3} savings={cb.SavingsRatio:P2} kld={cb.Kld:G6} pplDelta={cb.PplDeltaPercent:F4}% highPrecision={IsHighPrecisionCandidate(cb.CandidateBaseline)} runtimeBanned={RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, cb.CandidateBaseline)} allowedNow={allowedNow} key={item.Key}");
+                }
             }
 
             if (candidates.Count == 0)
@@ -222,7 +232,7 @@ public class IsolationOptimizationService
                 if (!hardFail)
                     continue;
 
-                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.CandidateBaseline);
+                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.CandidateBaseline, phase: "HardDamage", reason: $"kld={candidate.Kld:G6}, pplDelta={candidate.PplDeltaPercent:F4}%");
                 result.HardDamageEliminations++;
 
                 result.Notes.Add(
@@ -473,7 +483,7 @@ public class IsolationOptimizationService
 
     private static void ApplyDominanceElimination(TensorGroup group, List<GroupCandidateEvaluation> candidates, IsolationOptimizationResult result)
     {
-        var explicitCandidates = GetActiveExplicitCandidates(group, candidates);
+        var explicitCandidates = GetActiveExplicitCandidates(group, candidates, phase: "Dominance");
 
         for (int i = 0; i < explicitCandidates.Count; i++)
         {
@@ -498,7 +508,7 @@ public class IsolationOptimizationService
                 {
                     if (!RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, b.CandidateBaseline))
                     {
-                        RuntimeSearchSpace.BanCombinationCandidateForGroup(group, b.CandidateBaseline);
+                        RuntimeSearchSpace.BanCombinationCandidateForGroup(group, b.CandidateBaseline, phase: "Dominance", reason: $"dominated by {a.CandidateBaseline.Names[0]}");
                         result.DominatedGroupCandidatesBanned++;
 
                         result.Notes.Add(
@@ -511,7 +521,7 @@ public class IsolationOptimizationService
 
     private static void ApplyBadTradeElimination(TensorGroup group, List<GroupCandidateEvaluation> candidates, IsolationOptimizationResult result)
     {
-        var activeCandidates = GetActiveExplicitCandidates(group, candidates);
+        var activeCandidates = GetActiveExplicitCandidates(group, candidates, phase: "BadTrade");
         if (activeCandidates.Count <= 1)
             return;
 
@@ -534,7 +544,7 @@ public class IsolationOptimizationService
 
                 if (ShouldEliminateAsBadTrade(acceptedAnchor, candidate, out var reason))
                 {
-                    RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.CandidateBaseline);
+                    RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.CandidateBaseline, phase: "BadTrade", reason: reason);
                     result.BadTradeEliminations++;
                     result.Notes.Add(
                         $"Bad trade elimination: '{candidate.CandidateBaseline.Names[0]}' removed vs accepted anchor '{acceptedAnchor.CandidateBaseline.Names[0]}' for '{group.Name}'. {reason}");
@@ -556,7 +566,7 @@ public class IsolationOptimizationService
         List<GroupCandidateEvaluation> candidates,
         IsolationOptimizationResult result)
     {
-        var explicitCandidates = GetActiveExplicitCandidates(group, candidates);
+        var explicitCandidates = GetActiveExplicitCandidates(group, candidates, phase: "EquivalentTruth");
         if (explicitCandidates.Count <= 1)
             return;
 
@@ -619,7 +629,7 @@ public class IsolationOptimizationService
                 if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, loser.CandidateBaseline))
                     continue;
 
-                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, loser.CandidateBaseline);
+                RuntimeSearchSpace.BanCombinationCandidateForGroup(group, loser.CandidateBaseline, phase: "EquivalentTruth", reason: $"equivalent to {representative.CandidateBaseline.Names[0]}");
                 result.DominatedGroupCandidatesBanned++;
 
                 result.Notes.Add(
@@ -628,12 +638,20 @@ public class IsolationOptimizationService
         }
     }
 
-    private static List<GroupCandidateEvaluation> GetActiveExplicitCandidates(TensorGroup group, List<GroupCandidateEvaluation> candidates)
+    private static List<GroupCandidateEvaluation> GetActiveExplicitCandidates(TensorGroup group, List<GroupCandidateEvaluation> candidates, string phase = "Unknown")
     {
-        return candidates
-            .Where(x => !IsHighPrecisionCandidate(x.CandidateBaseline))
-            .Where(x => !RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x.CandidateBaseline))
-            .ToList();
+        var active = new List<GroupCandidateEvaluation>();
+        foreach (var candidate in candidates)
+        {
+            bool hp = IsHighPrecisionCandidate(candidate.CandidateBaseline);
+            bool rb = RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate.CandidateBaseline);
+            bool include = !hp && !rb;
+            if (include)
+                active.Add(candidate);
+            if (MagicQuantDiagnostics.ShouldLogGroup(group))
+                MagicQuantDiagnostics.Log("active-filter", $"phase={phase} group={group.Name}(id={group.UniqueId}) candidate={candidate.CandidateBaseline.Names[0]}(id={candidate.CandidateBaseline.UniqueId}) included={include} highPrecision={hp} runtimeBanned={rb}");
+        }
+        return active;
     }
 
     private static List<List<GroupCandidateEvaluation>> BuildSizeBuckets(List<GroupCandidateEvaluation> candidates)

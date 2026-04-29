@@ -73,13 +73,20 @@ public static class CliHelpers
 
     public static void PrintTotalCombinationCount()
     {
-        const long MaxSupported = 4_000_000_000L;
+        /*const long MaxSupported = 4_000_000_000L;
 
         BigInteger total = ComboCounter.CountAll();
 
         if (total > MaxSupported)
             throw new InvalidOperationException(
-                $"Total combinations ({total:N0}) exceed database primary ID limit ({MaxSupported:N0}).");
+                $"Total combinations ({total:N0}) exceed database primary ID limit ({MaxSupported:N0}).");*/
+        
+        BigInteger total = ComboCounter.CountAll();
+
+        AnsiConsole.MarkupLine(
+            total > long.MaxValue
+                ? $"[red]Total potential combinations exceed Int64 range:[/] [bold yellow]{total:N0}[/]"
+                : $"[green]Total potential combinations:[/] [bold yellow]{total:N0}[/]");
 
         AnsiConsole.MarkupLine($"[green]Total potential combinations:[/] [bold yellow]{total:N0}[/]");
     }
