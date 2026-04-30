@@ -25,6 +25,8 @@ public sealed record MmprojArtifactResult
 
 public sealed class ModelSidecarArtifactService
 {
+    public const string CanonicalMmprojFileName = "mmproj-BF16.gguf";
+
     private static readonly string[] MultimodalTokens =
     [
         "llava", "qwen2_vl", "qwen2_5_vl", "qwen3_vl", "gemma3", "internvl", "minicpm", "phi4mm", "glmv", "mllama", "idefics", "florence", "paligemma"
@@ -73,6 +75,15 @@ public sealed class ModelSidecarArtifactService
     {
         var detection = DetectVisionCapability();
         var warnings = new List<string>(detection.Warnings);
+        Directory.CreateDirectory(outputDirectory);
+        string target = Path.Combine(outputDirectory, CanonicalMmprojFileName);
+
+        if (Config.ReuseExistingFinalArtifacts && File.Exists(target) && new FileInfo(target).Length > 0)
+        {
+            AnsiConsole.MarkupLine($"[green]Reused existing mmproj artifact:[/] {Markup.Escape(target)}");
+            return new MmprojArtifactResult { IsVisionCapable = detection.IsLikelyVisionCapable, ExistingFound = true, Copied = false, SourcePath = target, OutputPath = target, Warnings = warnings };
+        }
+
         string? source = FindExistingMmprojArtifact();
         if (source == null)
         {
@@ -90,9 +101,9 @@ public sealed class ModelSidecarArtifactService
             return new MmprojArtifactResult { IsVisionCapable = detection.IsLikelyVisionCapable, Warnings = warnings };
         }
 
-        Directory.CreateDirectory(outputDirectory);
-        string target = Path.Combine(outputDirectory, Path.GetFileName(source));
-        File.Copy(source, target, overwrite: true);
+        if (!string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
+            File.Copy(source, target, overwrite: true);
+
         await Task.Yield();
         AnsiConsole.MarkupLine($"[green]Copied mmproj artifact:[/] {Markup.Escape(target)}");
 
@@ -112,7 +123,19 @@ public sealed class ModelSidecarArtifactService
             Path.Combine(Cache.ModelMagicQuantDirectory!, "GGUF")
         };
 
-        foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+        var distinctRoots = roots.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        foreach (var root in distinctRoots)
+        {
+            if (!Directory.Exists(root))
+                continue;
+
+            string canonical = Path.Combine(root, CanonicalMmprojFileName);
+            if (File.Exists(canonical) && new FileInfo(canonical).Length > 0)
+                return canonical;
+        }
+
+        foreach (var root in distinctRoots)
         {
             if (!Directory.Exists(root))
                 continue;
@@ -183,8 +206,7 @@ public sealed class ModelSidecarArtifactService
     {
         string sidecarDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "Sidecars");
         Directory.CreateDirectory(sidecarDir);
-        string safeName = new DirectoryInfo(Cache.ModelDirectory!).Name.Replace(' ', '-');
-        string targetPath = Path.Combine(sidecarDir, $"mmproj-{safeName}-f16.gguf");
+        string targetPath = Path.Combine(sidecarDir, CanonicalMmprojFileName);
         string successPath = targetPath + ".success.json";
         string logPath = targetPath + ".convert.log";
 

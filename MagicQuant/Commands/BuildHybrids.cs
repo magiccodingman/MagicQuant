@@ -21,6 +21,6 @@ public class BuildHybrids : ICommand
     {
         AnsiConsole.MarkupLine("[bold yellow]Command: build-hybrids[/]");
         AnsiConsole.MarkupLine("Runs the centralized survival/export flow over the active MagicQuant evolution pipeline.");
-        AnsiConsole.MarkupLine("Usage: mq build-hybrids --model-dir \"<path>\" [--output-dir \"<path>\"] [--output-name-prefix \"Model\"] [--export-external-learned-baselines]");
+        AnsiConsole.MarkupLine("Usage: mq build-hybrids --model-dir \"<path>\" [--config \"./config.default.yaml\"] [--output-dir \"<path>\"] [--output-name-prefix \"Model\"] [--reuse-existing-final-artifacts] [--export-external-learned-baselines]");
     }
 }

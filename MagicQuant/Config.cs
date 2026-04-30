@@ -76,6 +76,7 @@ public static class Config
     public static bool ExportExternalLearnedBaselines => Current.Output.ExportExternalLearnedBaselines;
     public static bool AttemptMmprojBuild => Current.Output.AttemptMmprojBuild;
     public static bool RequireMmprojForVisionModels => Current.Output.RequireMmprojForVisionModels;
+    public static bool ReuseExistingFinalArtifacts => Current.Output.ReuseExistingFinalArtifacts;
 
     public static int MaxSelectedChoicesPerBucket => Math.Max(1, Current.Survival.MaxSelectedChoicesPerBucket);
     public static double SurvivalMeaningfulSizeBiasPercent => Current.Survival.MeaningfulSizeBiasPercent;

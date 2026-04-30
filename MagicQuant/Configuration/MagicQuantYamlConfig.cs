@@ -6,6 +6,7 @@ public sealed class MagicQuantYamlConfig
 {
     public RuntimePathConfig Paths { get; set; } = new();
     public RuntimeFlagConfig Flags { get; set; } = new();
+    public RuntimeReadmeConfig Readme { get; set; } = new();
     public RuntimeImatrixConfig Imatrix { get; set; } = new();
     public RuntimeEvolutionConfig Evolution { get; set; } = new();
     public RuntimeIsolationPruningConfig IsolationPruning { get; set; } = new();
@@ -99,6 +100,15 @@ public sealed class RuntimeFlagConfig
     public bool AllowHighPrecisionHybrids { get; set; }
 }
 
+public sealed class RuntimeReadmeConfig
+{
+    public string? TitleModelNameOverride { get; set; }
+
+    // Flexible by design: Hugging Face frontmatter can grow without requiring
+    // new strongly typed C# properties for every key.
+    public Dictionary<string, object?> Frontmatter { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
 public sealed class RuntimeImatrixConfig
 {
     public string? ImatrixUrl { get; set; }
@@ -171,6 +181,7 @@ public sealed class RuntimeOutputConfig
     public bool ExportExternalLearnedBaselines { get; set; } = false;
     public bool AttemptMmprojBuild { get; set; } = true;
     public bool RequireMmprojForVisionModels { get; set; } = false;
+    public bool ReuseExistingFinalArtifacts { get; set; } = false;
 }
 
 public sealed class RuntimeSurvivalConfig

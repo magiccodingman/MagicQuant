@@ -97,6 +97,17 @@ public static class MagicQuantYamlLoader
             ? "Model"
             : config.Output.OutputNamePrefix.Trim();
 
+        config.Readme ??= new RuntimeReadmeConfig();
+
+        config.Readme.TitleModelNameOverride = string.IsNullOrWhiteSpace(config.Readme.TitleModelNameOverride)
+            ? null
+            : config.Readme.TitleModelNameOverride.Trim();
+
+        config.Readme.Frontmatter ??= new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        config.Readme.Frontmatter = config.Readme.Frontmatter
+            .Where(x => !string.IsNullOrWhiteSpace(x.Key) && !IsEmptyFrontmatterValue(x.Value))
+            .ToDictionary(x => x.Key.Trim(), x => x.Value, StringComparer.OrdinalIgnoreCase);
+
         if (config.Survival.MaxSelectedChoicesPerBucket <= 0)
             config.Survival.MaxSelectedChoicesPerBucket = 1;
 
@@ -248,6 +259,7 @@ public static class MagicQuantYamlLoader
         config.Output.OutputDir = Prefer(Get("output-dir"), config.Output.OutputDir);
         config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);
         if (Has("export-external-learned-baselines")) config.Output.ExportExternalLearnedBaselines = true;
+        if (Has("reuse-existing-final-artifacts")) config.Output.ReuseExistingFinalArtifacts = true;
 
         if (int.TryParse(Get("max-selected-choices-per-bucket"), out var maxSelectedChoicesPerBucket) && maxSelectedChoicesPerBucket > 0)
             config.Survival.MaxSelectedChoicesPerBucket = maxSelectedChoicesPerBucket;
@@ -289,6 +301,28 @@ public static class MagicQuantYamlLoader
 
     private static string? Prefer(string? preferred, string? fallback)
         => string.IsNullOrWhiteSpace(preferred) ? fallback : preferred;
+
+    private static bool IsEmptyFrontmatterValue(object? value)
+    {
+        if (value == null)
+            return true;
+
+        if (value is string text)
+            return string.IsNullOrWhiteSpace(text);
+
+        if (value is System.Collections.IEnumerable sequence && value is not string)
+        {
+            foreach (var item in sequence)
+            {
+                if (!IsEmptyFrontmatterValue(item))
+                    return false;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
 
     private static string ResolveMagicQuantRoot(string? configured)
     {

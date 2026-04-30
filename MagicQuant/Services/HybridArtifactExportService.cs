@@ -48,7 +48,7 @@ public sealed class HybridArtifactExportService
             throw new InvalidOperationException("Cache.OutputDirectory is not set.");
 
         Directory.CreateDirectory(Cache.OutputDirectory);
-        await CleanOutputDirectoryAsync(Cache.OutputDirectory!, ct);
+        await CleanOutputDirectoryAsync(Cache.OutputDirectory!, Config.ReuseExistingFinalArtifacts, ct);
 
         var output = new List<ExportedArtifactRecord>();
         var reservedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -108,6 +108,15 @@ public sealed class HybridArtifactExportService
                 ExpectedSizeBytes = snap.SizeBytes,
                 EffectiveState = await _effectiveResolver.ResolveAsync(snap.Config, ct)
             };
+
+            if (Config.ReuseExistingFinalArtifacts &&
+                TryReuseExistingFinalArtifact(Cache.OutputDirectory!, row, name.FileName, out var existingFullPath, out var actualSizeBytes))
+            {
+                record.ActualSizeBytes = actualSizeBytes;
+                AnsiConsole.MarkupLine($"[green]Reused existing final GGUF:[/] {Markup.Escape(existingFullPath)} [grey]({actualSizeBytes:N0} bytes matched benchmark truth)[/]");
+                output.Add(record);
+                continue;
+            }
 
             output.Add(record);
             localBuilds.Add((record, snap.Quant, fullPath, snap.SizeBytes));
@@ -200,7 +209,38 @@ public sealed class HybridArtifactExportService
         return HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false);
     }
 
-    private static async Task CleanOutputDirectoryAsync(string outputDirectory, CancellationToken ct)
+    private static bool TryReuseExistingFinalArtifact(
+        string outputDirectory,
+        FinalSelectionRow row,
+        string plannedFileName,
+        out string fullPath,
+        out ulong actualSizeBytes)
+    {
+        actualSizeBytes = 0UL;
+        fullPath = Path.Combine(outputDirectory, plannedFileName);
+
+        if (string.IsNullOrWhiteSpace(plannedFileName))
+            return false;
+
+        string expectedFileName = string.IsNullOrWhiteSpace(row.PlannedFileName)
+            ? plannedFileName
+            : row.PlannedFileName.Trim();
+
+        if (!string.Equals(Path.GetFileName(fullPath), expectedFileName, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!File.Exists(fullPath))
+            return false;
+
+        var info = new FileInfo(fullPath);
+        if (info.Length <= 0)
+            return false;
+
+        actualSizeBytes = (ulong)info.Length;
+        return actualSizeBytes == row.Snapshot.SizeBytes;
+    }
+
+    private static async Task CleanOutputDirectoryAsync(string outputDirectory, bool preserveReusableGgufs, CancellationToken ct)
     {
         if (!Directory.Exists(outputDirectory))
         {
@@ -211,6 +251,14 @@ public sealed class HybridArtifactExportService
         foreach (var file in Directory.EnumerateFiles(outputDirectory, "*", SearchOption.TopDirectoryOnly))
         {
             ct.ThrowIfCancellationRequested();
+
+            if (preserveReusableGgufs &&
+                string.Equals(Path.GetExtension(file), ".gguf", StringComparison.OrdinalIgnoreCase) &&
+                new FileInfo(file).Length > 0)
+            {
+                continue;
+            }
+
             await HardDeleteHelper.DeleteFileIfExistsAsync(file);
         }
 
@@ -220,7 +268,9 @@ public sealed class HybridArtifactExportService
             await HardDeleteHelper.DeleteDirectoryIfExistsAsync(directory, ct);
         }
 
-        AnsiConsole.MarkupLine($"[grey]Cleaned final export directory:[/] {Markup.Escape(outputDirectory)}");
+        AnsiConsole.MarkupLine(preserveReusableGgufs
+            ? $"[grey]Cleaned final export directory metadata/non-GGUF files; preserved existing non-empty GGUFs for reuse validation:[/] {Markup.Escape(outputDirectory)}"
+            : $"[grey]Cleaned final export directory:[/] {Markup.Escape(outputDirectory)}");
     }
 
     private static async Task CleanExportSidecarsAsync(string outputDirectory, CancellationToken ct)

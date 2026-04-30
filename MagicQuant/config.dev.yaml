@@ -17,6 +17,31 @@ flags:
   force_refresh_hardware_probe: false
   allow_high_precision_hybrids: false
 
+readme:
+  # Optional title model name override used in:
+  #   # MagicQuant Hybrids (v2.0) - <name>
+  # If blank, MagicQuant uses identity.architecture_family_name.
+  title_model_name_override:
+
+  # Hugging Face README frontmatter.
+  # Scalars render as:
+  #   license: apache-2.0
+  # Arrays render as:
+  #   tags:
+  #   - gguf
+  #   - text-generation
+  #
+  # Add more keys freely, such as base_model, datasets, language, pipeline_tag, etc.
+  frontmatter:
+    license: apache-2.0
+    tags:
+      - gguf
+      - text-generation
+      - magicquant
+      - conversational
+    base_model:
+      - Qwen/Qwen3.6-35B-A3B
+
 hardware:
   gpu_memory_limits_gb:
     0: 19
@@ -111,6 +136,12 @@ output:
   output_dir:
   output_name_prefix: Qwen3.6-35B-A3B
   export_external_learned_baselines: false
+
+  # false = normal behavior; delete/rebuild final outputs from scratch.
+  # true = preserve valid existing GGUFs and skip rebuilding them only when
+  # exact file name + byte size match benchmark truth.
+  # CLI --reuse-existing-final-artifacts overrides YAML.
+  reuse_existing_final_artifacts: false
 
 # Legacy bit-range bucket survival settings were removed.
 # See candidate_selection above for the active final chooser settings.

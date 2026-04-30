@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Text;
 using MagicQuant.Models;
+using MQ.DB;
 using Spectre.Console;
 
 namespace MagicQuant.Services;
@@ -27,17 +29,18 @@ public sealed class ReadmeGenerationService
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var sb = new StringBuilder();
-        sb.AppendLine($"# MagicQuant Hybrids (v2.0) - {modelName}");
+        AppendHuggingFaceFrontmatter(sb);
+
+        string resolvedModelName = ResolveReadmeTitleModelName(modelName);
+        sb.AppendLine($"# MagicQuant Hybrids (v2.0) - {resolvedModelName}");
         sb.AppendLine();
-        sb.AppendLine("MagicQuant is **not** a quantization technique by itself.");
+        sb.AppendLine("MagicQuant is a benchmark driven GGUF hybrid discovery and validation system focused on finding real, practical GGUF quants specific to each architecture.");
         sb.AppendLine();
-        sb.AppendLine("It is a search, judging, and hybrid-discovery system that learns from baseline families such as llama.cpp and external/custom baseline sources, then uses isolated samples, rank-safe prediction, and real benchmarking to keep the practical survivors.");
+        sb.AppendLine("Whether it's a pure baseline model built by llama.cpp, learned tensor configurations from Unsloth, or a custom built MagicQuant hybrid, the model table below shows quants that have won dominance checks, survived collapse spaces, and/or were found to be nonlinearly better. Instead of dumping every quant type possible, MagicQuant tests, validates, and brutally murders anything deemed unworthy.");
         sb.AppendLine();
-        sb.AppendLine("Sometimes a hybrid beats a pure baseline. Sometimes it does not. MagicQuant finds non linear good trades to discover potential better hybrids, good sub spaces between anchor baselines and more.");
+        sb.AppendLine("You can learn more [from the MagicQuant Wiki](https://github.com/magiccodingman/MagicQuant-Wiki). It covers things like nonlinear winners, prediction systems, imatrix generation philosophy, isolated tensor analysis, and more.");
         sb.AppendLine();
-        sb.AppendLine();
-        sb.AppendLine("Read more on the [MagicQuant Wiki Here](https://github.com/magiccodingman/MagicQuant-Wiki).");
-        sb.AppendLine("_The GitHub links is also a great place to make a request, bring up issues, share ideas, or anything else._");
+        sb.AppendLine("By default, if an external provider like Unsloth is deemed the winner, the repo will generally link directly to the original provider instead of re-hosting the quant. External GGUFs are normally only re-uploaded when a specific winning variant does not already exist (e.g. Heretic models or similar).");
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
@@ -76,6 +79,152 @@ public sealed class ReadmeGenerationService
         await File.WriteAllTextAsync(readmePath, sb.ToString(), ct);
         AnsiConsole.MarkupLine($"[green]README generated:[/] {Markup.Escape(readmePath)}");
         return readmePath;
+    }
+
+
+    private static void AppendHuggingFaceFrontmatter(StringBuilder sb)
+    {
+        var entries = OrderedFrontmatterEntries().ToList();
+        if (entries.Count == 0)
+            return;
+
+        sb.AppendLine("---");
+        foreach (var (key, value) in entries)
+        {
+            if (TryGetSequence(value, out var values))
+            {
+                var rendered = values
+                    .Where(x => !IsEmptyFrontmatterValue(x))
+                    .Select(FormatYamlScalar)
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList();
+
+                if (rendered.Count == 0)
+                    continue;
+
+                sb.AppendLine($"{key}:");
+                foreach (var item in rendered)
+                    sb.AppendLine($"- {item}");
+            }
+            else
+            {
+                if (IsEmptyFrontmatterValue(value))
+                    continue;
+
+                sb.AppendLine($"{key}: {FormatYamlScalar(value)}");
+            }
+        }
+
+        sb.AppendLine("---");
+        sb.AppendLine();
+    }
+
+    private static IEnumerable<KeyValuePair<string, object?>> OrderedFrontmatterEntries()
+    {
+        var frontmatter = Config.Current.Readme.Frontmatter;
+        if (frontmatter == null || frontmatter.Count == 0)
+            yield break;
+
+        if (frontmatter.TryGetValue("license", out var license) && !IsEmptyFrontmatterValue(license))
+            yield return new KeyValuePair<string, object?>("license", license);
+
+        foreach (var entry in frontmatter)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Key) ||
+                string.Equals(entry.Key, "license", StringComparison.OrdinalIgnoreCase) ||
+                IsEmptyFrontmatterValue(entry.Value))
+            {
+                continue;
+            }
+
+            yield return new KeyValuePair<string, object?>(entry.Key.Trim(), entry.Value);
+        }
+    }
+
+    private static string ResolveReadmeTitleModelName(string fallbackModelName)
+    {
+        if (!string.IsNullOrWhiteSpace(Config.Current.Readme.TitleModelNameOverride))
+            return Config.Current.Readme.TitleModelNameOverride.Trim();
+
+        if (!string.IsNullOrWhiteSpace(Config.Current.Identity.ArchitectureFamilyName))
+            return Config.Current.Identity.ArchitectureFamilyName.Trim();
+
+        if (!string.IsNullOrWhiteSpace(Cache.CurrentArchitectureFamilyName))
+            return Cache.CurrentArchitectureFamilyName.Trim();
+
+        return string.IsNullOrWhiteSpace(fallbackModelName) ? "model" : fallbackModelName.Trim();
+    }
+
+    private static bool TryGetSequence(object? value, out IReadOnlyList<object?> values)
+    {
+        values = Array.Empty<object?>();
+
+        if (value is string || value == null)
+            return false;
+
+        if (value is System.Collections.IEnumerable sequence)
+        {
+            values = sequence.Cast<object?>().ToList();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsEmptyFrontmatterValue(object? value)
+    {
+        if (value == null)
+            return true;
+
+        if (value is string text)
+            return string.IsNullOrWhiteSpace(text);
+
+        if (TryGetSequence(value, out var values))
+            return values.All(IsEmptyFrontmatterValue);
+
+        return false;
+    }
+
+    private static string FormatYamlScalar(object? value)
+    {
+        if (value == null)
+            return string.Empty;
+
+        if (value is bool boolean)
+            return boolean ? "true" : "false";
+
+        if (value is IFormattable formattable && value is not string)
+            return formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty;
+
+        string text = value.ToString() ?? string.Empty;
+        if (!NeedsYamlQuotes(text))
+            return text;
+
+        return "\"" + text
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
+    }
+
+    private static bool NeedsYamlQuotes(string text)
+    {
+        if (text.Length == 0)
+            return true;
+
+        if (!string.Equals(text, text.Trim(), StringComparison.Ordinal))
+            return true;
+
+        if (text.Contains(": ", StringComparison.Ordinal) ||
+            text.Contains("#", StringComparison.Ordinal) ||
+            text.Contains("\n", StringComparison.Ordinal) ||
+            text.Contains("\r", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        char first = text[0];
+        return first is '-' or '?' or ':' or '@' or '!' or '&' or '*' or '[' or ']' or '{' or '}' or '|' or '>' or '%' or '`' or ',';
     }
 
     private void AppendDownloadTable(

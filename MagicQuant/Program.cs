@@ -24,7 +24,15 @@ if (args.Length == 0)
     else
     {
         // Previous DEBUG harness kept intact for quick full-pipeline testing.
-        args = ["evolution", "--architecture-family", @"""Qwen3.6-35B-A3B"""];
+        // --reuse-existing-final-artifacts preserves/reuses valid existing final GGUFs by exact file name + byte size.
+        // Omit --reuse-existing-final-artifacts to force normal full rebuild behavior.
+        // "--config", @"/path/to/config.dev.yaml",
+        args =
+        [
+            "evolution",
+            "--architecture-family", @"""Qwen3.6-35B-A3B"""
+            ,"--reuse-existing-final-artifacts"
+        ];
     }
 }
 else if (args.Length > 0 &&
@@ -107,4 +115,3 @@ catch (Exception ex)
 {
     AnsiConsole.WriteException(ex);
 }
-

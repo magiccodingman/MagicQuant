@@ -58,6 +58,31 @@ flags:
   # are allowed in hybrid generation logic.
   allow_high_precision_hybrids: false
 
+readme:
+  # Optional title model name override used in:
+  #   # MagicQuant Hybrids (v2.0) - <name>
+  # If blank, MagicQuant uses identity.architecture_family_name.
+  title_model_name_override:
+
+  # Hugging Face README frontmatter.
+  # Scalars render as:
+  #   license: apache-2.0
+  # Arrays render as:
+  #   tags:
+  #   - gguf
+  #   - text-generation
+  #
+  # Add more keys freely, such as base_model, datasets, language, pipeline_tag, etc.
+  frontmatter:
+    license: apache-2.0
+    tags:
+      - gguf
+      - text-generation
+      - magicquant
+      - conversational
+    base_model:
+      - Username/Model_Name
+
 hardware:
   # Optional per-GPU usable VRAM limits in GB.
   # Leave empty for automatic/default llama.cpp placement.
@@ -203,6 +228,12 @@ output:
   # baselines locally under MagicQuant-controlled conditions (for example when testing a
   # modified model where the upstream artifact does not really exist for your case).
   export_external_learned_baselines: false
+
+  # false = normal behavior; delete/rebuild final outputs from scratch.
+  # true = preserve valid existing GGUFs and skip rebuilding them only when
+  # exact file name + byte size match benchmark truth.
+  # CLI --reuse-existing-final-artifacts overrides YAML.
+  reuse_existing_final_artifacts: false
 
 # Legacy bit-range bucket survival settings were removed.
 # See candidate_selection above for the active final chooser settings.
