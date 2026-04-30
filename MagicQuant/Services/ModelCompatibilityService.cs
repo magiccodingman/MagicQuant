@@ -79,13 +79,8 @@ public class ModelCompatibilityService
             var runtimeCandidates = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), allowHighPrecisionHybrids: false).ToList();
             int unusedCount = 0;
             int usedCount = 0;
-            int shapeBanCount = 0;
+            int observedShapeIncompatibilityCount = 0;
             int explicitQuantBannedCount = 0;
-
-            var shapeTable = new Table().Border(TableBorder.Rounded).Title("[red]Shape Incompatibilities[/]");
-            shapeTable.AddColumn("Group");
-            shapeTable.AddColumn("Candidate");
-            shapeTable.AddColumn("Reason");
 
             foreach (var group in TReg.All)
             {
@@ -119,16 +114,15 @@ public class ModelCompatibilityService
 
                 var beforeRuntimeBan = RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate);
                 
-                // something is wrong with this. It's not working and this is a luxury not requirement. It's causing down stream issues on moe_experts for Qwen3.6-35B-A3B
+                // BlockNeo compatibility validation is currently observed-only and under review for removal.
+                // It is not reliable for some architectures (especially MoE), so runtime bans remain disabled.
                 //RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate, phase: "TensorCompatibilityCheck", reason: "Block Alignment");
-                shapeBanCount++;
-                shapeTable.AddRow($"[blue]{group.Name}[/]", $"[yellow]{candidate.Names[0]}[/]",
-                    "[grey]Block Alignment[/]");
+                observedShapeIncompatibilityCount++;
 
                 if (ShouldLogCompatDetail(compatVerbose, group, candidate, focusCandidates))
                 {
                     MagicQuantDiagnostics.Log("compat:decision",
-                        $"group={group.Name}(id={group.UniqueId}) candidate={candidate.Names[0]}(id={candidate.UniqueId}) scheme={candidate.DefaultTensorScheme?.Names[0] ?? "<none>"} block={candidate.DefaultTensorScheme?.BlockNeo?.ToString() ?? "<none>"} staticBanned={candidate.BannedGroupIds.Contains(group.UniqueId)} runtimeBannedBefore={beforeRuntimeBan} result=restricted reason=Block Alignment");
+                        $"group={group.Name}(id={group.UniqueId}) candidate={candidate.Names[0]}(id={candidate.UniqueId}) scheme={candidate.DefaultTensorScheme?.Names[0] ?? "<none>"} block={candidate.DefaultTensorScheme?.BlockNeo?.ToString() ?? "<none>"} staticBanned={candidate.BannedGroupIds.Contains(group.UniqueId)} runtimeBannedBefore={beforeRuntimeBan} result=observed-only reason=Block Alignment restriction=disabled");
                 }
 
                 if (failuresByGroupAndScheme.TryGetValue($"{failure.Group}::{failure.Scheme}", out var details) && details.Count > 0)
@@ -167,14 +161,13 @@ public class ModelCompatibilityService
                 AnsiConsole.MarkupLine("[green]No groups were reduced to explicit-banned/NULL-only by compatibility checks.[/]");
             }
 
-            if (shapeBanCount > 0)
+            if (observedShapeIncompatibilityCount > 0)
             {
-                AnsiConsole.Write(shapeTable);
-                AnsiConsole.MarkupLine($"[yellow]Applied {shapeBanCount} shape-based restrictions.[/]");
+                AnsiConsole.MarkupLine($"[yellow]Observed {observedShapeIncompatibilityCount:N0} BlockNeo/shape incompatibilities; runtime restrictions are currently disabled while compatibility validation is under review.[/]");
             }
             else
             {
-                AnsiConsole.MarkupLine("[green]No shape-based restrictions found.[/]");
+                AnsiConsole.MarkupLine("[green]No BlockNeo/shape incompatibilities observed.[/]");
             }
 
             AnsiConsole.WriteLine();

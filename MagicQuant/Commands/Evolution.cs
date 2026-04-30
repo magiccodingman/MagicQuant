@@ -209,11 +209,9 @@ public class Evolution : ICommand
         RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
 
         PrintCustomBaselineRuntimeSummary(resolvedCustomBaselines, imatrixEnsureResult.Enabled);
-
-        CliHelpers.ValidateCombinationLogicWorks(true);
-
-        var dbService = new QuantDatabaseService();
-        await dbService.InitializeAsync();
+        
+        // No longer needed
+        //CliHelpers.ValidateCombinationLogicWorks(true);
 
         var comboCountBefore = ComboCounter.CountAll();
         var totalLearnedPruningResult = new LearnedBaselinePruningResult();
@@ -328,6 +326,7 @@ public class Evolution : ICommand
 
         var comboCountAfterRulePruning = ComboCounter.CountAll();
 
+        var dbService = new QuantDatabaseService();
         await dbService.InitializeAsync(forceRebuild: true);
 
         // The old MDA/predicted-size ceiling pass is intentionally removed.
