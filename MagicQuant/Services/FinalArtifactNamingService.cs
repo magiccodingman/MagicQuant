@@ -103,7 +103,17 @@ public sealed class FinalArtifactNamingService
         if (string.IsNullOrWhiteSpace(displayNameOrFileName))
             return string.Empty;
 
-        string value = Path.GetFileNameWithoutExtension(displayNameOrFileName.Trim());
+        string value = displayNameOrFileName.Trim();
+
+        // Only strip directories. Do NOT blindly call GetFileNameWithoutExtension on
+        // extensionless display names like Qwen3.6-35B-A3B-LM-Q8_0, because .NET will
+        // treat ".6-35B-A3B-LM-Q8_0" as the extension and return only "Qwen3".
+        value = Path.GetFileName(value);
+
+        // Only remove the extension when it is a real GGUF artifact filename.
+        if (value.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+            value = value[..^".gguf".Length];
+
         string prefix = ResolveModelPrefix();
         string fullPrefix = prefix + "-";
 
