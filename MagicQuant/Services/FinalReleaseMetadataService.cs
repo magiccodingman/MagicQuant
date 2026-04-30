@@ -39,7 +39,7 @@ public sealed class FinalReleaseMetadataService
         var survivors = exportedArtifacts
             .OrderBy(x => x.Snapshot.Kld)
             .ThenBy(x => x.Snapshot.SizeBytes)
-            .Select(x => ToSurvivorJson(x, referencePpl, replacementMap))
+            .Select(x => ToSurvivorJson(x, referencePpl, replacementMap, namingContext))
             .ToList();
         await File.WriteAllTextAsync(finalPath, JsonSerializer.Serialize(survivors, JsonOptions), ct);
 
@@ -59,14 +59,15 @@ public sealed class FinalReleaseMetadataService
     private object ToSurvivorJson(
         ExportedArtifactRecord artifact,
         double? referencePpl,
-        IReadOnlyDictionary<string, List<BaselineEliminationRecord>> replacementMap)
+        IReadOnlyDictionary<string, List<BaselineEliminationRecord>> replacementMap,
+        FinalArtifactNamingContext namingContext)
     {
         string key = TensorConfigIdentity.ToKey(artifact.Snapshot.Config);
         var replacements = ResolveTransitiveReplacements(key, replacementMap)
             .Select(x => new
             {
                 key = TensorConfigIdentity.ToKey(x.Eliminated.Config),
-                shortName = _namingService.ToShortDisplayName(x.Eliminated.DisplayName),
+                shortName = ToSnapshotShortName(x.Eliminated, null, namingContext),
                 internalDisplayName = x.Eliminated.DisplayName,
                 kld = x.Eliminated.Kld,
                 ppl = x.Eliminated.Ppl,
@@ -85,7 +86,13 @@ public sealed class FinalReleaseMetadataService
                 ? EnsureGgufExtension(artifact.DisplayName)
                 : artifact.FileName,
             displayName = artifact.DisplayName,
-            shortName = _namingService.ToShortDisplayName(artifact.DisplayName),
+            shortName = _namingService.ToPublicArtifactShortName(
+                artifact.DisplayName,
+                artifact.FileName,
+                artifact.ProviderName,
+                artifact.BaselineFamily,
+                artifact.Snapshot,
+                namingContext),
             provider = artifact.ProviderName,
             quantFamily = artifact.BaselineFamily,
             isHybrid = artifact.Snapshot.IsHybrid,
@@ -153,7 +160,13 @@ public sealed class FinalReleaseMetadataService
         if (exportedByKey.TryGetValue(key, out var artifact))
         {
             displayName = artifact.DisplayName;
-            shortName = _namingService.ToShortDisplayName(artifact.DisplayName);
+            shortName = _namingService.ToPublicArtifactShortName(
+                artifact.DisplayName,
+                artifact.FileName,
+                artifact.ProviderName,
+                artifact.BaselineFamily,
+                artifact.Snapshot,
+                namingContext);
             fileName = artifact.IsExternalReference ? EnsureGgufExtension(artifact.DisplayName) : artifact.FileName ?? EnsureGgufExtension(artifact.DisplayName);
             provider = artifact.ProviderName;
             quantFamily = artifact.BaselineFamily;
@@ -161,10 +174,16 @@ public sealed class FinalReleaseMetadataService
         else
         {
             displayName = _namingService.BuildDisplayLabel(snapshot, namingContext);
-            shortName = _namingService.ToShortDisplayName(displayName);
-            fileName = EnsureGgufExtension(displayName);
             provider = snapshot.IsHybrid ? "MagicQuant" : HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false);
             quantFamily = snapshot.BaselineFamily;
+            shortName = _namingService.ToPublicArtifactShortName(
+                displayName,
+                null,
+                provider,
+                quantFamily,
+                snapshot,
+                namingContext);
+            fileName = EnsureGgufExtension(displayName);
         }
 
         return new
@@ -262,6 +281,27 @@ public sealed class FinalReleaseMetadataService
         return value.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
             ? value
             : value + ".gguf";
+    }
+
+    private string ToSnapshotShortName(
+        BenchmarkSnapshotRecord snapshot,
+        ExportedArtifactRecord? artifact,
+        FinalArtifactNamingContext namingContext)
+    {
+        if (artifact != null)
+        {
+            return _namingService.ToPublicArtifactShortName(
+                artifact.DisplayName,
+                artifact.FileName,
+                artifact.ProviderName,
+                artifact.BaselineFamily,
+                artifact.Snapshot,
+                namingContext);
+        }
+
+        string provider = snapshot.IsHybrid ? "MagicQuant" : HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false);
+        string display = _namingService.BuildDisplayLabel(snapshot, namingContext);
+        return _namingService.ToPublicArtifactShortName(display, null, provider, snapshot.BaselineFamily, snapshot, namingContext);
     }
 
     private static double ToGiBNumber(ulong bytes) => bytes / 1024d / 1024d / 1024d;
