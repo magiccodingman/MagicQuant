@@ -209,8 +209,9 @@ public class Evolution : ICommand
         RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
 
         PrintCustomBaselineRuntimeSummary(resolvedCustomBaselines, imatrixEnsureResult.Enabled);
-
-        CliHelpers.ValidateCombinationLogicWorks(true);
+        
+        // No longer needed
+        //CliHelpers.ValidateCombinationLogicWorks(true);
 
         var comboCountBefore = ComboCounter.CountAll();
         var totalLearnedPruningResult = new LearnedBaselinePruningResult();

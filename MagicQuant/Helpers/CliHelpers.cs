@@ -87,8 +87,6 @@ public static class CliHelpers
             total > long.MaxValue
                 ? $"[red]Total potential combinations exceed Int64 range:[/] [bold yellow]{total:N0}[/]"
                 : $"[green]Total potential combinations:[/] [bold yellow]{total:N0}[/]");
-
-        AnsiConsole.MarkupLine($"[green]Total potential combinations:[/] [bold yellow]{total:N0}[/]");
     }
 
     public static List<CliArg> ParseArguments(string input)
