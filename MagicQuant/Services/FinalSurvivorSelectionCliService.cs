@@ -108,7 +108,7 @@ public sealed class FinalSurvivorSelectionCliService
             string kld = row.Enabled ? $"[cyan]{snap.Kld:0.000000}[/]" : $"[grey]{snap.Kld:0.000000}[/]";
             string pplDelta = FormatPplDeltaPercent(snap.Ppl, referencePpl);
             string ppl = row.Enabled ? $"[cyan]{pplDelta}[/]" : $"[grey]{pplDelta}[/]";
-            string sizeGb = (snap.SizeBytes / 1024d / 1024d / 1024d).ToString("0.00");
+            string sizeGb = (snap.SizeBytes / 1000d / 1000d / 1000d).ToString("0.00");
 
             table.AddRow(
                 row.Id.ToString(),

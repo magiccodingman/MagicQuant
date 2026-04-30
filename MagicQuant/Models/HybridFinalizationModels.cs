@@ -194,7 +194,11 @@ public sealed class HybridMapEntry
     public List<string> Warnings { get; set; } = new();
     public bool UsedImatrix { get; set; }
     public ulong ExpectedSizeBytes { get; set; }
+    public double ExpectedSizeGB { get; set; }
+    public double ExpectedSizeGiB { get; set; }
     public ulong? ActualSizeBytes { get; set; }
+    public double? ActualSizeGB { get; set; }
+    public double? ActualSizeGiB { get; set; }
     public string? OriginalExternalSource { get; set; }
 }
 

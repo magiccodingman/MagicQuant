@@ -73,6 +73,7 @@ public sealed class FinalReleaseMetadataService
                 ppl = x.Eliminated.Ppl,
                 pplDeltaPercent = CalculatePplDeltaPercent(x.Eliminated.Ppl, referencePpl),
                 sizeBytes = x.Eliminated.SizeBytes,
+                sizeGB = ToGBNumber(x.Eliminated.SizeBytes),
                 sizeGiB = ToGiBNumber(x.Eliminated.SizeBytes),
                 reasonCode = FinalArtifactNamingService.ReasonCode(x.Reason),
                 reason = x.Reason
@@ -102,6 +103,7 @@ public sealed class FinalReleaseMetadataService
             ppl = artifact.Snapshot.Ppl,
             pplDeltaPercent = CalculatePplDeltaPercent(artifact.Snapshot.Ppl, referencePpl),
             sizeBytes = artifact.Snapshot.SizeBytes,
+            sizeGB = ToGBNumber(artifact.Snapshot.SizeBytes),
             sizeGiB = ToGiBNumber(artifact.Snapshot.SizeBytes),
             expectedSizeBytes = artifact.ExpectedSizeBytes,
             actualSizeBytes = artifact.ActualSizeBytes,
@@ -136,7 +138,8 @@ public sealed class FinalReleaseMetadataService
             {
                 kld = kldDelta,
                 sizeBytes = sizeDeltaBytes,
-                sizeGiB = sizeDeltaBytes / 1024d / 1024d / 1024d,
+                sizeGB = ToGBNumber(sizeDeltaBytes),
+                sizeGiB = ToGiBNumber(sizeDeltaBytes),
                 removedPplDeltaPercent = pplDeltaPercentRemoved,
                 winnerPplDeltaPercent = pplDeltaPercentWinner,
                 pplDeltaPercentImprovement = pplDeltaPercentImprovement
@@ -200,6 +203,7 @@ public sealed class FinalReleaseMetadataService
             ppl = snapshot.Ppl,
             pplDeltaPercent = CalculatePplDeltaPercent(snapshot.Ppl, referencePpl),
             sizeBytes = snapshot.SizeBytes,
+            sizeGB = ToGBNumber(snapshot.SizeBytes),
             sizeGiB = ToGiBNumber(snapshot.SizeBytes)
         };
     }
@@ -304,5 +308,8 @@ public sealed class FinalReleaseMetadataService
         return _namingService.ToPublicArtifactShortName(display, null, provider, snapshot.BaselineFamily, snapshot, namingContext);
     }
 
+    private static double ToGBNumber(ulong bytes) => bytes / 1000d / 1000d / 1000d;
     private static double ToGiBNumber(ulong bytes) => bytes / 1024d / 1024d / 1024d;
+    private static double ToGBNumber(long bytes) => bytes / 1000d / 1000d / 1000d;
+    private static double ToGiBNumber(long bytes) => bytes / 1024d / 1024d / 1024d;
 }

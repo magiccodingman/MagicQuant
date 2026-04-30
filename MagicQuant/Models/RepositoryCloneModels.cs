@@ -31,6 +31,8 @@ public sealed class MagicQuantCloneArtifact
     public double? SourcePpl { get; set; }
     public double? SourcePplDeltaPercent { get; set; }
     public ulong? SourceSizeBytes { get; set; }
+    public double? SourceSizeGB { get; set; }
+    public double? SourceSizeGiB { get; set; }
 
     /// <summary>
     /// Exact tensor-name -> final GGUF quant type map read from the exported artifact.

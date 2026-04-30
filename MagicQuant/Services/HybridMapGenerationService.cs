@@ -37,7 +37,11 @@ public sealed class HybridMapGenerationService
                 Warnings = x.EffectiveState?.Warnings.ToList() ?? new List<string>(),
                 UsedImatrix = Cache.UseImatrix && Cache.IsImatrixAvailable,
                 ExpectedSizeBytes = x.ExpectedSizeBytes,
+                ExpectedSizeGB = ToGBNumber(x.ExpectedSizeBytes),
+                ExpectedSizeGiB = ToGiBNumber(x.ExpectedSizeBytes),
                 ActualSizeBytes = x.ActualSizeBytes,
+                ActualSizeGB = x.ActualSizeBytes.HasValue ? ToGBNumber(x.ActualSizeBytes.Value) : null,
+                ActualSizeGiB = x.ActualSizeBytes.HasValue ? ToGiBNumber(x.ActualSizeBytes.Value) : null,
                 OriginalExternalSource = HybridBenchmarkRepository.BuildExternalRepositoryUrl(x.Snapshot.Quant.BaseQuant)
             })
             .ToList();
@@ -47,4 +51,7 @@ public sealed class HybridMapGenerationService
         AnsiConsole.MarkupLine($"[green]Hybrid map JSON generated:[/] {Markup.Escape(path)}");
         return path;
     }
+
+    private static double ToGBNumber(ulong bytes) => bytes / 1000d / 1000d / 1000d;
+    private static double ToGiBNumber(ulong bytes) => bytes / 1024d / 1024d / 1024d;
 }

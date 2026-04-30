@@ -44,7 +44,7 @@ public sealed class ReadmeGenerationService
         sb.AppendLine();
         sb.AppendLine("---");
         sb.AppendLine();
-        sb.AppendLine("## Final surviving downloadable outputs");
+        sb.AppendLine("## Final survivors");
         sb.AppendLine();
         AppendDownloadTable(sb, exportedArtifacts, replacementMap, exportedByKey, namingContext);
         sb.AppendLine();
@@ -362,7 +362,7 @@ public sealed class ReadmeGenerationService
         sb.AppendLine("</details>");
     }
 
-    private static string ToGb(ulong bytes) => (bytes / 1024d / 1024d / 1024d).ToString("0.00");
+    private static string ToGb(ulong bytes) => (bytes / 1000d / 1000d / 1000d).ToString("0.00", CultureInfo.InvariantCulture);
     private static string EscapePipe(string value) => (value ?? string.Empty).Replace("|", "\\|");
     private static string EscapeTooltip(string value) => (value ?? string.Empty).Replace("\"", "&quot;").Replace("|", " ");
     private static string EscapeHtml(string value) => (value ?? string.Empty).Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");

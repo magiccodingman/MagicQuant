@@ -77,6 +77,8 @@ public sealed class CloneConfigManifestGenerationService
                 SourcePpl = artifact.Snapshot.Ppl,
                 SourcePplDeltaPercent = FinalReleaseMetadataService.CalculatePplDeltaPercent(artifact.Snapshot.Ppl, referencePpl),
                 SourceSizeBytes = artifact.ActualSizeBytes ?? artifact.ExpectedSizeBytes,
+                SourceSizeGB = ToGBNumber(artifact.ActualSizeBytes ?? artifact.ExpectedSizeBytes),
+                SourceSizeGiB = ToGiBNumber(artifact.ActualSizeBytes ?? artifact.ExpectedSizeBytes),
                 TensorTypes = tensorTypes.ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal)
             });
         }
@@ -86,6 +88,9 @@ public sealed class CloneConfigManifestGenerationService
         AnsiConsole.MarkupLine($"[green]Clone configuration JSON generated:[/] {Markup.Escape(path)}");
         return path;
     }
+
+    private static double ToGBNumber(ulong bytes) => bytes / 1000d / 1000d / 1000d;
+    private static double ToGiBNumber(ulong bytes) => bytes / 1024d / 1024d / 1024d;
 
     private static string ResolveBaseQuantName(ExportedArtifactRecord artifact)
     {
