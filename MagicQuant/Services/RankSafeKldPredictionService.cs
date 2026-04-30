@@ -29,6 +29,22 @@ public sealed class RankSafeKldPredictionService
         _effectiveResolver = effectiveResolver;
     }
 
+    internal async Task<RankSafePredictionModel> BuildModelAsync(CancellationToken ct = default)
+    {
+        var context = await BuildContextAsync(ct);
+        var fitRows = await LoadFitRowsAsync(context, Array.Empty<RankSafePredictionRow>(), ct);
+        var fit = FitInteractionModel(fitRows, context);
+
+        var notes = new List<string>(context.Notes)
+        {
+            $"Prediction fit rows: {fit.FitRowCount:N0}; alpha={fit.Alpha:G6}; beta={fit.Beta:G6}; bit-stress-threshold={fit.BitStressThreshold:G4}; fallback={fit.UsedFallback}."
+        };
+
+        context.Fit = fit;
+        context.Notes = notes;
+        return context;
+    }
+
     public async Task<RankSafePredictionSet> PredictAsync(
         IReadOnlyCollection<TensorConfig> configs,
         CancellationToken ct = default)
@@ -36,7 +52,7 @@ public sealed class RankSafeKldPredictionService
         if (configs == null)
             throw new ArgumentNullException(nameof(configs));
 
-        var context = await BuildContextAsync(ct);
+        var context = await BuildModelAsync(ct);
         var uniqueConfigs = configs
             .DistinctBy(TensorConfigIdentity.ToKey)
             .ToList();
@@ -50,21 +66,15 @@ public sealed class RankSafeKldPredictionService
             rows.Add(row);
         }
 
-        var fitRows = await LoadFitRowsAsync(context, rows, ct);
-        var fit = FitInteractionModel(fitRows, context);
-
         foreach (var row in rows.Where(x => x.IsPredictable))
         {
-            row.CrossTerm = ComputeCrossTerm(row.Config, context, fit.BitStressThreshold);
-            row.InteractionKld = Math.Max(0d, (fit.Alpha * row.AdditiveKld) + (fit.Beta * row.CrossTerm));
+            row.CrossTerm = ComputeCrossTerm(row.Config, context, context.Fit.BitStressThreshold);
+            row.InteractionKld = Math.Max(0d, (context.Fit.Alpha * row.AdditiveKld) + (context.Fit.Beta * row.CrossTerm));
         }
 
         ApplyRankSafeProjection(rows);
 
-        var notes = new List<string>(context.Notes);
-        notes.Add($"Prediction fit rows: {fit.FitRowCount:N0}; alpha={fit.Alpha:G6}; beta={fit.Beta:G6}; bit-stress-threshold={fit.BitStressThreshold:G4}; fallback={fit.UsedFallback}.");
-
-        PrintPredictionDiagnostics(rows, fit);
+        PrintPredictionDiagnostics(rows, context.Fit);
         return new RankSafePredictionSet
         {
             Rows = rows
@@ -72,14 +82,14 @@ public sealed class RankSafeKldPredictionService
                 .ThenBy(x => x.IsSizePredictable ? 0 : 1)
                 .ThenBy(x => x.PredictedSizeBytes)
                 .ToList(),
-            Fit = fit,
-            Notes = notes
+            Fit = context.Fit,
+            Notes = context.Notes
         };
     }
 
     private async Task<RankSafePredictionRow> PredictSingleAsync(
         TensorConfig config,
-        PredictionContext context,
+        RankSafePredictionModel context,
         CancellationToken ct)
     {
         var quant = (HybridQuant)config;
@@ -136,7 +146,7 @@ public sealed class RankSafeKldPredictionService
         return row;
     }
 
-    private async Task<PredictionContext> BuildContextAsync(CancellationToken ct)
+    private async Task<RankSafePredictionModel> BuildContextAsync(CancellationToken ct)
     {
         var activeGroups = TReg.All
             .Where(x => !Cache.UnusedTensorGroups.Any(u => u.UniqueId == x.UniqueId))
@@ -220,7 +230,7 @@ public sealed class RankSafeKldPredictionService
             }
         }
 
-        return new PredictionContext(
+        return new RankSafePredictionModel(
             activeGroups: activeGroups,
             pureQ8: pureQ8,
             q8BaseOnly: q8BaseOnly,
@@ -231,7 +241,7 @@ public sealed class RankSafeKldPredictionService
     }
 
     private async Task<List<FitObservation>> LoadFitRowsAsync(
-        PredictionContext context,
+        RankSafePredictionModel context,
         IReadOnlyList<RankSafePredictionRow> alreadyPredicted,
         CancellationToken ct)
     {
@@ -269,7 +279,7 @@ public sealed class RankSafeKldPredictionService
 
     private RankSafePredictionFit FitInteractionModel(
         IReadOnlyList<FitObservation> observations,
-        PredictionContext context)
+        RankSafePredictionModel context)
     {
         var usable = observations
             .Where(x => x.ActualKld >= 0d)
@@ -389,7 +399,7 @@ public sealed class RankSafeKldPredictionService
         for (int i = 0; i < predictable.Count; i++)
             predictable[i].PredictedKld = Math.Max(0d, projected[i]);
 
-        int rank = 1;
+        ulong rank = 1;
         foreach (var row in rows
                      .Where(x => x.IsPredictable)
                      .OrderBy(x => x.PredictedKld)
@@ -437,7 +447,7 @@ public sealed class RankSafeKldPredictionService
 
     private double PredictAdditiveKld(
         TensorConfig config,
-        PredictionContext context,
+        RankSafePredictionModel context,
         List<string> notes,
         out bool canPredict)
     {
@@ -468,7 +478,7 @@ public sealed class RankSafeKldPredictionService
 
     private double PredictPpl(
         TensorConfig config,
-        PredictionContext context,
+        RankSafePredictionModel context,
         List<string> notes)
     {
         double total = 0d;
@@ -488,7 +498,7 @@ public sealed class RankSafeKldPredictionService
 
     private ulong PredictSize(
         TensorConfig config,
-        PredictionContext context,
+        RankSafePredictionModel context,
         List<string> notes,
         out bool canPredictSize)
     {
@@ -534,7 +544,7 @@ public sealed class RankSafeKldPredictionService
         return (ulong)total;
     }
 
-    private double ComputeCrossTerm(TensorConfig config, PredictionContext context, double threshold)
+    private double ComputeCrossTerm(TensorConfig config, RankSafePredictionModel context, double threshold)
     {
         var contributions = new List<(double Kld, double Bits)>();
 
@@ -643,9 +653,9 @@ public sealed class RankSafeKldPredictionService
 
     private static double ToGb(ulong bytes) => bytes / 1024d / 1024d / 1024d;
 
-    private sealed class PredictionContext
+    internal sealed class RankSafePredictionModel
     {
-        public PredictionContext(
+        public RankSafePredictionModel(
             IReadOnlyList<TensorGroup> activeGroups,
             BenchmarkSnapshotRecord pureQ8,
             BenchmarkSnapshotRecord q8BaseOnly,
@@ -669,7 +679,8 @@ public sealed class RankSafeKldPredictionService
         public Dictionary<byte, BenchmarkSnapshotRecord> PureSnapshotsByBaselineId { get; }
         public Dictionary<byte, BenchmarkSnapshotRecord> BaseOnlySnapshotsByBaselineId { get; }
         public Dictionary<(byte GroupId, byte BaselineId), BenchmarkSnapshotRecord> IsolationByGroupAndBaseline { get; }
-        public IReadOnlyList<string> Notes { get; }
+        public IReadOnlyList<string> Notes { get; set; }
+        public RankSafePredictionFit Fit { get; set; } = new();
     }
 
     private sealed class FitObservation

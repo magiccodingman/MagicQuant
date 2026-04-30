@@ -14,36 +14,11 @@ namespace MagicQuant.Services;
 public class QuantDatabaseService
 {
     private const string DbFileNamePrefix = "MagicQuant_Combinations";
-    private const string TableName = "tensor_configs";
+    private const string TableName = CombinationDuckDbSchema.TableName;
 
-    private static readonly string[] ExpectedColumnTypes =
-    [
-        "utinyint",
-        "utinyint",
-        "utinyint",
-        "utinyint",
-        "utinyint",
-        "utinyint",
-        "utinyint",
-        "utinyint",
-        "utinyint",
-        "utinyint"
-    ];
+    private static readonly string[] ExpectedColumnTypes = CombinationDuckDbSchema.ExpectedColumnTypes;
 
-    private static string CreateTableSql => $@"
-        DROP TABLE IF EXISTS {TableName};
-        CREATE TABLE {TableName} (
-            BaseQuant UTINYINT,
-            Embeddings UTINYINT,
-            LmHead UTINYINT,
-            AttnQ UTINYINT,
-            AttnKV UTINYINT,
-            AttnOutput UTINYINT,
-            FfnUpGate UTINYINT,
-            FfnDown UTINYINT,
-            MoeExperts UTINYINT,
-            MoeRouter UTINYINT
-        );";
+    private static string CreateTableSql => CombinationDuckDbSchema.CreateTableSql;
 
     private static async Task ConfigureFastLoadSessionAsync(DuckDBConnection connection, CancellationToken ct)
     {
@@ -417,23 +392,39 @@ ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
         CancellationToken ct)
     {
         // Emergency/small debug use only. Do NOT use for full search-space generation or trillion-scale pruning.
+        // Insert only the ten tensor slot columns; DuckDB prediction columns intentionally remain NULL
+        // until DuckDbPredictionMaterializationService scores/ranks the transient search space.
         if (rows.Count == 0)
             return;
 
         await ConfigureFastLoadSessionAsync(connection, ct);
 
-        using DuckDBAppender appender = connection.CreateAppender(TableName);
+        using var tx = connection.BeginTransaction();
+        using var insert = connection.CreateCommand();
+        insert.CommandText = $@"
+INSERT INTO {TableName} ({CombinationDuckDbSchema.SlotColumnList})
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
 
         foreach (var row in rows)
         {
             ct.ThrowIfCancellationRequested();
-            appender.CreateRow()
-                .AppendValue(row.BaseQuant).AppendValue(row.Embeddings).AppendValue(row.LmHead)
-                .AppendValue(row.AttnQ).AppendValue(row.AttnKV).AppendValue(row.AttnOutput)
-                .AppendValue(row.FfnUpGate).AppendValue(row.FfnDown).AppendValue(row.MoeExperts)
-                .AppendValue(row.MoeRouter).EndRow();
+
+            insert.Parameters.Clear();
+            insert.Parameters.Add(new DuckDBParameter { Value = row.BaseQuant });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.Embeddings });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.LmHead });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.AttnQ });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.AttnKV });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.AttnOutput });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.FfnUpGate });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.FfnDown });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.MoeExperts });
+            insert.Parameters.Add(new DuckDBParameter { Value = row.MoeRouter });
+
+            await insert.ExecuteNonQueryAsync(ct);
         }
-        appender.Close();
+
+        tx.Commit();
     }
 
     private async Task<PredictionContext?> BuildPredictionContextAsync(

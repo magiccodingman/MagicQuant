@@ -13,6 +13,7 @@ public sealed class CombinationSurvivalPipelineService
     private readonly HybridBenchmarkRepository _benchmarkRepository;
     private readonly EffectiveCandidateStateResolverService _effectiveResolver;
     private readonly RankSafeKldPredictionService _predictionService;
+    private readonly DuckDbPredictionMaterializationService _materializationService;
     private readonly FinalRealBenchmarkEliminationService _finalEliminator;
     private readonly PredictionGuidedHybridSelectionService _selectionEngine;
     private readonly FinalSurvivorSelectionCliService _selectionCli;
@@ -32,7 +33,8 @@ public sealed class CombinationSurvivalPipelineService
         _effectiveResolver = new EffectiveCandidateStateResolverService(_benchmarkRepository);
         _predictionService = new RankSafeKldPredictionService(_benchmarkRepository, _effectiveResolver);
         _finalEliminator = new FinalRealBenchmarkEliminationService();
-        _selectionEngine = new PredictionGuidedHybridSelectionService(_quantizationService, _benchmarkRepository, _finalEliminator);
+        _materializationService = new DuckDbPredictionMaterializationService(_combinationStore, _predictionService);
+        _selectionEngine = new PredictionGuidedHybridSelectionService(_quantizationService, _benchmarkRepository, _finalEliminator, _combinationStore);
         _selectionCli = new FinalSurvivorSelectionCliService();
         var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
         var sidecarService = new ModelSidecarArtifactService(pyManager);
@@ -55,12 +57,7 @@ public sealed class CombinationSurvivalPipelineService
         AnsiConsole.Write(new Rule("[yellow]Rank-Safe Prediction / Hybrid Selection Pipeline[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"[green]Remaining DuckDB combinations available to score:[/] [cyan]{report.StartingCount:N0}[/]");
         AnsiConsole.MarkupLine("[grey]Old MDA bucket survival is disabled. DuckDB now defines the allowed search space; rank-safe isolation prediction selects what deserves real benchmarking.[/]");
-        AnsiConsole.MarkupLine("[grey]Note: final prediction/selection is currently guarded for small in-memory runs only; trillion-scale support requires DuckDB-backed prediction materialization + projection.[/]");
-
-        if (report.StartingCount > Config.MaxInMemoryCombinationLoadRows)
-            throw new InvalidOperationException($"Final prediction selection still requires DuckDB-backed prediction materialization. Refusing to load {report.StartingCount:N0} combinations into memory.");
-
-        var remainingConfigs = await _combinationStore.LoadAllAsync(ct);
+        AnsiConsole.MarkupLine("[grey]DuckDB prediction materialization is enabled; final selection will query pre-ranked candidates instead of loading the full search space into memory.[/]");
         var pureBaselines = await _benchmarkRepository.LoadPureBaselineSnapshotsAsync(ct);
 
         if (pureBaselines.Count == 0)
@@ -68,18 +65,10 @@ public sealed class CombinationSurvivalPipelineService
 
         AnsiConsole.MarkupLine($"[green]Pure baseline snapshots loaded:[/] [cyan]{pureBaselines.Count:N0}[/]");
 
-        var predictionInput = remainingConfigs
-            .Concat(pureBaselines.Select(x => x.Config))
-            .DistinctBy(TensorConfigIdentity.ToKey)
-            .ToList();
-
-        var predictions = await _predictionService.PredictAsync(predictionInput, ct);
-
-        foreach (var note in predictions.Notes)
-            AnsiConsole.MarkupLine($"[grey]Prediction note:[/] {Markup.Escape(note)}");
+        var materialization = await _materializationService.MaterializeAsync(ct);
+        AnsiConsole.MarkupLine($"[green]DuckDB predicted rows:[/] [cyan]{materialization.PredictedRows:N0}[/] / [cyan]{materialization.TotalRows:N0}[/] (ranked: {materialization.RankedRows:N0})");
 
         var selection = await _selectionEngine.RunAsync(
-            predictions.PredictableRows.ToList(),
             pureBaselines,
             ct);
 

@@ -11,6 +11,7 @@ public sealed class RankSafePredictionRow
     public double AdditiveKld { get; set; }
     public double InteractionKld { get; set; }
     public double PredictedKld { get; set; }
+    public double PredictionConfidence { get; set; } = 1.0d;
     public double PredictedPpl { get; set; }
     public double CrossTerm { get; set; }
     public bool IsPureBaseline { get; init; }
@@ -24,7 +25,7 @@ public sealed class RankSafePredictionRow
     public double ActualPpl { get; set; } = double.NaN;
     public ulong? ActualSizeBytes { get; set; }
     public int? ActualRank { get; set; }
-    public int? PredictedRank { get; set; }
+    public ulong? PredictedRank { get; set; }
 
     public double AbsoluteKldError =>
         double.IsNaN(ActualKld) ? double.NaN : Math.Abs(PredictedKld - ActualKld);
@@ -140,4 +141,3 @@ public sealed class PredictionGuidedSelectionResult
     public IReadOnlyList<BaselineEliminationRecord> Eliminations { get; init; } = Array.Empty<BaselineEliminationRecord>();
     public IReadOnlyList<CandidateValidationResult> ValidationFailures { get; init; } = Array.Empty<CandidateValidationResult>();
 }
-

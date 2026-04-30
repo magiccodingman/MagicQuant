@@ -20,19 +20,21 @@ public sealed class PredictionGuidedHybridSelectionService
     private readonly QuantizationService _quantizationService;
     private readonly HybridBenchmarkRepository _repository;
     private readonly FinalRealBenchmarkEliminationService _finalEliminator;
+    private readonly RemainingCombinationStore _predictedStore;
 
     public PredictionGuidedHybridSelectionService(
         QuantizationService quantizationService,
         HybridBenchmarkRepository repository,
-        FinalRealBenchmarkEliminationService finalEliminator)
+        FinalRealBenchmarkEliminationService finalEliminator,
+        RemainingCombinationStore predictedStore)
     {
         _quantizationService = quantizationService;
         _repository = repository;
         _finalEliminator = finalEliminator;
+        _predictedStore = predictedStore;
     }
 
     public async Task<PredictionGuidedSelectionResult> RunAsync(
-        IReadOnlyList<RankSafePredictionRow> predictions,
         IReadOnlyList<BenchmarkSnapshotRecord> pureBaselineSnapshots,
         CancellationToken ct = default)
     {
@@ -42,13 +44,13 @@ public sealed class PredictionGuidedHybridSelectionService
         var current = _finalEliminator.Eliminate(pureBaselineSnapshots).Survivors.ToList();
         AnsiConsole.MarkupLine($"[green]Pure/current anchor survivors after dominance:[/] [cyan]{current.Count:N0}[/]");
 
-        var strict = await RunStrictDominanceReplacementAsync(predictions, current, eliminationRecords, validationFailures, ct);
+        var strict = await RunStrictDominanceReplacementAsync(current, eliminationRecords, validationFailures, ct);
         current = MergeAndDominanceFilter(current, strict.AcceptedSnapshots, eliminationRecords, "strict predicted hybrid dominance validated by real benchmark");
 
-        var near = await RunNearBaselineReplacementAsync(predictions, current, eliminationRecords, validationFailures, ct);
+        var near = await RunNearBaselineReplacementAsync(current, eliminationRecords, validationFailures, ct);
         current = MergeAndDominanceFilter(current, near.AcceptedSnapshots, eliminationRecords, "near-baseline size-premium replacement validated by real benchmark");
 
-        var interior = await RunInteriorSubspaceDiscoveryAsync(predictions, current, validationFailures, ct);
+        var interior = await RunInteriorSubspaceDiscoveryAsync(current, validationFailures, ct);
         current = MergeAndDominanceFilter(current, interior.AcceptedSnapshots, eliminationRecords, "interior subspace discovery dominated by real benchmark truth");
 
         current = ApplyMeaningfulSpacing(current, eliminationRecords);
@@ -81,7 +83,6 @@ public sealed class PredictionGuidedHybridSelectionService
     }
 
     private async Task<PhaseValidationResult> RunStrictDominanceReplacementAsync(
-        IReadOnlyList<RankSafePredictionRow> predictions,
         IReadOnlyList<BenchmarkSnapshotRecord> currentAnchors,
         List<BaselineEliminationRecord> eliminations,
         List<CandidateValidationResult> validationFailures,
@@ -90,9 +91,6 @@ public sealed class PredictionGuidedHybridSelectionService
         AnsiConsole.Write(new Rule("[yellow]Prediction Phase 1: Strict Hybrid Dominance[/]") { Justification = Justify.Left });
 
         var accepted = new List<BenchmarkSnapshotRecord>();
-        var hybridPredictions = predictions
-            .Where(x => x.IsPredictable && x.IsSizePredictable && x.IsHybrid)
-            .ToList();
 
         foreach (var anchor in currentAnchors.OrderBy(x => x.Kld).ThenBy(x => x.SizeBytes))
         {
@@ -102,26 +100,8 @@ public sealed class PredictionGuidedHybridSelectionService
                 continue;
             }
 
-            var candidates = hybridPredictions
-                .Where(x => x.PredictedSizeBytes <= anchor.SizeBytes)
-                .Where(x => x.PredictedKld + Config.SelectionMinimumKldImprovementEpsilon < anchor.Kld)
-                .OrderBy(x => x.PredictedSizeBytes)
-                .ThenBy(x => x.PredictedKld)
-                .Take(Config.SelectionMaxFallbackAttemptsPerAnchor)
-                .Select((x, i) => new HybridSelectionCandidate
-                {
-                    Prediction = x,
-                    Reason = HybridSelectionReason.StrictDominanceReplacement,
-                    LowerDamageAnchor = anchor,
-                    HigherDamageAnchor = anchor,
-                    WindowMinSizeBytes = 0,
-                    WindowMaxSizeBytes = anchor.SizeBytes,
-                    LinearExpectedKld = anchor.Kld,
-                    PredictedGainOverLine = anchor.Kld - x.PredictedKld,
-                    AttemptOrder = i + 1,
-                    WindowLabel = $"strict <= {anchor.DisplayName}"
-                })
-                .ToList();
+            var strictRows = await _predictedStore.QueryStrictDominanceCandidatesAsync(anchor, Config.SelectionMaxFallbackAttemptsPerAnchor, ct);
+            var candidates = strictRows.Select((x, i) => new HybridSelectionCandidate { Prediction = x, Reason = HybridSelectionReason.StrictDominanceReplacement, LowerDamageAnchor = anchor, HigherDamageAnchor = anchor, WindowMinSizeBytes = 0, WindowMaxSizeBytes = anchor.SizeBytes, LinearExpectedKld = anchor.Kld, PredictedGainOverLine = anchor.Kld - x.PredictedKld, AttemptOrder = i + 1, WindowLabel = $"strict <= {anchor.DisplayName}" }).ToList();
 
             if (candidates.Count == 0)
                 continue;
@@ -162,7 +142,6 @@ public sealed class PredictionGuidedHybridSelectionService
     }
 
     private async Task<PhaseValidationResult> RunNearBaselineReplacementAsync(
-        IReadOnlyList<RankSafePredictionRow> predictions,
         IReadOnlyList<BenchmarkSnapshotRecord> currentAnchors,
         List<BaselineEliminationRecord> eliminations,
         List<CandidateValidationResult> validationFailures,
@@ -187,16 +166,7 @@ public sealed class PredictionGuidedHybridSelectionService
             if (max > upperSizeLowerDamage.SizeBytes)
                 max = upperSizeLowerDamage.SizeBytes;
 
-            var candidates = FindBetterThanLinearCandidates(
-                    predictions,
-                    lowerSizeHigherDamage,
-                    upperSizeLowerDamage,
-                    min,
-                    max,
-                    HybridSelectionReason.NearBaselineOnePercentReplacement,
-                    $"near-baseline +{Config.SelectionNearBaselineMaxSizeGrowthPercent:0.###}% {lowerSizeHigherDamage.DisplayName}")
-                .Take(Config.SelectionMaxFallbackAttemptsPerAnchor)
-                .ToList();
+            var candidates = (await _predictedStore.QueryBetterThanLinearCandidatesAsync(lowerSizeHigherDamage, upperSizeLowerDamage, min, max, HybridSelectionReason.NearBaselineOnePercentReplacement, $"near-baseline +{Config.SelectionNearBaselineMaxSizeGrowthPercent:0.###}% {lowerSizeHigherDamage.DisplayName}", Config.SelectionMaxFallbackAttemptsPerAnchor * 3, ct)).Where(PassesNearLowerAnchorBrutality).Take(Config.SelectionMaxFallbackAttemptsPerAnchor).ToList();
 
             if (candidates.Count == 0)
                 continue;
@@ -231,7 +201,6 @@ public sealed class PredictionGuidedHybridSelectionService
     }
 
     private async Task<PhaseValidationResult> RunInteriorSubspaceDiscoveryAsync(
-        IReadOnlyList<RankSafePredictionRow> predictions,
         IReadOnlyList<BenchmarkSnapshotRecord> currentAnchors,
         List<CandidateValidationResult> validationFailures,
         CancellationToken ct)
@@ -272,16 +241,7 @@ public sealed class PredictionGuidedHybridSelectionService
                 if (max <= min)
                     continue;
 
-                allCandidates.AddRange(
-                    FindBetterThanLinearCandidates(
-                            predictions,
-                            pair.HigherDamageSmaller,
-                            pair.LowerDamageLarger,
-                            min,
-                            max,
-                            HybridSelectionReason.InteriorSubspaceDiscovery,
-                            $"interior {i + 1}: {pair.HigherDamageSmaller.DisplayName} -> {pair.LowerDamageLarger.DisplayName}")
-                        .Take(Config.SelectionMaxCandidatesPerInteriorWindow));
+                allCandidates.AddRange((await _predictedStore.QueryBetterThanLinearCandidatesAsync(pair.HigherDamageSmaller, pair.LowerDamageLarger, min, max, HybridSelectionReason.InteriorSubspaceDiscovery, $"interior {i + 1}: {pair.HigherDamageSmaller.DisplayName} -> {pair.LowerDamageLarger.DisplayName}", Config.SelectionMaxCandidatesPerInteriorWindow, ct)).Where(PassesNearLowerAnchorBrutality));
 
                 cursor = max;
 
@@ -383,65 +343,6 @@ public sealed class PredictionGuidedHybridSelectionService
             Accepted = accepted,
             Message = message
         };
-    }
-
-    private List<HybridSelectionCandidate> FindBetterThanLinearCandidates(
-        IReadOnlyList<RankSafePredictionRow> predictions,
-        BenchmarkSnapshotRecord higherDamageSmaller,
-        BenchmarkSnapshotRecord lowerDamageLarger,
-        ulong minSize,
-        ulong maxSize,
-        HybridSelectionReason reason,
-        string windowLabel)
-    {
-        if (maxSize < minSize)
-            return new List<HybridSelectionCandidate>();
-
-        var result = predictions
-            .Where(x => x.IsPredictable && x.IsSizePredictable && x.IsHybrid)
-            .Where(x => x.PredictedSizeBytes >= minSize && x.PredictedSizeBytes <= maxSize)
-            .Select(x =>
-            {
-                double line = InterpolateKldLine(x.PredictedSizeBytes, higherDamageSmaller, lowerDamageLarger);
-                double gain = line - x.PredictedKld;
-                return new HybridSelectionCandidate
-                {
-                    Prediction = x,
-                    Reason = reason,
-                    HigherDamageAnchor = higherDamageSmaller,
-                    LowerDamageAnchor = lowerDamageLarger,
-                    WindowMinSizeBytes = minSize,
-                    WindowMaxSizeBytes = maxSize,
-                    LinearExpectedKld = line,
-                    PredictedGainOverLine = gain,
-                    WindowLabel = windowLabel
-                };
-            })
-            .Where(x => x.PredictedGainOverLine > Config.SelectionMinimumKldImprovementEpsilon)
-            .Where(x => PassesNearLowerAnchorBrutality(x))
-            .OrderByDescending(x => x.PredictedGainOverLine)
-            .ThenBy(x => x.Prediction.PredictedSizeBytes)
-            .ThenBy(x => x.Prediction.PredictedKld)
-            .Select((x, i) =>
-            {
-                x = new HybridSelectionCandidate
-                {
-                    Prediction = x.Prediction,
-                    Reason = x.Reason,
-                    HigherDamageAnchor = x.HigherDamageAnchor,
-                    LowerDamageAnchor = x.LowerDamageAnchor,
-                    WindowMinSizeBytes = x.WindowMinSizeBytes,
-                    WindowMaxSizeBytes = x.WindowMaxSizeBytes,
-                    LinearExpectedKld = x.LinearExpectedKld,
-                    PredictedGainOverLine = x.PredictedGainOverLine,
-                    WindowLabel = x.WindowLabel,
-                    AttemptOrder = i + 1
-                };
-                return x;
-            })
-            .ToList();
-
-        return result;
     }
 
     private static bool PassesNearLowerAnchorBrutality(HybridSelectionCandidate candidate)

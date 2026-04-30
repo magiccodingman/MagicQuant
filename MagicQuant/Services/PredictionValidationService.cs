@@ -74,7 +74,7 @@ public sealed class PredictionValidationService
             MarkdownPath = markdownPath,
             Rows = rows
                 .OrderByDescending(x => x.AbsoluteKldError)
-                .ThenByDescending(x => Math.Abs((x.PredictedRank ?? 0) - (x.ActualRank ?? 0)))
+                .ThenByDescending(x => RankDistance(x))
                 .ToList()
         };
     }
@@ -85,7 +85,7 @@ public sealed class PredictionValidationService
         foreach (var row in rows.OrderBy(x => x.ActualKld).ThenBy(x => x.ActualSizeBytes ?? ulong.MaxValue))
             row.ActualRank = actualRank++;
 
-        int predictedRank = 1;
+        ulong predictedRank = 1;
         foreach (var row in rows.OrderBy(x => x.PredictedKld).ThenBy(x => x.PredictedSizeBytes))
             row.PredictedRank = predictedRank++;
     }
@@ -132,7 +132,7 @@ public sealed class PredictionValidationService
 
         int ShiftWithin(int maxShift) =>
             rows.Count(x => x.ActualRank.HasValue && x.PredictedRank.HasValue &&
-                            Math.Abs(x.PredictedRank.Value - x.ActualRank.Value) <= maxShift);
+                            RankDistance(x) <= (ulong)maxShift);
 
         return new RankSafeValidationSummary
         {
@@ -162,9 +162,9 @@ public sealed class PredictionValidationService
 
         foreach (var row in rows
                      .OrderByDescending(x => x.AbsoluteKldError)
-                     .ThenByDescending(x => Math.Abs((x.PredictedRank ?? 0) - (x.ActualRank ?? 0))))
+                     .ThenByDescending(x => RankDistance(x)))
         {
-            int shift = (row.PredictedRank ?? 0) - (row.ActualRank ?? 0);
+            long shift = RankShift(row);
             sb.Append(Csv(TensorConfigIdentity.ToKey(row.Config))).Append(',');
             sb.Append(Csv(HybridBenchmarkRepository.BuildDisplayName(row.Quant))).Append(',');
             sb.Append(row.IsHybrid ? "true" : "false").Append(',');
@@ -275,10 +275,10 @@ public sealed class PredictionValidationService
 
         foreach (var row in rows
                      .OrderByDescending(x => x.AbsoluteKldError)
-                     .ThenByDescending(x => Math.Abs((x.PredictedRank ?? 0) - (x.ActualRank ?? 0)))
+                     .ThenByDescending(x => RankDistance(x))
                      .Take(100))
         {
-            int shift = (row.PredictedRank ?? 0) - (row.ActualRank ?? 0);
+            long shift = RankShift(row);
             sb.AppendLine(
                 $"| {EscapePipe(HybridBenchmarkRepository.BuildDisplayName(row.Quant))} | {row.PredictedKld:0.000000} | {row.ActualKld:0.000000} | {row.AbsoluteKldError:0.000000} | " +
                 $"{row.PredictedRank} | {row.ActualRank} | {shift:+#;-#;0} | {ToGb(row.PredictedSizeBytes)} | {ToGb(row.ActualSizeBytes ?? 0)} | {EscapePipe(BuildEffectiveGroupSummary(row.Config))} |");
@@ -312,6 +312,29 @@ public sealed class PredictionValidationService
                     var baseline = BaselineQuants.FromId(x.EffectiveBaselineId);
                     return $"{x.Group.Name}={baseline.Names[0]}";
                 }));
+    }
+
+    private static ulong RankDistance(RankSafePredictionRow row)
+    {
+        if (!row.PredictedRank.HasValue || !row.ActualRank.HasValue)
+            return 0UL;
+
+        ulong actual = (ulong)Math.Max(0, row.ActualRank.Value);
+        return row.PredictedRank.Value >= actual
+            ? row.PredictedRank.Value - actual
+            : actual - row.PredictedRank.Value;
+    }
+
+    private static long RankShift(RankSafePredictionRow row)
+    {
+        if (!row.PredictedRank.HasValue || !row.ActualRank.HasValue)
+            return 0L;
+
+        long predicted = row.PredictedRank.Value > long.MaxValue
+            ? long.MaxValue
+            : (long)row.PredictedRank.Value;
+
+        return predicted - row.ActualRank.Value;
     }
 
     private static string Format(double value) =>
