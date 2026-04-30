@@ -91,7 +91,13 @@ public sealed class ReadmeGenerationService
         foreach (var artifact in artifacts.OrderBy(x => x.Snapshot.Kld).ThenBy(x => x.Snapshot.SizeBytes))
         {
             string key = TensorConfigIdentity.ToKey(artifact.Snapshot.Config);
-            string shortName = _namingService.ToShortDisplayName(artifact.DisplayName);
+            string shortName = _namingService.ToPublicArtifactShortName(
+                artifact.DisplayName,
+                artifact.FileName,
+                artifact.ProviderName,
+                artifact.BaselineFamily,
+                artifact.Snapshot,
+                namingContext);
             var replacements = FinalReleaseMetadataService.ResolveTransitiveReplacements(key, replacementMap);
             string nameCell = BuildNameCell(shortName, replacements, exportedByKey, namingContext);
             string sizeGb = ToGb(artifact.Snapshot.SizeBytes);
@@ -138,9 +144,21 @@ public sealed class ReadmeGenerationService
     {
         string key = TensorConfigIdentity.ToKey(snapshot.Config);
         if (exportedByKey.TryGetValue(key, out var artifact))
-            return _namingService.ToShortDisplayName(artifact.DisplayName);
+            return _namingService.ToPublicArtifactShortName(
+                artifact.DisplayName,
+                artifact.FileName,
+                artifact.ProviderName,
+                artifact.BaselineFamily,
+                artifact.Snapshot,
+                namingContext);
 
-        return _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(snapshot, namingContext));
+        return _namingService.ToPublicArtifactShortName(
+            _namingService.BuildDisplayLabel(snapshot, namingContext),
+            null,
+            snapshot.IsHybrid ? "MagicQuant" : HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false),
+            snapshot.BaselineFamily,
+            snapshot,
+            namingContext);
     }
 
     private static void AppendReasonCodeDetails(StringBuilder sb)

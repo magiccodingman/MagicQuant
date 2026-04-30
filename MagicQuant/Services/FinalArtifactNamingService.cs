@@ -103,7 +103,17 @@ public sealed class FinalArtifactNamingService
         if (string.IsNullOrWhiteSpace(displayNameOrFileName))
             return string.Empty;
 
-        string value = Path.GetFileNameWithoutExtension(displayNameOrFileName.Trim());
+        string value = displayNameOrFileName.Trim();
+
+        // Only strip directories. Do NOT blindly call GetFileNameWithoutExtension on
+        // extensionless display names like Qwen3.6-35B-A3B-LM-Q8_0, because .NET will
+        // treat ".6-35B-A3B-LM-Q8_0" as the extension and return only "Qwen3".
+        value = Path.GetFileName(value);
+
+        // Only remove the extension when it is a real GGUF artifact filename.
+        if (value.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+            value = value[..^".gguf".Length];
+
         string prefix = ResolveModelPrefix();
         string fullPrefix = prefix + "-";
 
@@ -111,6 +121,32 @@ public sealed class FinalArtifactNamingService
             return value[fullPrefix.Length..];
 
         return value;
+    }
+
+    public string ToPublicArtifactShortName(
+        string? displayNameOrFileName,
+        string? fileName = null,
+        string? providerName = null,
+        string? quantFamily = null,
+        BenchmarkSnapshotRecord? snapshot = null,
+        FinalArtifactNamingContext? context = null)
+    {
+        string prefix = ResolveModelPrefix();
+        string? preferred = !string.IsNullOrWhiteSpace(fileName) ? fileName : displayNameOrFileName;
+
+        if (!string.IsNullOrWhiteSpace(preferred))
+        {
+            string candidate = Path.GetFileNameWithoutExtension(preferred.Trim());
+            string fullPrefix = prefix + "-";
+
+            if (candidate.StartsWith(fullPrefix, StringComparison.OrdinalIgnoreCase))
+                candidate = candidate[fullPrefix.Length..];
+
+            if (!LooksLikeModelOnlyLabel(candidate, prefix))
+                return candidate;
+        }
+
+        return BuildProviderQuantFallback(fileName, providerName, quantFamily, snapshot, context);
     }
 
     public IReadOnlyList<ProviderCredit> BuildProviderCredits(
@@ -336,6 +372,80 @@ public sealed class FinalArtifactNamingService
     }
 
     private static ulong Distance(ulong left, ulong right) => left >= right ? left - right : right - left;
+
+    private static bool LooksLikeModelOnlyLabel(string value, string modelPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        string normalized = value.Trim();
+        if (string.Equals(normalized, modelPrefix, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string alnum = new(normalized.Where(char.IsLetterOrDigit).ToArray());
+        if (string.IsNullOrWhiteSpace(alnum))
+            return true;
+
+        return Regex.IsMatch(alnum, @"^[A-Za-z]+\d*(?:\d)?$", RegexOptions.IgnoreCase);
+    }
+
+    private string BuildProviderQuantFallback(
+        string? fileName,
+        string? providerName,
+        string? quantFamily,
+        BenchmarkSnapshotRecord? snapshot,
+        FinalArtifactNamingContext? context)
+    {
+        string resolvedProvider = providerName ?? (snapshot != null
+            ? (snapshot.IsHybrid ? "MagicQuant" : HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false))
+            : string.Empty);
+
+        string resolvedFamily = quantFamily;
+        if (string.IsNullOrWhiteSpace(resolvedFamily) && snapshot != null)
+            resolvedFamily = snapshot.BaselineFamily;
+        if (string.IsNullOrWhiteSpace(resolvedFamily) && snapshot != null && context != null)
+            resolvedFamily = ResolveHybridRangeFamily(snapshot, context);
+
+        string sanitizedFamily = SanitizeToken(resolvedFamily ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(sanitizedFamily))
+            return string.Empty;
+
+        if (snapshot?.IsHybrid == true)
+        {
+            string ordinal = ExtractOrdinalFromFileName(fileName);
+            string baseName = sanitizedFamily.StartsWith("MQ-", StringComparison.OrdinalIgnoreCase)
+                ? sanitizedFamily
+                : $"MQ-{sanitizedFamily}";
+            return string.IsNullOrWhiteSpace(ordinal) ? baseName : $"{baseName}_{ordinal}";
+        }
+
+        if (string.Equals(resolvedProvider, "MagicQuant", StringComparison.OrdinalIgnoreCase))
+            return sanitizedFamily.StartsWith("MQ-", StringComparison.OrdinalIgnoreCase) ? sanitizedFamily : $"MQ-{sanitizedFamily}";
+
+        if (string.Equals(resolvedProvider, "llama.cpp", StringComparison.OrdinalIgnoreCase))
+            return sanitizedFamily.StartsWith("LM-", StringComparison.OrdinalIgnoreCase) ? sanitizedFamily : $"LM-{sanitizedFamily}";
+
+        if (string.Equals(resolvedProvider, "Unsloth", StringComparison.OrdinalIgnoreCase))
+        {
+            if (sanitizedFamily.StartsWith("UD-", StringComparison.OrdinalIgnoreCase) ||
+                sanitizedFamily.StartsWith("Unsloth", StringComparison.OrdinalIgnoreCase))
+                return sanitizedFamily;
+
+            return $"UD-{sanitizedFamily}";
+        }
+
+        return sanitizedFamily;
+    }
+
+    private static string ExtractOrdinalFromFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return string.Empty;
+
+        string stem = Path.GetFileNameWithoutExtension(fileName.Trim());
+        var match = Regex.Match(stem, @"_(\d+)$", RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups[1].Value : string.Empty;
+    }
 }
 
 public sealed class FinalArtifactNamingContext
