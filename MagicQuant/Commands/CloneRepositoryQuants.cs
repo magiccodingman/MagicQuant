@@ -103,6 +103,9 @@ public sealed class CloneRepositoryQuants : ICommand
 
         string baseModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
+        var sidecarService = new ModelSidecarArtifactService(pyManager);
+        await sidecarService.EnsureMmprojArtifactAvailableAsync();
+
         var architectureFamilyService = new ArchitectureFamilyService(pyManager);
         await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(baseModelGgufPath);
 
@@ -193,6 +196,7 @@ public sealed class CloneRepositoryQuants : ICommand
 
         await CopyModelAdjacentFilesAsync(Cache.OutputDirectory!);
         await CopyImatrixArtifactsAsync(Cache.OutputDirectory!);
+        await sidecarService.CopyMmprojArtifactsAsync(Cache.OutputDirectory!);
 
         await new CloneReadmeGenerationService().GenerateAsync(
             Cache.OutputDirectory!,

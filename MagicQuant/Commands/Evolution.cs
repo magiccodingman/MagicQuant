@@ -119,6 +119,9 @@ public class Evolution : ICommand
         string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
+        var sidecarService = new ModelSidecarArtifactService(pyManager);
+        await sidecarService.EnsureMmprojArtifactAvailableAsync();
+
         var architectureFamilyService = new ArchitectureFamilyService(pyManager);
         await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(bf16ModelGgufPath);
 

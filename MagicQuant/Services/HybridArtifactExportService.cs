@@ -26,14 +26,17 @@ public sealed class HybridArtifactExportService
     private readonly QuantizationService _quantizationService;
     private readonly EffectiveCandidateStateResolverService _effectiveResolver;
     private readonly FinalArtifactNamingService _namingService;
+    private readonly ModelSidecarArtifactService _sidecarService;
 
     public HybridArtifactExportService(
         QuantizationService quantizationService,
-        EffectiveCandidateStateResolverService effectiveResolver)
+        EffectiveCandidateStateResolverService effectiveResolver,
+        ModelSidecarArtifactService sidecarService)
     {
         _quantizationService = quantizationService;
         _effectiveResolver = effectiveResolver;
         _namingService = new FinalArtifactNamingService();
+        _sidecarService = sidecarService;
     }
 
     public async Task<IReadOnlyList<ExportedArtifactRecord>> ExportAsync(
@@ -149,10 +152,16 @@ public sealed class HybridArtifactExportService
 
         await Task.WhenAll(buildTasks);
 
-        await CopyModelAdjacentFilesAsync(Cache.OutputDirectory!, ct);
-        await CopyImatrixArtifactsAsync(Cache.OutputDirectory!, ct);
-        await CopyMmprojArtifactsAsync(Cache.OutputDirectory!, ct);
-        await CleanExportSidecarsAsync(Cache.OutputDirectory!, ct);
+        try
+        {
+            await CopyModelAdjacentFilesAsync(Cache.OutputDirectory!, ct);
+            await CopyImatrixArtifactsAsync(Cache.OutputDirectory!, ct);
+            await _sidecarService.CopyMmprojArtifactsAsync(Cache.OutputDirectory!, ct);
+        }
+        finally
+        {
+            await CleanExportSidecarsAsync(Cache.OutputDirectory!, ct);
+        }
 
         return output;
     }
@@ -270,49 +279,4 @@ public sealed class HybridArtifactExportService
         return Task.CompletedTask;
     }
 
-    private static Task CopyMmprojArtifactsAsync(string outputDirectory, CancellationToken ct)
-    {
-        var searchRoots = new List<string>();
-        if (!string.IsNullOrWhiteSpace(Cache.ModelDirectory))
-            searchRoots.Add(Cache.ModelDirectory!);
-        if (!string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
-            searchRoots.Add(Cache.ModelMagicQuantDirectory!);
-
-        foreach (var root in searchRoots.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            var mmproj = Directory.EnumerateFiles(root, "*mmproj*.gguf", SearchOption.AllDirectories).FirstOrDefault();
-            if (mmproj == null)
-                continue;
-
-            string target = Path.Combine(outputDirectory, Path.GetFileName(mmproj));
-            File.Copy(mmproj, target, overwrite: true);
-            AnsiConsole.MarkupLine($"[green]Copied mmproj artifact:[/] {Markup.Escape(target)}");
-            return Task.CompletedTask;
-        }
-
-        if (!LooksVisionCapableModel())
-        {
-            AnsiConsole.MarkupLine("[grey]No mmproj artifact was present, but no vision capability hints were detected. Continuing.[/]");
-            return Task.CompletedTask;
-        }
-
-        throw new InvalidOperationException(
-            "This model appears to be vision-capable, but no mmproj GGUF could be found in the working/source artifacts.");
-    }
-
-    private static bool LooksVisionCapableModel()
-    {
-        if (string.IsNullOrWhiteSpace(Cache.ModelDirectory))
-            return false;
-
-        string configPath = Path.Combine(Cache.ModelDirectory!, "config.json");
-        if (!File.Exists(configPath))
-            return false;
-
-        string json = File.ReadAllText(configPath);
-        return json.Contains("vision_config", StringComparison.OrdinalIgnoreCase) ||
-               json.Contains("vision_tower", StringComparison.OrdinalIgnoreCase) ||
-               json.Contains("mm_vision_tower", StringComparison.OrdinalIgnoreCase) ||
-               json.Contains("projector", StringComparison.OrdinalIgnoreCase);
-    }
 }
