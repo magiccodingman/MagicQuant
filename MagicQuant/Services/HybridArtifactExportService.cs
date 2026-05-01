@@ -83,6 +83,8 @@ public sealed class HybridArtifactExportService
                     ProviderName = provider,
                     BaselineFamily = name.QuantFamilyOrBaseline,
                     IsExternalReference = true,
+                    FileName = name.FileName,
+                    FullPath = null,
                     DownloadTarget = snap.ExternalRepositoryUrl ?? string.Empty,
                     ExpectedSizeBytes = snap.SizeBytes,
                     EffectiveState = await _effectiveResolver.ResolveAsync(snap.Config, ct)

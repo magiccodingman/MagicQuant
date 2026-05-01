@@ -10,6 +10,7 @@ using Spectre.Console;
 #if DEBUG
 if (args.Length == 0)
 {
+    // Use: "clone" or "evolution"
     const string debugMode = "evolution"; // switch to "evolution" to use the full learning/search pipeline again. Or use "Clone" for cloning mode.
 
     if (string.Equals(debugMode, "clone", StringComparison.OrdinalIgnoreCase))
@@ -17,8 +18,9 @@ if (args.Length == 0)
         args =
         [
             "clone-repository-quants",
-            "--architecture-family", @"""Qwen3-4B-Instruct-2507""",
-            "--source-repo", @"""magiccodingman/Qwen3-4B-Instruct-2507-Unsloth-MagicQuant-v2-GGUF"""
+            "--architecture-family", @"""Qwen3.6-35B-A3B""",
+            "--source-repo", @"""magiccodingman/Qwen3.6-35B-A3B-MagicQuant-GGUF"""
+            ,"--allow-architecture-family-alias-override"
         ];
     }
     else

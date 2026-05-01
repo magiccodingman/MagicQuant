@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
@@ -100,32 +101,42 @@ public sealed class CombinationSurvivalPipelineService
             .ThenBy(x => x.SizeBytes)
             .ToList();
 
-        await _diagnosticsLogService.WriteAsync(benchmarkOverview, selection.ValidationFailures, ct);
+        await RunFinalOutputStageAsync(
+            "selection diagnostics log",
+            () => _diagnosticsLogService.WriteAsync(benchmarkOverview, selection.ValidationFailures, ct));
 
-        await _hybridMapService.GenerateAsync(Cache.OutputDirectory!, exportedArtifacts, ct);
+        await RunFinalOutputStageAsync(
+            "hybrid map JSON",
+            () => _hybridMapService.GenerateAsync(Cache.OutputDirectory!, exportedArtifacts, ct));
 
-        await _releaseMetadataService.GenerateAsync(
-            Cache.OutputDirectory!,
-            exportedArtifacts,
-            selection.Eliminations,
-            pureBaselines,
-            nativeReference,
-            ct);
+        await RunFinalOutputStageAsync(
+            "final survivor / replacement metadata JSON",
+            () => _releaseMetadataService.GenerateAsync(
+                Cache.OutputDirectory!,
+                exportedArtifacts,
+                selection.Eliminations,
+                pureBaselines,
+                nativeReference,
+                ct));
 
-        await _cloneConfigManifestService.GenerateAsync(
-            Cache.OutputDirectory!,
-            exportedArtifacts,
-            nativeReference,
-            ct: ct);
+        await RunFinalOutputStageAsync(
+            "clone configuration manifest JSON",
+            () => _cloneConfigManifestService.GenerateAsync(
+                Cache.OutputDirectory!,
+                exportedArtifacts,
+                nativeReference,
+                ct: ct));
 
-        await _readmeService.GenerateAsync(
-            Cache.OutputDirectory!,
-            modelName,
-            exportedArtifacts,
-            pureBaselines,
-            selection.Eliminations,
-            nativeReference,
-            ct);
+        await RunFinalOutputStageAsync(
+            "README",
+            () => _readmeService.GenerateAsync(
+                Cache.OutputDirectory!,
+                modelName,
+                exportedArtifacts,
+                pureBaselines,
+                selection.Eliminations,
+                nativeReference,
+                ct));
 
         return new CombinationSurvivalExecutionResult
         {
@@ -138,6 +149,35 @@ public sealed class CombinationSurvivalPipelineService
             Eliminations = selection.Eliminations,
             ValidationFailures = selection.ValidationFailures
         };
+    }
+
+
+    private static async Task RunFinalOutputStageAsync(string stageName, Func<Task> action)
+    {
+        var sw = Stopwatch.StartNew();
+        WriteFinalOutputLog($"START {stageName}");
+
+        try
+        {
+            await action();
+            sw.Stop();
+            WriteFinalOutputLog($"DONE {stageName} in {FormatDuration(sw.Elapsed)}");
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            WriteFinalOutputLog($"FAILED {stageName} after {FormatDuration(sw.Elapsed)}: {ex.GetType().Name}: {ex.Message}", isError: true);
+            throw;
+        }
+    }
+
+    private static string FormatDuration(TimeSpan value) => value.ToString(@"hh\:mm\:ss");
+
+    private static void WriteFinalOutputLog(string message, bool isError = false)
+    {
+        string color = isError ? "red" : "grey";
+        string line = $"[{DateTime.Now:HH:mm:ss}] Final output: {message}";
+        AnsiConsole.MarkupLine($"[{color}]{Markup.Escape(line)}[/]");
     }
 
     private void RenderEliminationSummary(
