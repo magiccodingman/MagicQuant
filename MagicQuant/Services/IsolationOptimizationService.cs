@@ -49,6 +49,29 @@ public sealed class IsolationOptimizationResult
 
     public List<string> Notes { get; set; } = new();
     public List<IsolationGroupDecision> GroupDetails { get; set; } = new();
+    public List<IsolationBadTradeRecord> BadTradeDetails { get; set; } = new();
+}
+
+public sealed class IsolationBadTradeRecord
+{
+    public string Scope { get; set; } = string.Empty;
+    public string? GroupName { get; set; }
+    public string RemovedCandidate { get; set; } = string.Empty;
+    public string AcceptedAnchor { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+    public ulong RemovedSizeBytes { get; set; }
+    public double RemovedSizeGB { get; set; }
+    public double RemovedSizeGiB { get; set; }
+    public double RemovedKld { get; set; }
+    public double RemovedPplDeltaPercent { get; set; }
+    public ulong AnchorSizeBytes { get; set; }
+    public double AnchorSizeGB { get; set; }
+    public double AnchorSizeGiB { get; set; }
+    public double AnchorKld { get; set; }
+    public double AnchorPplDeltaPercent { get; set; }
+    public double SizeDeltaPercent { get; set; }
+    public double KldRatio { get; set; }
+    public double PplAbsRatio { get; set; }
 }
 
 public class IsolationOptimizationService
@@ -546,6 +569,18 @@ public class IsolationOptimizationService
                 {
                     RuntimeSearchSpace.BanCombinationCandidateForGroup(group, candidate.CandidateBaseline, phase: "BadTrade", reason: reason);
                     result.BadTradeEliminations++;
+                    result.BadTradeDetails.Add(CreateBadTradeRecord(
+                        scope: "group",
+                        groupName: group.Name,
+                        removedName: candidate.CandidateBaseline.Names[0],
+                        anchorName: acceptedAnchor.CandidateBaseline.Names[0],
+                        reason: reason,
+                        removedSizeBytes: candidate.SizeBytes,
+                        removedKld: candidate.Kld,
+                        removedPplDeltaPercent: candidate.PplDeltaPercent,
+                        anchorSizeBytes: acceptedAnchor.SizeBytes,
+                        anchorKld: acceptedAnchor.Kld,
+                        anchorPplDeltaPercent: acceptedAnchor.PplDeltaPercent));
                     result.Notes.Add(
                         $"Bad trade elimination: '{candidate.CandidateBaseline.Names[0]}' removed vs accepted anchor '{acceptedAnchor.CandidateBaseline.Names[0]}' for '{group.Name}'. {reason}");
                     continue;
@@ -666,6 +701,56 @@ public class IsolationOptimizationService
                 .ThenBy(c => c.CandidateBaseline.Names[0], StringComparer.Ordinal)
                 .ToList())
             .ToList();
+    }
+
+    private static IsolationBadTradeRecord CreateBadTradeRecord(
+        string scope,
+        string? groupName,
+        string removedName,
+        string anchorName,
+        string reason,
+        ulong removedSizeBytes,
+        double removedKld,
+        double removedPplDeltaPercent,
+        ulong anchorSizeBytes,
+        double anchorKld,
+        double anchorPplDeltaPercent)
+    {
+        double sizeDeltaPercent = anchorSizeBytes > 0 && anchorSizeBytes > removedSizeBytes
+            ? ((double)anchorSizeBytes - removedSizeBytes) / anchorSizeBytes * 100.0
+            : 0.0;
+
+        double kldRatio = anchorKld <= IsolationPruningConfig.FloatingPointEpsilon
+            ? double.PositiveInfinity
+            : removedKld / anchorKld;
+
+        double anchorPplAbs = Math.Abs(anchorPplDeltaPercent);
+        double removedPplAbs = Math.Abs(removedPplDeltaPercent);
+        double pplRatio = anchorPplAbs <= IsolationPruningConfig.FloatingPointEpsilon
+            ? double.PositiveInfinity
+            : removedPplAbs / anchorPplAbs;
+
+        return new IsolationBadTradeRecord
+        {
+            Scope = scope,
+            GroupName = groupName,
+            RemovedCandidate = removedName,
+            AcceptedAnchor = anchorName,
+            Reason = reason,
+            RemovedSizeBytes = removedSizeBytes,
+            RemovedSizeGB = ToGBNumber(removedSizeBytes),
+            RemovedSizeGiB = ToGiBNumber(removedSizeBytes),
+            RemovedKld = removedKld,
+            RemovedPplDeltaPercent = removedPplDeltaPercent,
+            AnchorSizeBytes = anchorSizeBytes,
+            AnchorSizeGB = ToGBNumber(anchorSizeBytes),
+            AnchorSizeGiB = ToGiBNumber(anchorSizeBytes),
+            AnchorKld = anchorKld,
+            AnchorPplDeltaPercent = anchorPplDeltaPercent,
+            SizeDeltaPercent = sizeDeltaPercent,
+            KldRatio = kldRatio,
+            PplAbsRatio = pplRatio
+        };
     }
 
     private static bool ShouldEliminateAsBadTrade(GroupCandidateEvaluation anchor, GroupCandidateEvaluation candidate, out string reason)
@@ -934,6 +1019,18 @@ public class IsolationOptimizationService
                     if (RuntimeSearchSpace.DisableCombinationBaseline(candidate.Baseline))
                     {
                         result.DisabledBaselines++;
+                        result.BadTradeDetails.Add(CreateBadTradeRecord(
+                            scope: "base-baseline",
+                            groupName: null,
+                            removedName: candidate.Baseline.Names[0],
+                            anchorName: acceptedAnchor.Baseline.Names[0],
+                            reason: reason,
+                            removedSizeBytes: candidate.SizeBytes,
+                            removedKld: candidate.Kld,
+                            removedPplDeltaPercent: candidate.PplDeltaPercent,
+                            anchorSizeBytes: acceptedAnchor.SizeBytes,
+                            anchorKld: acceptedAnchor.Kld,
+                            anchorPplDeltaPercent: acceptedAnchor.PplDeltaPercent));
                         result.Notes.Add(
                             $"Disabled combination baseline '{candidate.Baseline.Names[0]}' vs accepted carrier anchor '{acceptedAnchor.Baseline.Names[0]}'. {reason}");
                     }
@@ -1031,6 +1128,9 @@ public class IsolationOptimizationService
 
         return true;
     }
+
+    private static double ToGBNumber(ulong bytes) => bytes / 1000d / 1000d / 1000d;
+    private static double ToGiBNumber(ulong bytes) => bytes / 1024d / 1024d / 1024d;
 
     private static double GetAggregateKld(BenchmarkSnapshot snapshot)
     {

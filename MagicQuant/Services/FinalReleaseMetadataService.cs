@@ -7,8 +7,8 @@ namespace MagicQuant.Services;
 
 public sealed class FinalReleaseMetadataService
 {
-    public const string FinalSurvivorsFileName = "magicquant.final-survivors.json";
-    public const string ReplacementsFileName = "magicquant.replacements.json";
+    public const string FinalSurvivorsFileName = MagicQuantManifestPathService.FinalSurvivorsFileName;
+    public const string ReplacementsFileName = MagicQuantManifestPathService.ReplacementsFileName;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -25,7 +25,7 @@ public sealed class FinalReleaseMetadataService
         BenchmarkSnapshotRecord? pplReference = null,
         CancellationToken ct = default)
     {
-        Directory.CreateDirectory(outputDirectory);
+        string manifestDirectory = MagicQuantManifestPathService.EnsureManifestDirectory(outputDirectory);
 
         double? referencePpl = ResolveReferencePpl(pplReference, pureBaselineSnapshots, exportedArtifacts.Select(x => x.Snapshot).ToList());
         var namingContext = _namingService.CreateContext(pureBaselineSnapshots);
@@ -35,7 +35,7 @@ public sealed class FinalReleaseMetadataService
 
         var replacementMap = BuildReplacementMap(eliminations);
 
-        string finalPath = Path.Combine(outputDirectory, FinalSurvivorsFileName);
+        string finalPath = Path.Combine(manifestDirectory, FinalSurvivorsFileName);
         var survivors = exportedArtifacts
             .OrderBy(x => x.Snapshot.Kld)
             .ThenBy(x => x.Snapshot.SizeBytes)
@@ -43,7 +43,7 @@ public sealed class FinalReleaseMetadataService
             .ToList();
         await File.WriteAllTextAsync(finalPath, JsonSerializer.Serialize(survivors, JsonOptions), ct);
 
-        string replacementsPath = Path.Combine(outputDirectory, ReplacementsFileName);
+        string replacementsPath = Path.Combine(manifestDirectory, ReplacementsFileName);
         var replacements = eliminations
             .DistinctBy(x => $"{TensorConfigIdentity.ToKey(x.Eliminated.Config)}::{TensorConfigIdentity.ToKey(x.Eliminator.Config)}::{x.Reason}")
             .OrderBy(x => x.Eliminated.Kld)

@@ -203,7 +203,7 @@ public static class MagicQuantYamlLoader
         if (Has("use-imatrix")) config.Flags.UseImatrix = true;
         if (Has("imatrix-force-rebuild")) config.Flags.ForceImatrixRebuild = true;
         if (Has("relearn-baseline-mappings")) config.Flags.ForceRelearnBaselineTensorMappings = true;
-        if (Has("recheck-hardware-probe")) config.Flags.ForceRefreshHardwareProbe = true;
+        if (Has("recheck-hardware-probe") || Has("force-refresh-hardware-probe") || Has("force_refresh_hardware_probe")) config.Flags.ForceRefreshHardwareProbe = true;
         if (Has("allow-high-precision-hybrids")) config.Flags.AllowHighPrecisionHybrids = true;
 
         config.Imatrix.ImatrixUrl = Prefer(Get("imatrix-url"), config.Imatrix.ImatrixUrl);

@@ -13,8 +13,8 @@ public sealed class HybridMapGenerationService
         IReadOnlyCollection<ExportedArtifactRecord> exportedArtifacts,
         CancellationToken ct = default)
     {
-        Directory.CreateDirectory(outputDirectory);
-        string path = Path.Combine(outputDirectory, "magicquant.hybrid-map.json");
+        string manifestDirectory = MagicQuantManifestPathService.EnsureManifestDirectory(outputDirectory);
+        string path = Path.Combine(manifestDirectory, MagicQuantManifestPathService.HybridMapFileName);
 
         var entries = exportedArtifacts
             .Where(x => !x.IsExternalReference)

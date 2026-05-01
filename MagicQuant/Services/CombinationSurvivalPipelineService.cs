@@ -25,6 +25,7 @@ public sealed class CombinationSurvivalPipelineService
     private readonly FinalReleaseMetadataService _releaseMetadataService;
     private readonly CloneConfigManifestGenerationService _cloneConfigManifestService;
     private readonly FinalArtifactNamingService _namingService;
+    private readonly IsolationDiagnosticsManifestService _isolationDiagnosticsManifestService;
 
     public CombinationSurvivalPipelineService(QuantizationService quantizationService)
     {
@@ -46,9 +47,13 @@ public sealed class CombinationSurvivalPipelineService
         _releaseMetadataService = new FinalReleaseMetadataService();
         _cloneConfigManifestService = new CloneConfigManifestGenerationService(_quantizationService);
         _namingService = new FinalArtifactNamingService();
+        _isolationDiagnosticsManifestService = new IsolationDiagnosticsManifestService();
     }
 
-    public async Task<CombinationSurvivalExecutionResult> RunAsync(CancellationToken ct = default)
+    public async Task<CombinationSurvivalExecutionResult> RunAsync(
+        RequiredSampleGenerationResult? isolationSamplePlan = null,
+        IsolationOptimizationResult? isolationOptimizationResult = null,
+        CancellationToken ct = default)
     {
         var report = new SurvivalStageReport
         {
@@ -126,6 +131,26 @@ public sealed class CombinationSurvivalPipelineService
                 exportedArtifacts,
                 nativeReference,
                 ct: ct));
+
+        if (isolationSamplePlan != null)
+        {
+            await RunFinalOutputStageAsync(
+                "isolation sample manifest JSON",
+                () => _isolationDiagnosticsManifestService.GenerateIsolationSamplesAsync(
+                    Cache.OutputDirectory!,
+                    isolationSamplePlan,
+                    ct));
+        }
+
+        if (isolationOptimizationResult != null)
+        {
+            await RunFinalOutputStageAsync(
+                "bad trade manifest JSON",
+                () => _isolationDiagnosticsManifestService.GenerateBadTradesAsync(
+                    Cache.OutputDirectory!,
+                    isolationOptimizationResult,
+                    ct));
+        }
 
         await RunFinalOutputStageAsync(
             "README",
@@ -205,7 +230,7 @@ public sealed class CombinationSurvivalPipelineService
                      .Take(25))
         {
             double kldDelta = row.Eliminated.Kld - row.Eliminator.Kld;
-            double sizeDeltaGb = (row.Eliminated.SizeBytes - (double)row.Eliminator.SizeBytes) / 1024d / 1024d / 1024d;
+            double sizeDeltaGb = (row.Eliminated.SizeBytes - (double)row.Eliminator.SizeBytes) / 1000d / 1000d / 1000d;
             string removed = _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(row.Eliminated, namingContext));
             string winner = _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(row.Eliminator, namingContext));
             string code = FinalArtifactNamingService.ReasonCode(row.Reason);
@@ -221,7 +246,7 @@ public sealed class CombinationSurvivalPipelineService
         AnsiConsole.Write(table);
 
         if (eliminations.Count > 25)
-            AnsiConsole.MarkupLine($"[grey]Showing first 25 of {eliminations.Count:N0} elimination records. Full details are in magicquant.replacements.json.[/]");
+            AnsiConsole.MarkupLine($"[grey]Showing first 25 of {eliminations.Count:N0} elimination records. Full details are in magicquant-manifest/magicquant.replacements.json.[/]");
     }
 
 }

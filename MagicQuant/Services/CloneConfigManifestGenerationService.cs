@@ -9,7 +9,7 @@ namespace MagicQuant.Services;
 
 public sealed class CloneConfigManifestGenerationService
 {
-    public const string FileName = "magicquant.clone-configs.json";
+    public const string FileName = MagicQuantManifestPathService.CloneConfigsFileName;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -33,7 +33,7 @@ public sealed class CloneConfigManifestGenerationService
         string? sourceJson = null,
         CancellationToken ct = default)
     {
-        Directory.CreateDirectory(outputDirectory);
+        string manifestDirectory = MagicQuantManifestPathService.EnsureManifestDirectory(outputDirectory);
 
         var manifest = new MagicQuantCloneManifest
         {
@@ -106,7 +106,7 @@ public sealed class CloneConfigManifestGenerationService
             });
         }
 
-        string path = Path.Combine(outputDirectory, FileName);
+        string path = Path.Combine(manifestDirectory, FileName);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(manifest, JsonOptions), ct);
         WriteCloneLog($"Clone configuration JSON generated: {path} | artifacts={manifest.Artifacts.Count:N0}");
         return path;

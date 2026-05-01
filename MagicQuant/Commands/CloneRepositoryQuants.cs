@@ -31,7 +31,10 @@ public sealed class CloneRepositoryQuants : ICommand
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        WriteIndented = true
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true
     };
 
     public async Task Run(List<CliArg> args)
@@ -80,8 +83,9 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine($"Model Path:   [blue]{Markup.Escape(Cache.ModelDirectory)}[/]");
         AnsiConsole.MarkupLine($"Work Path:    [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
         AnsiConsole.MarkupLine($"Export Path:  [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
-    
-        AnsiConsole.MarkupLine($"Getting safetensors hash. This may take a bit, please wait...");
+        AnsiConsole.MarkupLine($"Reuse final artifacts: {(Config.ReuseExistingFinalArtifacts ? "[green]yes[/]" : "[grey]no[/]")}");
+
+        AnsiConsole.MarkupLine("Getting safetensors hash. This may take a bit, please wait...");
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
         AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
 
@@ -128,105 +132,160 @@ public sealed class CloneRepositoryQuants : ICommand
         var imatrixEnsureResult = await imatrixService.EnsureImatrixAsync(imatrixRequest);
         RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Available);
 
-        await CleanOutputDirectoryAsync(Cache.OutputDirectory!);
+        var preCleanBenchmarkCache = Config.ReuseExistingFinalArtifacts
+            ? LoadReusableCloneBenchmarkRows(Cache.OutputDirectory!)
+            : new Dictionary<string, CloneBenchmarkCacheRow>(StringComparer.OrdinalIgnoreCase);
 
-        // Always place the clone source manifest in the output, but stamp it with this clone source.
+        bool canReuseEverything = TryLoadFullyReusableCloneRecords(
+            outputDirectory: Cache.OutputDirectory!,
+            manifest: manifest,
+            benchmarkCache: preCleanBenchmarkCache,
+            records: out var reusableRecords);
+
+        await CleanOutputDirectoryAsync(Cache.OutputDirectory!, Config.ReuseExistingFinalArtifacts);
+
+        var archivedManifestFiles = await CopySourceManifestFilesAsync(
+            outputDirectory: Cache.OutputDirectory!,
+            sourceManifestLocalPath: manifestLocalPath,
+            sourceRepo: sourceRepo,
+            sourceJson: sourceJson,
+            huggingFace: hf,
+            ct: CancellationToken.None);
+
+        // Always place the clone source manifest in the output manifest folder, stamped with this clone source.
         manifest.SourceRepository = sourceRepo;
         manifest.SourceJson = string.IsNullOrWhiteSpace(sourceRepo) ? sourceDescription : manifest.SourceJson;
-        await File.WriteAllTextAsync(
-            Path.Combine(Cache.OutputDirectory!, CloneConfigManifestGenerationService.FileName),
-            JsonSerializer.Serialize(manifest, JsonOptions));
+        string outputCloneManifestPath = MagicQuantManifestPathService.GetManifestFilePath(Cache.OutputDirectory!, MagicQuantManifestPathService.CloneConfigsFileName);
+        await File.WriteAllTextAsync(outputCloneManifestPath, JsonSerializer.Serialize(manifest, JsonOptions));
+        archivedManifestFiles.Add(MagicQuantManifestPathService.CloneConfigsFileName);
 
-        string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
-        string nativeQuantizationKey = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
-        string cloneBenchmarkRootDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "CloneBenchmarks");
-        string nativeBenchDir = Path.Combine(cloneBenchmarkRootDir, nativeQuantizationKey);
-        string nativeLogitsDir = Path.Combine(nativeBenchDir, "logits");
-        string pplCorporaDir = Path.Combine(cloneBenchmarkRootDir, "_ppl_corpora");
+        var records = canReuseEverything
+            ? reusableRecords
+            : new List<CloneArtifactBuildRecord>();
 
-        await using var q8Lease = await quantizationService.BuildPureQ8ProbeLeaseAsync();
-        await benchmarkService.EnsureDynamicExecutionPlanAsync(
-            q8ModelPath: q8Lease.GgufPath,
-            nativeModelPath: baseModelGgufPath,
-            q8QuantizationKey: q8QuantizationKey,
-            nativeQuantizationKey: nativeQuantizationKey,
-            discoveryTokenTarget: 8192,
-            forceRediscovery: Cache.ForceRefreshHardwareProbe);
-
-        await EnsureCloneNativeBenchmarkArtifactsReadyAsync(
-            benchmarkService: benchmarkService,
-            nativeModelQuant: HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()),
-            nativeModelPath: baseModelGgufPath,
-            nativeBenchDir: nativeBenchDir,
-            nativeLogitsDir: nativeLogitsDir,
-            pplCorporaDir: pplCorporaDir);
-
-        var q8Reference = await benchmarkService.RunAllBenchmarksAsync(
-            quantConfig: HybridQuant.CreatePureBaseline(BaselineQuants.Q8_0),
-            modelPath: q8Lease.GgufPath,
-            benchDir: Path.Combine(cloneBenchmarkRootDir, "_reference_q8"),
-            klLogitsDir: nativeLogitsDir,
-            domainsOverride: CloneBenchmarkDomains);
-
-        double? referencePpl = q8Reference.Perplexity.TryGetValue("general", out var q8Ppl) && q8Ppl.Ppl > 0
-            ? q8Ppl.Ppl
-            : null;
-
-        var records = new List<CloneArtifactBuildRecord>();
-
-        foreach (var artifact in manifest.Artifacts)
+        if (records.Count == manifest.Artifacts.Count)
         {
-            string outputFile = Path.Combine(Cache.OutputDirectory!, artifact.FileName);
-            string baseQuantName = string.IsNullOrWhiteSpace(artifact.BaseQuant)
-                ? artifact.QuantFamily
-                : artifact.BaseQuant;
-
-            AnsiConsole.Write(new Rule($"[yellow]Clone Artifact: {Markup.Escape(artifact.FileName)}[/]") { Justification = Justify.Left });
-
-            await quantizationService.BuildExportArtifactFromExactTensorMapAsync(
-                tensorTypes: artifact.TensorTypes,
-                outputPath: outputFile,
-                baseQuantName: baseQuantName,
-                forceRebuild: true);
-
-            var benchmarkBaseline = ResolveCloneBenchmarkBaseline(baseQuantName, artifact.QuantFamily);
-            var quantForBenchmark = HybridQuant.CreatePureBaseline(benchmarkBaseline);
-            bool benchmarkRequiresKld = benchmarkBaseline.UniqueId != BaselineQuants.NativeSourceUniqueId;
-
-            var bench = await benchmarkService.RunAllBenchmarksAsync(
-                quantConfig: quantForBenchmark,
-                modelPath: outputFile,
-                benchDir: Path.Combine(cloneBenchmarkRootDir, Path.GetFileNameWithoutExtension(artifact.FileName)),
-                klLogitsDir: benchmarkRequiresKld ? nativeLogitsDir : null,
-                domainsOverride: CloneBenchmarkDomains);
-
-            var general = bench.Perplexity.TryGetValue("general", out var ppl) ? ppl : null;
-
-            records.Add(new CloneArtifactBuildRecord
-            {
-                ManifestArtifact = artifact,
-                OutputPath = outputFile,
-                ActualSizeBytes = File.Exists(outputFile) ? (ulong)new FileInfo(outputFile).Length : 0UL,
-                Kld = general?.Kld,
-                Ppl = general?.Ppl,
-                PplDeltaPercent = general != null && referencePpl is > 0d
-                    ? FinalReleaseMetadataService.CalculatePplDeltaPercent(general.Ppl, referencePpl)
-                    : null
-            });
+            AnsiConsole.MarkupLine($"[green]Reused clone artifacts and benchmark summary:[/] all {records.Count:N0} artifact(s) matched existing GGUF byte sizes and {MagicQuantManifestPathService.CloneBenchmarksFileName}.");
         }
+        else
+        {
+            records.Clear();
+            var benchmarkCache = preCleanBenchmarkCache;
+
+            string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
+            string nativeQuantizationKey = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
+            string cloneBenchmarkRootDir = Path.Combine(Cache.ModelMagicQuantDirectory!, "CloneBenchmarks");
+            string nativeBenchDir = Path.Combine(cloneBenchmarkRootDir, nativeQuantizationKey);
+            string nativeLogitsDir = Path.Combine(nativeBenchDir, "logits");
+            string pplCorporaDir = Path.Combine(cloneBenchmarkRootDir, "_ppl_corpora");
+
+            bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
+                                       await benchmarkService.TryInitializeDynamicExecutionPlanFromCacheAsync(
+                                           q8QuantizationKey: q8QuantizationKey,
+                                           nativeModelPath: baseModelGgufPath,
+                                           nativeQuantizationKey: nativeQuantizationKey);
+
+            if (loadedPlanFromCache)
+            {
+                AnsiConsole.MarkupLine("[grey]Clone mode reused the DB-backed hardware execution plan; no Q8 probe rebuild was needed.[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(Cache.ForceRefreshHardwareProbe
+                    ? "[yellow]Hardware probe refresh requested; rebuilding Q8 probe and updating SQLite execution-plan cache.[/]"
+                    : "[grey]No reusable hardware execution-plan cache row found; building one Q8 probe and saving it to SQLite.[/]");
+
+                await using var q8Lease = await quantizationService.BuildPureQ8ProbeLeaseAsync();
+                await benchmarkService.EnsureDynamicExecutionPlanAsync(
+                    q8ModelPath: q8Lease.GgufPath,
+                    nativeModelPath: baseModelGgufPath,
+                    q8QuantizationKey: q8QuantizationKey,
+                    nativeQuantizationKey: nativeQuantizationKey,
+                    discoveryTokenTarget: 8192,
+                    forceRediscovery: Cache.ForceRefreshHardwareProbe);
+            }
+
+            await EnsureCloneNativeBenchmarkArtifactsReadyAsync(
+                benchmarkService: benchmarkService,
+                nativeModelQuant: HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant()),
+                nativeModelPath: baseModelGgufPath,
+                nativeBenchDir: nativeBenchDir,
+                nativeLogitsDir: nativeLogitsDir,
+                pplCorporaDir: pplCorporaDir);
+
+            foreach (var artifact in manifest.Artifacts)
+            {
+                string outputFile = Path.Combine(Cache.OutputDirectory!, artifact.FileName);
+                string baseQuantName = string.IsNullOrWhiteSpace(artifact.BaseQuant)
+                    ? artifact.QuantFamily
+                    : artifact.BaseQuant;
+
+                AnsiConsole.Write(new Rule($"[yellow]Clone Artifact: {Markup.Escape(artifact.FileName)}[/]") { Justification = Justify.Left });
+
+                if (TryReuseExistingCloneArtifactAndBenchmark(outputFile, artifact, benchmarkCache, out var cachedRecord))
+                {
+                    AnsiConsole.MarkupLine($"[green]Reused existing clone artifact + benchmark:[/] {Markup.Escape(outputFile)}");
+                    records.Add(cachedRecord);
+                    continue;
+                }
+
+                bool artifactExists = Config.ReuseExistingFinalArtifacts && File.Exists(outputFile) && new FileInfo(outputFile).Length > 0;
+                if (artifactExists)
+                {
+                    AnsiConsole.MarkupLine($"[green]Reused existing clone GGUF:[/] {Markup.Escape(outputFile)} [grey](benchmark cache missing/stale; rebenchmarking only)[/]");
+                }
+                else
+                {
+                    await quantizationService.BuildExportArtifactFromExactTensorMapAsync(
+                        tensorTypes: artifact.TensorTypes,
+                        outputPath: outputFile,
+                        baseQuantName: baseQuantName,
+                        forceRebuild: true);
+                }
+
+                var benchmarkBaseline = ResolveCloneBenchmarkBaseline(baseQuantName, artifact.QuantFamily);
+                var quantForBenchmark = HybridQuant.CreatePureBaseline(benchmarkBaseline);
+                bool benchmarkRequiresKld = benchmarkBaseline.UniqueId != BaselineQuants.NativeSourceUniqueId;
+
+                var bench = await benchmarkService.RunAllBenchmarksAsync(
+                    quantConfig: quantForBenchmark,
+                    modelPath: outputFile,
+                    benchDir: Path.Combine(cloneBenchmarkRootDir, Path.GetFileNameWithoutExtension(artifact.FileName)),
+                    klLogitsDir: benchmarkRequiresKld ? nativeLogitsDir : null,
+                    domainsOverride: CloneBenchmarkDomains);
+
+                var general = bench.Perplexity.TryGetValue("general", out var ppl) ? ppl : null;
+
+                records.Add(new CloneArtifactBuildRecord
+                {
+                    ManifestArtifact = artifact,
+                    OutputPath = outputFile,
+                    ActualSizeBytes = File.Exists(outputFile) ? (ulong)new FileInfo(outputFile).Length : 0UL,
+                    Kld = general?.Kld,
+                    Ppl = general?.Ppl,
+                    PplDeltaPercent = null
+                });
+            }
+        }
+
+        ApplyCloneReferencePplDeltas(records);
 
         await CopyModelAdjacentFilesAsync(Cache.OutputDirectory!);
         await CopyImatrixArtifactsAsync(Cache.OutputDirectory!);
         await sidecarService.CopyMmprojArtifactsAsync(Cache.OutputDirectory!);
+
+        await WriteCloneBenchmarkSummaryAsync(Cache.OutputDirectory!, records);
+        archivedManifestFiles.Add(MagicQuantManifestPathService.CloneBenchmarksFileName);
 
         await new CloneReadmeGenerationService().GenerateAsync(
             Cache.OutputDirectory!,
             new DirectoryInfo(Cache.ModelDirectory!).Name,
             sourceDescription,
             !string.IsNullOrWhiteSpace(sourceRepo),
-            records);
+            records,
+            archivedManifestFiles);
 
-        await WriteCloneBenchmarkSummaryAsync(Cache.OutputDirectory!, records);
+        await CleanCloneExportSidecarsAsync(Cache.OutputDirectory!);
 
         AnsiConsole.MarkupLine("[bold green]Repository quant clone complete.[/]");
     }
@@ -304,8 +363,6 @@ public sealed class CloneRepositoryQuants : ICommand
 
         try
         {
-            // Clone/export mode must not contaminate SQLite benchmark truth, but it still
-            // needs the same native KLD base-logit artifacts that evolution prepares.
             Cache.SuppressBenchmarkPersistence = true;
 
             await benchmarkService.RunAllBenchmarksAsync(
@@ -330,35 +387,21 @@ public sealed class CloneRepositoryQuants : ICommand
         var issues = new List<string>();
 
         if (string.IsNullOrWhiteSpace(nativeBenchDir))
-        {
             issues.Add("Clone native benchmark directory path is null/empty.");
-        }
         else if (!Directory.Exists(nativeBenchDir))
-        {
             issues.Add($"Clone native benchmark directory does not exist: {nativeBenchDir}");
-        }
 
         if (string.IsNullOrWhiteSpace(nativeLogitsDir))
-        {
             issues.Add("Clone native KLD logits directory path is null/empty.");
-        }
         else if (!Directory.Exists(nativeLogitsDir))
-        {
             issues.Add($"Clone native KLD logits directory does not exist: {nativeLogitsDir}");
-        }
 
         if (string.IsNullOrWhiteSpace(pplCorporaDir))
-        {
             issues.Add("Clone _ppl_corpora directory path is null/empty.");
-        }
         else if (!Directory.Exists(pplCorporaDir))
-        {
             issues.Add($"Clone _ppl_corpora directory does not exist: {pplCorporaDir}");
-        }
         else if (!Directory.EnumerateFiles(pplCorporaDir, "*", SearchOption.AllDirectories).Any())
-        {
             issues.Add($"Clone _ppl_corpora directory exists but contains no files: {pplCorporaDir}");
-        }
 
         foreach (var domain in CloneBenchmarkDomains.OrderBy(x => x, StringComparer.Ordinal))
         {
@@ -367,13 +410,9 @@ public sealed class CloneRepositoryQuants : ICommand
                 var pplLog = Path.Combine(nativeBenchDir, $"perplexity_{domain}.log");
 
                 if (!File.Exists(pplLog))
-                {
                     issues.Add($"Missing clone native perplexity log for domain '{domain}': {pplLog}");
-                }
                 else if (new FileInfo(pplLog).Length <= 0)
-                {
                     issues.Add($"Clone native perplexity log is empty for domain '{domain}': {pplLog}");
-                }
             }
 
             if (!string.IsNullOrWhiteSpace(nativeLogitsDir) && Directory.Exists(nativeLogitsDir))
@@ -381,13 +420,9 @@ public sealed class CloneRepositoryQuants : ICommand
                 var logitsFile = Path.Combine(nativeLogitsDir, $"kld_logits_{domain}.bin");
 
                 if (!File.Exists(logitsFile))
-                {
                     issues.Add($"Missing clone native KLD logits for domain '{domain}': {logitsFile}");
-                }
                 else if (new FileInfo(logitsFile).Length <= 0)
-                {
                     issues.Add($"Clone native KLD logits file is empty for domain '{domain}': {logitsFile}");
-                }
             }
         }
 
@@ -455,40 +490,270 @@ public sealed class CloneRepositoryQuants : ICommand
 
     private static bool BaselineNameMatches(BaselineQuants baseline, string name)
     {
-        return baseline.Names.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) ||
-               string.Equals(baseline.QuantizeBaseArgumentName, name, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(baseline.PrimaryTensorWeightScheme.Names[0], name, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(baseline.CanonicalKey, name, StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        string normalized = name.Trim();
+
+        if (baseline.Names.Any(x => string.Equals(x, normalized, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        if (string.Equals(baseline.QuantizeBaseArgumentName, normalized, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (string.Equals(baseline.CanonicalKey, normalized, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(baseline.ShortSourceName) &&
+            string.Equals(baseline.ShortSourceName, normalized, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(baseline.SourceFileName) &&
+            string.Equals(Path.GetFileNameWithoutExtension(baseline.SourceFileName), normalized, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (baseline.PrimaryTensorWeightScheme.Names.Any(x => string.Equals(x, normalized, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        return false;
     }
 
-    private sealed record CloneNativeBenchmarkEnvironmentStatus(
-        bool IsValid,
-        IReadOnlyList<string> MissingOrInvalidArtifacts);
+    private static void ApplyCloneReferencePplDeltas(IReadOnlyList<CloneArtifactBuildRecord> records)
+    {
+        if (records.Count == 0)
+            return;
+
+        var reference = records.FirstOrDefault(IsCloneQ8ReferenceRecord);
+        if (reference == null || !reference.Ppl.HasValue || reference.Ppl.Value <= 0d)
+        {
+            AnsiConsole.MarkupLine("[grey]Clone PPL delta reference unavailable; keeping any cached/source PPL delta values as-is.[/]");
+            return;
+        }
+
+        double referencePpl = reference.Ppl.Value;
+        foreach (var record in records)
+        {
+            if (record.Ppl.HasValue && record.Ppl.Value > 0d)
+                record.PplDeltaPercent = FinalReleaseMetadataService.CalculatePplDeltaPercent(record.Ppl.Value, referencePpl);
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[grey]Clone PPL deltas calculated from final Q8 artifact:[/] {Markup.Escape(reference.ManifestArtifact.FileName)}");
+    }
+
+    private static bool IsCloneQ8ReferenceRecord(CloneArtifactBuildRecord record)
+    {
+        var artifact = record.ManifestArtifact;
+
+        foreach (var raw in new[]
+                 {
+                     artifact.BaseQuant,
+                     artifact.QuantFamily,
+                     artifact.DisplayName,
+                     Path.GetFileNameWithoutExtension(artifact.FileName)
+                 })
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+
+            if (BaselineNameMatches(BaselineQuants.Q8_0, raw.Trim()))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryLoadFullyReusableCloneRecords(
+        string outputDirectory,
+        MagicQuantCloneManifest manifest,
+        IReadOnlyDictionary<string, CloneBenchmarkCacheRow> benchmarkCache,
+        out List<CloneArtifactBuildRecord> records)
+    {
+        records = new List<CloneArtifactBuildRecord>();
+
+        if (!Config.ReuseExistingFinalArtifacts || benchmarkCache.Count == 0)
+            return false;
+
+        foreach (var artifact in manifest.Artifacts)
+        {
+            string outputFile = Path.Combine(outputDirectory, artifact.FileName);
+            if (!TryReuseExistingCloneArtifactAndBenchmark(outputFile, artifact, benchmarkCache, out var record))
+            {
+                records.Clear();
+                return false;
+            }
+
+            records.Add(record);
+        }
+
+        return records.Count == manifest.Artifacts.Count;
+    }
+
+    private static bool TryReuseExistingCloneArtifactAndBenchmark(
+        string outputFile,
+        MagicQuantCloneArtifact artifact,
+        IReadOnlyDictionary<string, CloneBenchmarkCacheRow> benchmarkCache,
+        out CloneArtifactBuildRecord record)
+    {
+        record = default!;
+
+        if (!Config.ReuseExistingFinalArtifacts)
+            return false;
+
+        if (!File.Exists(outputFile))
+            return false;
+
+        var info = new FileInfo(outputFile);
+        if (info.Length <= 0)
+            return false;
+
+        if (!benchmarkCache.TryGetValue(artifact.FileName, out var cached))
+            return false;
+
+        if (cached.SizeBytes != (ulong)info.Length)
+            return false;
+
+        record = new CloneArtifactBuildRecord
+        {
+            ManifestArtifact = artifact,
+            OutputPath = outputFile,
+            ActualSizeBytes = cached.SizeBytes,
+            Kld = cached.Kld,
+            Ppl = cached.Ppl,
+            PplDeltaPercent = cached.PplDeltaPercent
+        };
+
+        return true;
+    }
+
+    private static Dictionary<string, CloneBenchmarkCacheRow> LoadReusableCloneBenchmarkRows(string outputDirectory)
+    {
+        string path = MagicQuantManifestPathService.GetManifestFilePath(outputDirectory, MagicQuantManifestPathService.CloneBenchmarksFileName);
+        if (!File.Exists(path))
+            return new Dictionary<string, CloneBenchmarkCacheRow>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            var rows = JsonSerializer.Deserialize<List<CloneBenchmarkCacheRow>>(File.ReadAllText(path), JsonOptions)
+                       ?? new List<CloneBenchmarkCacheRow>();
+
+            return rows
+                .Where(x => !string.IsNullOrWhiteSpace(x.FileName) && x.SizeBytes > 0)
+                .GroupBy(x => x.FileName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Existing clone benchmark summary could not be reused:[/] {Markup.Escape(ex.Message)}");
+            return new Dictionary<string, CloneBenchmarkCacheRow>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private static async Task<HashSet<string>> CopySourceManifestFilesAsync(
+        string outputDirectory,
+        string sourceManifestLocalPath,
+        string? sourceRepo,
+        string? sourceJson,
+        HuggingFaceBaselineService huggingFace,
+        CancellationToken ct)
+    {
+        string targetManifestDir = MagicQuantManifestPathService.EnsureManifestDirectory(outputDirectory);
+        var copied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(sourceRepo))
+        {
+            foreach (var fileName in MagicQuantManifestPathService.KnownManifestFileNames)
+            {
+                if (string.Equals(fileName, MagicQuantManifestPathService.CloneBenchmarksFileName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (await TryDownloadOptionalSourceManifestFileAsync(sourceRepo.Trim(), fileName, Path.Combine(targetManifestDir, fileName), huggingFace, ct))
+                    copied.Add(fileName);
+            }
+
+            return copied;
+        }
+
+        string sourceDir = Path.GetDirectoryName(sourceManifestLocalPath) ?? string.Empty;
+        if (Directory.Exists(sourceDir))
+        {
+            foreach (var file in Directory.EnumerateFiles(sourceDir, "magicquant*.json", SearchOption.TopDirectoryOnly))
+            {
+                string fileName = Path.GetFileName(file);
+                if (string.Equals(fileName, MagicQuantManifestPathService.CloneBenchmarksFileName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                File.Copy(file, Path.Combine(targetManifestDir, fileName), overwrite: true);
+                copied.Add(fileName);
+            }
+        }
+
+        return copied;
+    }
+
+    private static async Task<bool> TryDownloadOptionalSourceManifestFileAsync(
+        string repoId,
+        string fileName,
+        string destinationPath,
+        HuggingFaceBaselineService huggingFace,
+        CancellationToken ct)
+    {
+        var candidates = new[]
+        {
+            MagicQuantManifestPathService.RelativeManifestPath(fileName),
+            fileName
+        };
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                await huggingFace.DownloadRepositoryFileAsync(
+                    repoId: repoId,
+                    fileName: candidate,
+                    destinationPath: destinationPath,
+                    forceRedownload: true,
+                    ct: ct);
+
+                AnsiConsole.MarkupLine($"[green]Archived source manifest file:[/] {Markup.Escape(candidate)}");
+                return true;
+            }
+            catch
+            {
+                // Optional source manifest sidecars may not exist, especially in older repos.
+            }
+        }
+
+        AnsiConsole.MarkupLine($"[grey]Optional source manifest file unavailable:[/] {Markup.Escape(fileName)}");
+        return false;
+    }
 
     private static async Task WriteCloneBenchmarkSummaryAsync(string outputDirectory, IReadOnlyCollection<CloneArtifactBuildRecord> records)
     {
+        string path = MagicQuantManifestPathService.GetManifestFilePath(outputDirectory, MagicQuantManifestPathService.CloneBenchmarksFileName);
+
         var payload = records
             .OrderBy(x => x.Kld ?? double.MaxValue)
             .ThenBy(x => x.ActualSizeBytes)
-            .Select(x => new
+            .Select(x => new CloneBenchmarkCacheRow
             {
-                fileName = x.ManifestArtifact.FileName,
-                displayName = x.ManifestArtifact.DisplayName,
-                provider = x.ManifestArtifact.Provider,
-                quantFamily = x.ManifestArtifact.QuantFamily,
-                baseQuant = x.ManifestArtifact.BaseQuant,
-                kld = x.Kld,
-                ppl = x.Ppl,
-                pplDeltaPercent = x.PplDeltaPercent,
-                sizeBytes = x.ActualSizeBytes,
-                sizeGiB = x.ActualSizeBytes / 1024d / 1024d / 1024d,
-                sourceKld = x.ManifestArtifact.SourceKld,
-                sourcePpl = x.ManifestArtifact.SourcePpl,
-                sourceSizeBytes = x.ManifestArtifact.SourceSizeBytes
+                FileName = x.ManifestArtifact.FileName,
+                DisplayName = x.ManifestArtifact.DisplayName,
+                Provider = x.ManifestArtifact.Provider,
+                QuantFamily = x.ManifestArtifact.QuantFamily,
+                BaseQuant = x.ManifestArtifact.BaseQuant,
+                Kld = x.Kld,
+                Ppl = x.Ppl,
+                PplDeltaPercent = x.PplDeltaPercent,
+                SizeBytes = x.ActualSizeBytes,
+                SizeGB = x.ActualSizeBytes / 1000d / 1000d / 1000d,
+                SizeGiB = x.ActualSizeBytes / 1024d / 1024d / 1024d,
+                SourceKld = x.ManifestArtifact.SourceKld,
+                SourcePpl = x.ManifestArtifact.SourcePpl,
+                SourceSizeBytes = x.ManifestArtifact.SourceSizeBytes
             })
             .ToList();
 
-        string path = Path.Combine(outputDirectory, "magicquant.clone-benchmarks.json");
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(payload, JsonOptions));
         AnsiConsole.MarkupLine($"[green]Clone benchmark summary generated:[/] {Markup.Escape(path)}");
     }
@@ -520,17 +785,49 @@ public sealed class CloneRepositoryQuants : ICommand
         return Task.CompletedTask;
     }
 
-    private static async Task CleanOutputDirectoryAsync(string outputDirectory)
+    private static async Task CleanOutputDirectoryAsync(string outputDirectory, bool preserveReusableGgufs)
     {
         Directory.CreateDirectory(outputDirectory);
 
         foreach (var file in Directory.EnumerateFiles(outputDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            if (preserveReusableGgufs &&
+                string.Equals(Path.GetExtension(file), ".gguf", StringComparison.OrdinalIgnoreCase) &&
+                new FileInfo(file).Length > 0)
+            {
+                continue;
+            }
+
             await HardDeleteHelper.DeleteFileIfExistsAsync(file);
+        }
 
         foreach (var directory in Directory.EnumerateDirectories(outputDirectory, "*", SearchOption.TopDirectoryOnly))
-            Directory.Delete(directory, recursive: true);
+            await HardDeleteHelper.DeleteDirectoryIfExistsAsync(directory, CancellationToken.None);
 
-        AnsiConsole.MarkupLine($"[grey]Cleaned clone export directory:[/] {Markup.Escape(outputDirectory)}");
+        AnsiConsole.MarkupLine(preserveReusableGgufs
+            ? $"[grey]Cleaned clone export metadata/non-GGUF files; preserved existing non-empty GGUFs for reuse validation:[/] {Markup.Escape(outputDirectory)}"
+            : $"[grey]Cleaned clone export directory:[/] {Markup.Escape(outputDirectory)}");
+    }
+
+    private static async Task CleanCloneExportSidecarsAsync(string outputDirectory)
+    {
+        string[] patterns =
+        [
+            "*.success.json",
+            "*.quantize.log",
+            "*.convert.log",
+            "imatrix.success.json",
+            "imatrix.metadata.json",
+            "imatrix.build.log"
+        ];
+
+        foreach (var pattern in patterns)
+        {
+            foreach (var file in Directory.EnumerateFiles(outputDirectory, pattern, SearchOption.TopDirectoryOnly))
+                await HardDeleteHelper.DeleteFileIfExistsAsync(file);
+        }
+
+        AnsiConsole.MarkupLine($"[grey]Cleaned clone export sidecar success/log files:[/] {Markup.Escape(outputDirectory)}");
     }
 
     private static async Task EnsureSqliteReadyAsync()
@@ -561,11 +858,35 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine("[bold yellow]Command: clone-repository-quants[/]");
         AnsiConsole.MarkupLine("Rebuilds the final GGUF list from a MagicQuant-compatible tensor config manifest without running the evolution/search pipeline.");
         AnsiConsole.MarkupLine("Usage:");
-        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-repo \"owner/repo\" [--output-dir \"<path>\"]");
-        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-json \"<path-or-url>\" [--output-dir \"<path>\"]");
+        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-repo \"owner/repo\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
+        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-json \"<path-or-url>\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
         AnsiConsole.MarkupLine("Options:");
-        AnsiConsole.MarkupLine("  --source-repo       Hugging Face repo containing magicquant.clone-configs.json");
+        AnsiConsole.MarkupLine($"  --source-repo       Hugging Face repo containing {MagicQuantManifestPathService.RelativeManifestPath(MagicQuantManifestPathService.CloneConfigsFileName)} or legacy root {MagicQuantManifestPathService.CloneConfigsFileName}");
         AnsiConsole.MarkupLine("  --source-json       Local or http(s) path to magicquant.clone-configs.json");
         AnsiConsole.MarkupLine("  --use-imatrix       Use configured/provided imatrix for the cloned model");
+        AnsiConsole.MarkupLine("  --reuse-existing-final-artifacts  Reuse matching existing GGUFs and matching clone benchmark JSON rows");
+        AnsiConsole.MarkupLine("  --recheck-hardware-probe / --force-refresh-hardware-probe  Force Q8/native hardware probe and refresh the SQLite execution-plan cache");
+    }
+
+    private sealed record CloneNativeBenchmarkEnvironmentStatus(
+        bool IsValid,
+        IReadOnlyList<string> MissingOrInvalidArtifacts);
+
+    private sealed class CloneBenchmarkCacheRow
+    {
+        public string FileName { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string Provider { get; set; } = string.Empty;
+        public string QuantFamily { get; set; } = string.Empty;
+        public string BaseQuant { get; set; } = string.Empty;
+        public double? Kld { get; set; }
+        public double? Ppl { get; set; }
+        public double? PplDeltaPercent { get; set; }
+        public ulong SizeBytes { get; set; }
+        public double SizeGB { get; set; }
+        public double SizeGiB { get; set; }
+        public double? SourceKld { get; set; }
+        public double? SourcePpl { get; set; }
+        public ulong? SourceSizeBytes { get; set; }
     }
 }
