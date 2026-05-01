@@ -398,8 +398,13 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine("[grey]No archival isolation coverage samples were required.[/]");
         }
 
+        var finalIsolationManifestPlan = mergedPlan.MergeWith(archivalCoveragePlan);
+
         var survivalPipeline = new CombinationSurvivalPipelineService(quantizationService);
-        var finalizationResult = await survivalPipeline.RunAsync(ct: default);
+        var finalizationResult = await survivalPipeline.RunAsync(
+            isolationSamplePlan: finalIsolationManifestPlan,
+            isolationOptimizationResult: isolationResult,
+            ct: default);
 
         AnsiConsole.Write(new Rule("[yellow]Export Summary[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"[green]Export directory:[/] [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
