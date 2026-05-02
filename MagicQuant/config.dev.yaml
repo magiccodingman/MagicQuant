@@ -42,20 +42,25 @@ learning:
   # asks before continuing. Keep this true unless running fully unattended.
   confirm_tensor_group_profile: true
 
-  # Transient repair mode for accidental regex mistakes.
+  # Safe/idempotent repair mode for accidental regex mistakes.
   #
-  # When true, MagicQuant tries to rebuild learned tensor mappings for the active
-  # TensorGroupProfile from older DB truth in the same architecture family. This
-  # lets a regex-only regrouping avoid needless re-download/re-quantization of
-  # pure learning baselines where per-tensor truth already exists.
+  # Default true: on every run MagicQuant checks whether older DB learned tensor
+  # truth can be copied into the active TensorGroupProfile by reapplying the
+  # current regex/base_quant_exceptions rules. If nothing changed or current rows
+  # already exist, it skips cleanly and does not create duplicates.
   #
-  # CLI equivalent:
-  #   --rebucket-learned-tensor-groups
+  # This avoids needless re-download/re-quantization of pure learning baselines
+  # after regex-only regrouping. Old benchmarks/learned rows remain attached to
+  # their original TensorGroupProfile and are ignored unless that profile becomes
+  # active again.
   #
-  # This does not globally delete old profile truth. Old benchmarks/learned rows
-  # stay attached to their original TensorGroupProfile and are simply ignored
-  # unless that exact profile becomes active again.
-  rebucket_learned_tensor_groups_from_existing_truth: false
+  # Disable only when you intentionally want the slower/full path to regenerate
+  # learned grouping truth instead of rebucketing from DB snapshots.
+  # CLI disable aliases:
+  #   --no-rebucket-learned-tensor-groups
+  #   --disable-tensor-group-rebucket
+  #   --full-relearn-tensor-groups
+  rebucket_learned_tensor_groups_from_existing_truth: true
 
 
 readme:
