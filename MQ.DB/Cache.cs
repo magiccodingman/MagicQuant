@@ -93,6 +93,20 @@ public class Cache
 
     public static string? CurrentTensorGroupProfileFingerprintHash { get; set; }
 
+    /// <summary>
+    /// When true, MagicQuant prints the BF16/native tensor grouping summary and asks
+    /// for confirmation before any tensor-group-scoped learning/search work continues.
+    /// </summary>
+    public static bool ConfirmTensorGroupProfile { get; set; } = true;
+
+    /// <summary>
+    /// Transient repair mode for regex/profile mistakes. When true, MagicQuant tries
+    /// to rebuild learned tensor mappings for the active TensorGroupProfile from
+    /// existing family/profile truth instead of redownloading/requantizing pure
+    /// learning baselines just to rediscover per-tensor truth.
+    /// </summary>
+    public static bool RebucketLearnedTensorGroupsFromExistingTruth { get; set; } = true;
+
     public static bool ForceRefreshHardwareProbe { get; set; }
 
     public static bool UseImatrix { get; set; }

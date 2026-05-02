@@ -67,9 +67,13 @@ public static class MagicQuantYamlLoader
 
         Directory.CreateDirectory(Cache.MagicQuantDirectory!);
 
+        config.Learning ??= new RuntimeLearningConfig();
+
         Cache.UseImatrix = config.Flags.UseImatrix;
         Cache.ForceImatrixRebuild = config.Flags.ForceImatrixRebuild;
         Cache.ForceRefreshHardwareProbe = config.Flags.ForceRefreshHardwareProbe;
+        Cache.ConfirmTensorGroupProfile = config.Learning.ConfirmTensorGroupProfile;
+        Cache.RebucketLearnedTensorGroupsFromExistingTruth = config.Learning.RebucketLearnedTensorGroupsFromExistingTruth;
 
         config.Hardware.GpuMemoryLimitsGb ??= new Dictionary<int, double>();
         config.Hardware.GpuMemoryLimitsGb = config.Hardware.GpuMemoryLimitsGb
@@ -88,6 +92,8 @@ public static class MagicQuantYamlLoader
             config.Identity.AllowArchitectureFamilyAliasOverride;
         
         Cache.CurrentArchitectureFamilyId = null;
+        Cache.CurrentTensorGroupProfileId = null;
+        Cache.CurrentTensorGroupProfileFingerprintHash = null;
 
         config.Output.OutputDir = string.IsNullOrWhiteSpace(config.Output.OutputDir)
             ? null
@@ -204,6 +210,8 @@ public static class MagicQuantYamlLoader
 
     private static void ApplyCliOverrides(MagicQuantYamlConfig config, IReadOnlyList<CliArg> args)
     {
+        config.Learning ??= new RuntimeLearningConfig();
+
         string? Get(string name) => args.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))?.Value;
         bool Has(string name) => args.Any(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
 
@@ -218,6 +226,16 @@ public static class MagicQuantYamlLoader
             throw new InvalidOperationException("--relearn-baseline-mappings was removed because it globally wiped learned tensor truth. Use YAML learning.force_relearn_architecture_family, learning.force_relearn_standard_baselines, or custom_repositories/includes/force_relearn instead.");
         if (Has("recheck-hardware-probe") || Has("force-refresh-hardware-probe") || Has("force_refresh_hardware_probe")) config.Flags.ForceRefreshHardwareProbe = true;
         if (Has("allow-high-precision-hybrids")) config.Flags.AllowHighPrecisionHybrids = true;
+        if (Has("rebucket-learned-tensor-groups") || Has("rebucket-tensor-groups-from-db") || Has("relearn-tensor-groups-from-db"))
+        {
+            // Kept as a harmless compatibility alias. Rebucket is now enabled by default
+            // because it is the safe/idempotent path after regex profile changes.
+            config.Learning.RebucketLearnedTensorGroupsFromExistingTruth = true;
+        }
+        if (Has("no-rebucket-learned-tensor-groups") || Has("disable-tensor-group-rebucket") || Has("full-relearn-tensor-groups"))
+            config.Learning.RebucketLearnedTensorGroupsFromExistingTruth = false;
+        if (Has("skip-tensor-group-confirm") || Has("yes-tensor-groups"))
+            config.Learning.ConfirmTensorGroupProfile = false;
 
         config.Imatrix.ImatrixUrl = Prefer(Get("imatrix-url"), config.Imatrix.ImatrixUrl);
         config.Imatrix.DatasetRepo = Prefer(Get("imatrix-dataset-repo"), config.Imatrix.DatasetRepo);

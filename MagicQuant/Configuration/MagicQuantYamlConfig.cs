@@ -251,6 +251,19 @@ public sealed class RuntimeLearningConfig
 {
     public bool ForceRelearnArchitectureFamily { get; set; }
     public List<string> ForceRelearnStandardBaselines { get; set; } = new();
+
+    /// <summary>
+    /// Safety gate for regex/profile mistakes. When true, the evolution run prints
+    /// native BF16 tensor-group counts and asks before continuing.
+    /// </summary>
+    public bool ConfirmTensorGroupProfile { get; set; } = true;
+
+    /// <summary>
+    /// Transient repair command for regex changes. Rebuilds learned tensor/group
+    /// rows for the active profile from existing DB truth where possible, avoiding
+    /// needless re-download/re-quantization of pure baseline learning artifacts.
+    /// </summary>
+    public bool RebucketLearnedTensorGroupsFromExistingTruth { get; set; } = true;
 }
 
 public sealed class RuntimeBaselineConfig

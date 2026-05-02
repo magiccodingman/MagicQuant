@@ -545,20 +545,37 @@ public class BenchmarkService
         int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
         int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
-        var row = await db.ExecutionPlanProbeCaches
+        // Hardware execution-plan probes are intentionally NOT invalidated by tensor grouping
+        // profile changes. Regex/profile edits change benchmark/learned-truth semantics, but the
+        // Q8/native hardware capability plan is still valid for the same architecture family,
+        // exact model hash, imatrix identity, quantized artifact fingerprint, hardware, and token
+        // target. Prefer a current-profile row when present, then fall back to the newest
+        // compatible row from any prior TensorGroupProfile.
+        var compatibleRows = await db.ExecutionPlanProbeCaches
             .AsNoTracking()
-            .FirstOrDefaultAsync(x =>
+            .Where(x =>
                 x.ArchitectureFamilyId == architectureFamilyId &&
-                x.TensorGroupProfileId == tensorGroupProfileId &&
                 x.AiModelHashId == aiModelHashId &&
                 x.ImatrixDefinitionId == imatrixDefinitionId &&
                 x.HardwareFingerprint == key.HardwareFingerprint &&
                 x.QuantizedModelFingerprint == key.QuantizedModelFingerprint &&
                 x.QuantizationKey == key.QuantizationKey &&
-                x.DiscoveryTokenTarget == key.DiscoveryTokenTarget, ct);
+                x.DiscoveryTokenTarget == key.DiscoveryTokenTarget)
+            .OrderByDescending(x => x.TensorGroupProfileId == tensorGroupProfileId)
+            .ThenByDescending(x => x.UpdatedUtc)
+            .ThenByDescending(x => x.CreatedUtc)
+            .ToListAsync(ct);
+
+        var row = compatibleRows.FirstOrDefault();
 
         if (row == null)
             return null;
+
+        if (row.TensorGroupProfileId != tensorGroupProfileId)
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]Execution-plan cache reused from prior tensor profile {row.TensorGroupProfileId}; hardware probe cache is profile-compatible.[/]");
+        }
 
         if (row.ProbeSchemaVersion < DynamicProbeSchemaVersion)
         {

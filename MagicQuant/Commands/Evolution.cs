@@ -84,6 +84,8 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine($"Work Path:    [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
         AnsiConsole.MarkupLine($"Export Path:  [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
         AnsiConsole.MarkupLine($"Files Found:  [green]{safeTensorFiles.Length:N0}[/] safe tensors");
+        AnsiConsole.MarkupLine($"Tensor Review: [cyan]{(Cache.ConfirmTensorGroupProfile ? "prompt" : "skip prompt")}[/]");
+        AnsiConsole.MarkupLine($"Regex Rebucket: [cyan]{(Cache.RebucketLearnedTensorGroupsFromExistingTruth ? "enabled" : "disabled")}[/]");
 
         if (string.IsNullOrEmpty(Cache.LlamaBin))
             AnsiConsole.MarkupLine("[yellow]Warning:[/] Llama binaries path not set in Cache. (Did Initialization run?)");
@@ -105,6 +107,14 @@ public class Evolution : ICommand
 
         var sidecarService = new ModelSidecarArtifactService(pyManager);
         await sidecarService.EnsureMmprojArtifactAvailableAsync();
+
+        // Review the active regex profile against the native/BF16 tensor list before
+        // architecture/profile-scoped learning truth is persisted or reused. This is
+        // the early "do these groups look sane?" gate for catching YAML regex mistakes.
+        await new TensorGroupReviewService().ReviewNativeTensorGroupingAsync(
+            quantizationService: quantizationService,
+            nativeGgufPath: bf16ModelGgufPath,
+            requireConfirmation: Cache.ConfirmTensorGroupProfile);
 
         var architectureFamilyService = new ArchitectureFamilyService(pyManager);
         await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(bf16ModelGgufPath);
@@ -153,6 +163,11 @@ public class Evolution : ICommand
         // Re-assert the live runtime flag from the imatrix resolution result so later phases
         // cannot accidentally inherit a stale default.
         RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Enabled);
+
+        if (Cache.RebucketLearnedTensorGroupsFromExistingTruth)
+        {
+            await new TensorGroupRebucketService().RebucketFromExistingProfileTruthAsync();
+        }
 
         string baseTypeName = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
         bool loadedPlanFromCache = !Cache.ForceRefreshHardwareProbe &&
@@ -743,6 +758,9 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine("  [green]--reuse-existing-final-artifacts[/]    Reuse valid final GGUFs only when exact file name + benchmark byte size match (Optional; default false)");
         AnsiConsole.MarkupLine("  [green]--allow-eight-bit-anchor-replacements[/]    Permit final prediction to try replacing 8-bit anchors like Q8_0 (Optional; default false)");
         AnsiConsole.MarkupLine("  [green]--export-external-learned-baselines[/]    Also locally rebuild/export pure learned external baselines such as Unsloth (Optional; default false)");
+        AnsiConsole.MarkupLine("  [green]--rebucket-learned-tensor-groups[/]    Compatibility alias; regex rebucketing from DB is enabled by default");
+        AnsiConsole.MarkupLine("  [green]--no-rebucket-learned-tensor-groups[/]    Disable safe DB rebucketing and force the slower/full learned-group path instead");
+        AnsiConsole.MarkupLine("  [green]--skip-tensor-group-confirm[/]    Skip the native BF16 tensor-group review confirmation prompt for unattended runs (Optional; YAML default true asks)");
         AnsiConsole.MarkupLine("  [green]--selection-max-candidates-per-interior-window[/]    Candidate count retained per interior window (Optional; default = 1)");
         AnsiConsole.MarkupLine("  [green]--config[/]    Path to YAML runtime config. CLI flags override YAML values.");
         AnsiConsole.WriteLine();

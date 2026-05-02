@@ -25,7 +25,7 @@ public sealed class TensorGroupProfileService
             ?? throw new InvalidOperationException("Architecture family must be resolved before resolving tensor group profile.");
 
         string snapshotJson = BuildSnapshotJson();
-        string fingerprint = ComputeSha256(snapshotJson);
+        string fingerprint = ComputeSnapshotHash(snapshotJson);
 
         await using var db = new MagicQuantContext();
 
@@ -96,9 +96,9 @@ public sealed class TensorGroupProfileService
         return JsonSerializer.Serialize(snapshot, JsonOptions);
     }
 
-    private static string ComputeSha256(string value)
+    public static string ComputeSnapshotHash(string snapshotJson)
     {
         using var sha = SHA256.Create();
-        return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(snapshotJson))).ToLowerInvariant();
     }
 }
