@@ -13,6 +13,7 @@ public sealed class MagicQuantYamlConfig
     public RuntimePredictionConfig Prediction { get; set; } = new();
     public RuntimeIdentityConfig Identity { get; set; } = new();
     public RuntimeBaselineConfig Baselines { get; set; } = new();
+    public RuntimeLearningConfig Learning { get; set; } = new();
     public RuntimeOutputConfig Output { get; set; } = new();
     public RuntimeSurvivalConfig Survival { get; set; } = new();
     public RuntimeCandidateSelectionConfig CandidateSelection { get; set; } = new();
@@ -95,7 +96,6 @@ public sealed class RuntimeFlagConfig
 {
     public bool UseImatrix { get; set; }
     public bool ForceImatrixRebuild { get; set; }
-    public bool ForceRelearnBaselineTensorMappings { get; set; }
     public bool ForceRefreshHardwareProbe { get; set; }
     public bool AllowHighPrecisionHybrids { get; set; }
 }
@@ -247,6 +247,12 @@ public sealed class RuntimeCandidateSelectionConfig
     public bool AllowEightBitAnchorReplacements { get; set; } = false;
 }
 
+public sealed class RuntimeLearningConfig
+{
+    public bool ForceRelearnArchitectureFamily { get; set; }
+    public List<string> ForceRelearnStandardBaselines { get; set; } = new();
+}
+
 public sealed class RuntimeBaselineConfig
 {
     public string StandardBaselinesMode { get; set; } = "all";
@@ -285,6 +291,7 @@ public sealed class CustomBaselineIncludeConfig
     public bool? AllowAsCombinationCarrier { get; set; }
     public bool? AllowAsExplicitGroupCandidate { get; set; }
     public bool? AllowAsLearningBaseline { get; set; }
+    public bool ForceRelearn { get; set; }
     public List<byte> BannedGroupIds { get; set; } = new();
 }
 
@@ -303,6 +310,9 @@ public sealed class ResolvedCustomBaselineSpec
     public bool AllowAsLearningBaseline { get; set; }
     public bool AllowAsCombinationCarrier { get; set; }
     public bool AllowAsExplicitGroupCandidate { get; set; }
+    public bool ForceRelearn { get; set; }
+    public int? BaselineQuantDefinitionId { get; set; }
+    public bool IsActiveInCurrentConfig { get; set; } = true;
     public IReadOnlyList<byte> BannedGroupIds { get; set; } = Array.Empty<byte>();
 }
 

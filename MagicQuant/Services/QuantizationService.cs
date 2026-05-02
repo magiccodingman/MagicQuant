@@ -432,13 +432,13 @@ public class QuantizationService
 
         await using var db = new MagicQuantContext();
 
-        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdOrNullAsync(db, ct);
+        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
 
-        if (exactAiModelHashId == null)
+        if (scopedAiModelHashId == null)
             return (null, null);
 
         var imatrixDefinitionId =
-            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value,
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId.Value,
                 createIfMissing: false, ct);
 
         var comboId = await db.TensorCombos
@@ -460,9 +460,15 @@ public class QuantizationService
         if (comboId == Guid.Empty)
             return (null, null);
 
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+
         var benchmarkId = await db.AiBenchmarks
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == exactAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.AiModelHashId == scopedAiModelHashId.Value &&
+                        x.ImatrixDefinitionId == imatrixDefinitionId &&
                         x.TensorComboId == comboId)
             .Select(x => x.Id)
             .FirstOrDefaultAsync(ct);
@@ -479,12 +485,11 @@ public class QuantizationService
         string baseLogitsDir = GetBaseLogitsDirectory();
 
         DateTime startedUtc = DateTime.UtcNow;
-        var forceBaselineRelearn = Cache.ForceRelearnBaselineTensorMappings && IsLearnableBaselineRun(quant);
+        const bool forceBaselineRelearn = false;
         bool pureExternalBaseline = ShouldDownloadExternalBaselineInsteadOfQuantizing(quant);
-        bool baselineLearnedTruthExists =
-            !forceBaselineRelearn && await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
+        bool baselineLearnedTruthExists = await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
 
-        if (!forceBaselineRelearn && baselineLearnedTruthExists && await _benchmarker.TryReuseExistingBenchmarksAsync(
+        if (baselineLearnedTruthExists && await _benchmarker.TryReuseExistingBenchmarksAsync(
                 quantConfig: quant,
                 modelPath: string.Empty,
                 benchDir: modelBenchDir,
@@ -495,7 +500,7 @@ public class QuantizationService
             return SampleProcessState.Skipped;
         }
 
-        if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
+        if (baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
         {
             AnsiConsole.MarkupLine($"[grey]Skipping already completed sample:[/] {Markup.Escape(modelName)}");
             return SampleProcessState.Skipped;
@@ -556,7 +561,7 @@ public class QuantizationService
                             throw new InvalidOperationException(
                                 $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
                                 "External baseline hybrids require learned tensor mappings before sampling. " +
-                                "Run with --relearn-baseline-mappings.");
+                                "Use targeted YAML relearn configuration to regenerate only the affected baseline/profile truth.");
                         }
                     }
 
@@ -712,15 +717,15 @@ public class QuantizationService
             return false;
 
         await using var db = new MagicQuantContext();
-        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
-
-        if (scopedAiModelHashId == null)
-            return false;
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var baselineDefinition = await BaselineDefinitionResolver.ResolveRequiredDefinitionAsync(db, baseline, ct);
 
         var query = db.LearnedBaselineTensorQuants
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-            .Where(x => x.BaselineCanonicalKey == baseline.CanonicalKey);
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinition.Id);
 
         if (baseline.DefaultTensorScheme != null)
             query = query.Where(x => x.TensorWeightSchemeId == baseline.DefaultTensorScheme.UniqueId);
@@ -913,6 +918,10 @@ public class QuantizationService
             throw new InvalidOperationException(
                 "Unable to persist learned mappings because scoped AiModelHash row was not found.");
 
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var baselineDefinition = await BaselineDefinitionResolver.ResolveRequiredDefinitionAsync(db, quant.BaseQuant, ct);
+
         var combo = await db.TensorCombos
             .AsNoTracking()
             .FirstAsync(x => x.BaseQuant == quant.BaseQuant.UniqueId &&
@@ -920,13 +929,16 @@ public class QuantizationService
                              x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 &&
                              x.MoeRouter == 0, ct);
 
-        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var benchmarkAiModelHashId = scopedAiModelHashId.Value;
         var imatrixDefinitionId =
-            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId,
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, benchmarkAiModelHashId,
                 createIfMissing: false, ct);
 
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.AiModelHashId == benchmarkAiModelHashId &&
+                        x.ImatrixDefinitionId == imatrixDefinitionId &&
                         x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
@@ -946,6 +958,10 @@ public class QuantizationService
                 {
                     Id = Guid.NewGuid(),
                     AiBenchmarkId = benchmarkId.Value,
+                    ArchitectureFamilyId = architectureFamilyId,
+                    TensorGroupProfileId = tensorGroupProfileId,
+                    BaselineQuantDefinitionId = baselineDefinition.Id,
+                    TensorComboId = combo.Id,
                     AiModelHashId = scopedAiModelHashId.Value,
                     BaselineQuantId = quant.BaseQuant.UniqueId,
                     TensorWeightSchemeId = tensorScheme.UniqueId,
@@ -965,8 +981,9 @@ public class QuantizationService
                 $"Prepared learning truth for baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
 
         await db.LearnedBaselineTensorQuants
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
-                        x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinition.Id &&
                         x.TensorWeightSchemeId == tensorScheme.UniqueId)
             .ExecuteDeleteAsync(ct);
 
@@ -1048,18 +1065,24 @@ public class QuantizationService
 
         await using var db = new MagicQuantContext();
 
-        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdOrNullAsync(db, ct);
+        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
 
-        if (exactAiModelHashId == null)
+        if (scopedAiModelHashId == null)
             return false;
 
         var imatrixDefinitionId =
-            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value,
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, scopedAiModelHashId.Value,
                 createIfMissing: false, ct);
+
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
         var bench = await db.AiBenchmarks
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == exactAiModelHashId.Value && x.ImatrixDefinitionId == imatrixDefinitionId)
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.AiModelHashId == scopedAiModelHashId.Value &&
+                        x.ImatrixDefinitionId == imatrixDefinitionId)
             .Join(
                 db.TensorCombos.AsNoTracking(),
                 benchmark => benchmark.TensorComboId,
@@ -1131,6 +1154,8 @@ public class QuantizationService
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
 
         var lookup = BuildTensorLookup(quant);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
         await using var db = new MagicQuantContext();
 
@@ -1175,7 +1200,10 @@ public class QuantizationService
         await ImatrixIdentityService.ValidateOwnershipAsync(db, persistenceAiModelHashId, imatrixDefinitionId, ct);
 
         Guid? aiBenchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == persistenceAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.AiModelHashId == persistenceAiModelHashId &&
+                        x.ImatrixDefinitionId == imatrixDefinitionId &&
                         x.TensorComboId == tensorCombo.Id)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(ct);
@@ -1183,6 +1211,8 @@ public class QuantizationService
         var row = new QuantizationRun
         {
             Id = Guid.NewGuid(),
+            ArchitectureFamilyId = architectureFamilyId,
+            TensorGroupProfileId = tensorGroupProfileId,
             AiModelHashId = persistenceAiModelHashId,
             ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = tensorCombo.Id,
@@ -1662,7 +1692,7 @@ public class QuantizationService
                 throw new InvalidOperationException(
                     $"Full learned base-carrier coverage is incomplete for baseline '{quant.BaseQuant.Names[0]}'. " +
                     $"Missing={missing.Count}. Examples=[{string.Join(", ", missing.Take(15))}]. " +
-                    "Run with --relearn-baseline-mappings.");
+                    "Use targeted YAML relearn configuration to regenerate only the affected baseline/profile truth.");
             }
         }
 
@@ -1778,56 +1808,16 @@ public class QuantizationService
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
     }
 
-    public async Task ClearLearnedBaselineTensorMappingsAsync(CancellationToken ct = default)
+    public Task ClearLearnedBaselineTensorMappingsAsync(CancellationToken ct = default)
     {
-        await using var db = new MagicQuantContext();
-        int removed = await db.LearnedBaselineTensorQuants.ExecuteDeleteAsync(ct);
-        AnsiConsole.MarkupLine(
-            $"[yellow]Relearn requested:[/] removed [red]{removed:N0}[/] learned baseline tensor mapping rows.");
+        throw new NotSupportedException(
+            "Global learned tensor mapping wipes were removed. Use targeted YAML relearn options so deletion is scoped, counted, and confirmed.");
     }
 
-    public async Task InvalidateBaselineArtifactsAsync(CancellationToken ct = default)
+    public Task InvalidateBaselineArtifactsAsync(CancellationToken ct = default)
     {
-        await ClearLearnedBaselineTensorMappingsAsync(ct);
-
-        foreach (var baseline in BaselineQuants.GetAllRecognizedBaselines())
-        {
-            var pure = HybridQuant.CreatePureBaseline(baseline);
-            var name = GenerateHybridName(pure);
-            var ggufPath = Path.Combine(_paths.GgufDir, $"{name}.gguf");
-            var success = Path.Combine(_paths.GgufDir, $"{name}.gguf.success.json");
-            var log = ggufPath + ".quantize.log";
-
-            await HardDeleteHelper.DeleteFileIfExistsAsync(ggufPath);
-            await HardDeleteHelper.DeleteFileIfExistsAsync(success);
-            await HardDeleteHelper.DeleteFileIfExistsAsync(log);
-
-            string benchDir = Path.Combine(_paths.BenchDir, name);
-            if (Directory.Exists(benchDir))
-                Directory.Delete(benchDir, recursive: true);
-        }
-
-        string debugDir = Path.Combine(_paths.BenchDir, "_learning_debug");
-        if (Directory.Exists(debugDir))
-            Directory.Delete(debugDir, recursive: true);
-
-        if (!string.IsNullOrWhiteSpace(Cache.ExternalBaselineCacheDirectory) &&
-            Directory.Exists(Cache.ExternalBaselineCacheDirectory))
-            Directory.Delete(Cache.ExternalBaselineCacheDirectory, recursive: true);
-
-        string nativeType = (Cache.TorchType ?? Cache.MainTorchType.BF16).ToString();
-        string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
-        string nativeBaseFile = Path.Combine(_paths.GgufDir, $"{modelName}-{nativeType}.gguf");
-        await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile);
-        await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile + ".success.json");
-        await HardDeleteHelper.DeleteFileIfExistsAsync(nativeBaseFile + ".convert.log");
-
-        string nativeBenchDir = Path.Combine(_paths.BenchDir, nativeType);
-        if (Directory.Exists(nativeBenchDir))
-            Directory.Delete(nativeBenchDir, recursive: true);
-
-        AnsiConsole.MarkupLine(
-            "[yellow]Relearn requested:[/] baseline artifacts, benchmark caches, and learning diagnostics were invalidated.");
+        throw new NotSupportedException(
+            "Global baseline artifact invalidation was removed. Use learning.force_relearn_architecture_family, learning.force_relearn_standard_baselines, or include.force_relearn.");
     }
 
     public async Task<bool> HasNativeSourceLearnedTruthAsync(CancellationToken ct = default)
@@ -1838,15 +1828,15 @@ public class QuantizationService
         var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
 
         await using var db = new MagicQuantContext();
-        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
-
-        if (scopedAiModelHashId == null)
-            return false;
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var baselineDefinition = await BaselineDefinitionResolver.ResolveRequiredDefinitionAsync(db, BaselineQuants.GetNativeQuant(), ct);
 
         return await db.LearnedBaselineTensorQuants
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
-                        x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinition.Id &&
                         x.TensorWeightSchemeId == nativeScheme.UniqueId)
             .AnyAsync(ct);
     }
@@ -1860,27 +1850,11 @@ public class QuantizationService
 
         var nativeScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
 
-        if (!Cache.ForceRelearnBaselineTensorMappings)
+        if (await HasNativeSourceLearnedTruthAsync(ct))
         {
-            await using var precheckDb = new MagicQuantContext();
-            var precheckScopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(precheckDb, ct);
-
-            if (precheckScopedAiModelHashId != null)
-            {
-                int existingRows = await precheckDb.LearnedBaselineTensorQuants
-                    .AsNoTracking()
-                    .Where(x => x.AiModelHashId == precheckScopedAiModelHashId.Value &&
-                                x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
-                                x.TensorWeightSchemeId == nativeScheme.UniqueId)
-                    .CountAsync(ct);
-
-                if (existingRows > 0)
-                {
-                    AnsiConsole.MarkupLine(
-                        $"[grey]Native-source learned truth already exists:[/] [cyan]{existingRows:N0}[/] row(s) for [yellow]{Markup.Escape(nativeScheme.Names[0])}[/]. Skipping relearn. Use [green]--relearn-baseline-mappings[/] to regenerate.");
-                    return;
-                }
-            }
+            AnsiConsole.MarkupLine(
+                $"[grey]Native-source learned truth already exists:[/] for [yellow]{Markup.Escape(nativeScheme.Names[0])}[/]. Skipping. Use targeted YAML relearn to regenerate native source truth if needed.");
+            return;
         }
 
         var metadata = await ReadTensorMetadataFromGgufAsync(nativeGgufPath, Path.GetDirectoryName(nativeGgufPath)!);
@@ -1930,18 +1904,27 @@ public class QuantizationService
                                       x.MoeExperts == 0 && x.MoeRouter == 0, ct);
 
         if (combo == null)
-            throw new InvalidOperationException(
-                "Native-source benchmark TensorCombo is missing; benchmark base model first.");
+        {
+            combo = new TensorCombo((TensorConfig)HybridQuant.CreatePureBaseline(BaselineQuants.GetNativeQuant()));
+            db.TensorCombos.Add(combo);
+            await db.SaveChangesAsync(ct);
+        }
 
-        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var benchmarkAiModelHashId = scopedAiModelHashId;
         var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
             db,
-            exactAiModelHashId,
+            benchmarkAiModelHashId,
             createIfMissing: false,
             ct);
 
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var baselineDefinition = await BaselineDefinitionResolver.ResolveRequiredDefinitionAsync(db, BaselineQuants.GetNativeQuant(), ct);
+
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == exactAiModelHashId &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.AiModelHashId == benchmarkAiModelHashId &&
                         x.ImatrixDefinitionId == imatrixDefinitionId &&
                         x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
@@ -1962,9 +1945,17 @@ public class QuantizationService
                 {
                     Id = Guid.NewGuid(),
                     AiBenchmarkId = benchmarkId.Value,
+                    ArchitectureFamilyId = architectureFamilyId,
+                    TensorGroupProfileId = tensorGroupProfileId,
+                    BaselineQuantDefinitionId = baselineDefinition.Id,
+                    TensorComboId = combo.Id,
                     AiModelHashId = scopedAiModelHashId,
                     BaselineQuantId = BaselineQuants.NativeSourceUniqueId,
                     TensorWeightSchemeId = nativeScheme.UniqueId,
+                    BaselineCanonicalKey = BaselineQuants.GetNativeQuant().CanonicalKey,
+                    BaselineSourceKind = BaselineQuants.GetNativeQuant().SourceKind,
+                    BaselineSourceRepository = BaselineQuants.GetNativeQuant().SourceRepository,
+                    BaselineSourceFileName = BaselineQuants.GetNativeQuant().SourceFileName,
                     TensorGroupId = primaryGroup?.UniqueId ?? UnknownTensorGroupId,
                     TensorName = x.Key,
                     FinalQuantType = x.Value.FinalQuantType
@@ -1976,8 +1967,9 @@ public class QuantizationService
             throw new InvalidOperationException("Native-source learning produced no persistable rows.");
 
         await db.LearnedBaselineTensorQuants
-            .Where(x => x.AiModelHashId == scopedAiModelHashId &&
-                        x.BaselineQuantId == BaselineQuants.NativeSourceUniqueId &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinition.Id &&
                         x.TensorWeightSchemeId == nativeScheme.UniqueId)
             .ExecuteDeleteAsync(ct);
 
@@ -2077,6 +2069,10 @@ public class QuantizationService
             throw new InvalidOperationException(
                 "Unable to persist learned mappings because scoped AiModelHash row was not found.");
 
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var baselineDefinition = await BaselineDefinitionResolver.ResolveRequiredDefinitionAsync(db, quant.BaseQuant, ct);
+
         var combo = await db.TensorCombos
             .AsNoTracking()
             .FirstAsync(x => x.BaseQuant == quant.BaseQuant.UniqueId &&
@@ -2084,13 +2080,16 @@ public class QuantizationService
                              x.AttnOutput == 0 && x.FfnUpGate == 0 && x.FfnDown == 0 && x.MoeExperts == 0 &&
                              x.MoeRouter == 0, ct);
 
-        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var benchmarkAiModelHashId = scopedAiModelHashId.Value;
         var imatrixDefinitionId =
-            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId,
+            await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, benchmarkAiModelHashId,
                 createIfMissing: false, ct);
 
         var benchmarkId = await db.AiBenchmarks
-            .Where(x => x.AiModelHashId == exactAiModelHashId && x.ImatrixDefinitionId == imatrixDefinitionId &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.AiModelHashId == benchmarkAiModelHashId &&
+                        x.ImatrixDefinitionId == imatrixDefinitionId &&
                         x.TensorComboId == combo.Id)
             .OrderByDescending(x => x.Id)
             .Select(x => (Guid?)x.Id)
@@ -2110,6 +2109,10 @@ public class QuantizationService
                 {
                     Id = Guid.NewGuid(),
                     AiBenchmarkId = benchmarkId.Value,
+                    ArchitectureFamilyId = architectureFamilyId,
+                    TensorGroupProfileId = tensorGroupProfileId,
+                    BaselineQuantDefinitionId = baselineDefinition.Id,
+                    TensorComboId = combo.Id,
                     AiModelHashId = scopedAiModelHashId.Value,
                     BaselineQuantId = quant.BaseQuant.UniqueId,
                     TensorWeightSchemeId = tensorScheme.UniqueId,
@@ -2129,8 +2132,9 @@ public class QuantizationService
                 $"Learning baseline '{quant.BaseQuant.Names[0]}' produced no persistable rows.");
 
         await db.LearnedBaselineTensorQuants
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value &&
-                        x.BaselineCanonicalKey == quant.BaseQuant.CanonicalKey &&
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinition.Id &&
                         x.TensorWeightSchemeId == tensorScheme.UniqueId)
             .ExecuteDeleteAsync(ct);
 
@@ -2488,7 +2492,7 @@ public class QuantizationService
 
                     if (learned.Count == 0)
                         throw new InvalidOperationException(
-                            $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Run with --relearn-baseline-mappings to regenerate.");
+                            $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Use targeted YAML relearn configuration to regenerate only the affected baseline/profile truth.");
 
                     var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
                     var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
@@ -2556,7 +2560,7 @@ public class QuantizationService
         {
             throw new InvalidOperationException(
                 $"Missing full learned base-carrier mapping for baseline '{quant.BaseQuant.Names[0]}'. " +
-                "Run with --relearn-baseline-mappings before applying learned tensor configurations.");
+                "Use targeted YAML relearn configuration before applying learned tensor configurations.");
         }
 
         return blanket;
@@ -2568,15 +2572,25 @@ public class QuantizationService
         bool allowDominantFallback = false)
     {
         using var db = new MagicQuantContext();
-        var scopedAiModelHashId =
-            ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db).GetAwaiter().GetResult();
-        if (scopedAiModelHashId == null)
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var normalizedCanonicalKey = BaselineDefinitionResolver.NormalizeCanonicalKey(canonicalBaselineKey);
+        var baselineDefinitionId = db.BaselineQuantDefinitions
+            .AsNoTracking()
+            .Where(x => (x.ArchitectureFamilyId == architectureFamilyId || x.ArchitectureFamilyId == null) &&
+                        x.NormalizedCanonicalKey == normalizedCanonicalKey)
+            .OrderByDescending(x => x.ArchitectureFamilyId.HasValue)
+            .Select(x => (int?)x.Id)
+            .FirstOrDefault();
+
+        if (!baselineDefinitionId.HasValue)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
         var allRows = db.LearnedBaselineTensorQuants
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-            .Where(x => x.BaselineCanonicalKey == canonicalBaselineKey)
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinitionId.Value)
             .OrderBy(x => x.TensorName)
             .ToList();
 
@@ -2633,18 +2647,18 @@ public class QuantizationService
         bool allowDominantFallback = false)
     {
         using var db = new MagicQuantContext();
-
-        var scopedAiModelHashId =
-            ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db).GetAwaiter().GetResult();
-
-        if (scopedAiModelHashId == null)
-            return new Dictionary<string, string>(StringComparer.Ordinal);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var baselineDefinition = BaselineDefinitionResolver.ResolveRequiredDefinitionAsync(db, sourceBaseline)
+            .GetAwaiter()
+            .GetResult();
 
         var allRows = db.LearnedBaselineTensorQuants
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-            .Where(x => x.BaselineCanonicalKey == sourceBaseline.CanonicalKey)
-            .Where(x => x.TensorGroupId == targetGroup.UniqueId)
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinition.Id &&
+                        x.TensorGroupId == targetGroup.UniqueId)
             .OrderBy(x => x.TensorName)
             .ToList();
 
@@ -2851,14 +2865,24 @@ public class QuantizationService
             return null;
 
         await using var db = new MagicQuantContext();
-        var scopedAiModelHashId = await ResolveCurrentScopedAiModelHashIdOrNullAsync(db, ct);
-        if (scopedAiModelHashId == null)
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var normalizedCanonicalKey = BaselineDefinitionResolver.NormalizeCanonicalKey(plan.TestedCandidateCanonicalKey);
+        var baselineDefinitionId = await db.BaselineQuantDefinitions
+            .AsNoTracking()
+            .Where(x => (x.ArchitectureFamilyId == architectureFamilyId || x.ArchitectureFamilyId == null) &&
+                        x.NormalizedCanonicalKey == normalizedCanonicalKey)
+            .OrderByDescending(x => x.ArchitectureFamilyId.HasValue)
+            .Select(x => (int?)x.Id)
+            .FirstOrDefaultAsync(ct);
+        if (!baselineDefinitionId.HasValue)
             return null;
 
         var rows = await db.LearnedBaselineTensorQuants
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-            .Where(x => x.BaselineCanonicalKey == plan.TestedCandidateCanonicalKey)
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                        x.TensorGroupProfileId == tensorGroupProfileId &&
+                        x.BaselineQuantDefinitionId == baselineDefinitionId.Value)
             .Where(x => x.TensorGroupId == plan.TargetGroupId.Value)
             .OrderBy(x => x.TensorName)
             .Select(x => new { x.TensorName, x.FinalQuantType })
@@ -2928,15 +2952,20 @@ public class QuantizationService
             await db.SaveChangesAsync(ct);
         }
 
-        var exactAiModelHashId = await ResolveCurrentExactAiModelHashIdAsync(db, ct);
+        var benchmarkAiModelHashId = scopedAiModelHashId.Value;
         var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(
             db,
-            exactAiModelHashId,
+            benchmarkAiModelHashId,
             createIfMissing: true,
             ct);
 
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+
         var existing = await db.AiBenchmarks
-            .FirstOrDefaultAsync(x => x.AiModelHashId == exactAiModelHashId &&
+            .FirstOrDefaultAsync(x => x.ArchitectureFamilyId == architectureFamilyId &&
+                                      x.TensorGroupProfileId == tensorGroupProfileId &&
+                                      x.AiModelHashId == benchmarkAiModelHashId &&
                                       x.ImatrixDefinitionId == imatrixDefinitionId &&
                                       x.TensorComboId == duplicateCombo.Id, ct);
 
@@ -2946,11 +2975,13 @@ public class QuantizationService
         var clonedBenchmark = new AiBenchmark
         {
             Id = Guid.NewGuid(),
+            ArchitectureFamilyId = architectureFamilyId,
+            TensorGroupProfileId = tensorGroupProfileId,
             Ngl = sourceBench.Ngl,
             SizeBytes = sourceBench.SizeBytes,
             TokensPerSecond = sourceBench.TokensPerSecond,
             TensorComboId = duplicateCombo.Id,
-            AiModelHashId = exactAiModelHashId,
+            AiModelHashId = benchmarkAiModelHashId,
             ImatrixDefinitionId = imatrixDefinitionId
         };
         db.AiBenchmarks.Add(clonedBenchmark);
@@ -2971,7 +3002,9 @@ public class QuantizationService
         db.QuantizationRuns.Add(new QuantizationRun
         {
             Id = Guid.NewGuid(),
-            AiModelHashId = exactAiModelHashId,
+            ArchitectureFamilyId = architectureFamilyId,
+            TensorGroupProfileId = tensorGroupProfileId,
+            AiModelHashId = benchmarkAiModelHashId,
             ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = duplicateCombo.Id,
             AiBenchmarkId = clonedBenchmark.Id,
@@ -2988,7 +3021,9 @@ public class QuantizationService
             db.BenchmarkRuns.Add(new BenchmarkRun
             {
                 Id = Guid.NewGuid(),
-                AiModelHashId = exactAiModelHashId,
+                ArchitectureFamilyId = architectureFamilyId,
+                TensorGroupProfileId = tensorGroupProfileId,
+                AiModelHashId = benchmarkAiModelHashId,
                 ImatrixDefinitionId = imatrixDefinitionId,
                 TensorComboId = duplicateCombo.Id,
                 AiBenchmarkId = clonedBenchmark.Id,

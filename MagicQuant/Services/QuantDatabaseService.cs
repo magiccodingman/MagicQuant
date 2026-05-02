@@ -542,6 +542,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
         HybridQuant quant,
         CancellationToken ct)
     {
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
         var lookup = (TensorConfig)quant;
 
         var row = await db.AiBenchmarks
@@ -550,6 +552,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
                 c => c.Id,
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
+                    x.b.ArchitectureFamilyId == architectureFamilyId &&
+                    x.b.TensorGroupProfileId == tensorGroupProfileId &&
                     x.b.AiModelHashId == modelId &&
                     x.b.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.c.BaseQuant == lookup.BaseQuant &&

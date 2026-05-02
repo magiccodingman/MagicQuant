@@ -25,6 +25,9 @@ namespace MQ.DB.Migrations
                     b.Property<uint>("AiModelHashId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("ArchitectureFamilyId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("ImatrixDefinitionId")
                         .HasColumnType("INTEGER");
 
@@ -37,19 +40,80 @@ namespace MQ.DB.Migrations
                     b.Property<Guid>("TensorComboId")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("TensorGroupProfileId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<double>("TokensPerSecond")
                         .HasColumnType("REAL");
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AiModelHashId");
+
                     b.HasIndex("ImatrixDefinitionId");
 
                     b.HasIndex("TensorComboId");
 
-                    b.HasIndex("AiModelHashId", "ImatrixDefinitionId", "TensorComboId")
+                    b.HasIndex("TensorGroupProfileId");
+
+                    b.HasIndex("ArchitectureFamilyId", "TensorGroupProfileId", "TensorComboId");
+
+                    b.HasIndex("ArchitectureFamilyId", "TensorGroupProfileId", "AiModelHashId", "ImatrixDefinitionId", "TensorComboId")
                         .IsUnique();
 
                     b.ToTable("AiBenchmarks");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.AiBenchmarkLearnedSource", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("AiBenchmarkId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("ArchitectureFamilyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("BaselineCanonicalKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("BaselineQuantDefinitionId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid?>("SourceLearningBenchmarkId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("TensorComboId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte>("TensorGroupId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TensorGroupProfileId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BaselineQuantDefinitionId");
+
+                    b.HasIndex("SourceLearningBenchmarkId");
+
+                    b.HasIndex("TensorComboId");
+
+                    b.HasIndex("TensorGroupProfileId");
+
+                    b.HasIndex("AiBenchmarkId", "TensorGroupId")
+                        .IsUnique();
+
+                    b.HasIndex("ArchitectureFamilyId", "TensorGroupProfileId", "BaselineQuantDefinitionId");
+
+                    b.ToTable("AiBenchmarkLearnedSources");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.AiModelHash", b =>
@@ -137,8 +201,16 @@ namespace MQ.DB.Migrations
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.BaselineQuantDefinition", b =>
                 {
-                    b.Property<byte>("BaselineQuantId")
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
+
+                    b.Property<int?>("ArchitectureFamilyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("BaselineFamily")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("BaselineName")
                         .IsRequired()
@@ -150,7 +222,7 @@ namespace MQ.DB.Migrations
 
                     b.Property<string>("CanonicalKey")
                         .IsRequired()
-                        .HasMaxLength(256)
+                        .HasMaxLength(512)
                         .HasColumnType("TEXT");
 
                     b.Property<byte>("DefaultTensorSchemeId")
@@ -161,7 +233,18 @@ namespace MQ.DB.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("ExplicitCandidateSortOrder")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("FirstSeenUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsActiveInCurrentConfig")
                         .HasColumnType("INTEGER");
 
                     b.Property<bool>("IsCombinationCarrierCandidate")
@@ -176,12 +259,34 @@ namespace MQ.DB.Migrations
                     b.Property<bool>("IsLearningBaseline")
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("LastUpdatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NormalizedCanonicalKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NormalizedSourceFileName")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("NormalizedSourceRepository")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("QuantizeBaseArgumentName")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("RequiresImatrix")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("RuntimeBaselineId")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("ShortSourceName")
@@ -205,12 +310,20 @@ namespace MQ.DB.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.HasKey("BaselineQuantId");
+                    b.HasKey("Id");
 
-                    b.HasIndex("CanonicalKey")
+                    b.HasIndex("IsActiveInCurrentConfig");
+
+                    b.HasIndex("ArchitectureFamilyId", "NormalizedCanonicalKey")
                         .IsUnique();
 
-                    b.HasIndex("SourceRepository", "SourceFileName");
+                    b.HasIndex("ArchitectureFamilyId", "RuntimeBaselineId")
+                        .IsUnique();
+
+                    b.HasIndex("RuntimeBaselineId", "ArchitectureFamilyId");
+
+                    b.HasIndex("ArchitectureFamilyId", "NormalizedSourceRepository", "NormalizedSourceFileName")
+                        .IsUnique();
 
                     b.ToTable("BaselineQuantDefinitions");
                 });
@@ -224,6 +337,9 @@ namespace MQ.DB.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<uint>("AiModelHashId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ArchitectureFamilyId")
                         .HasColumnType("INTEGER");
 
                     b.Property<byte>("Category")
@@ -254,11 +370,16 @@ namespace MQ.DB.Migrations
                     b.Property<Guid>("TensorComboId")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("TensorGroupProfileId")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AiBenchmarkId");
 
                     b.HasIndex("AiModelHashId");
+
+                    b.HasIndex("ArchitectureFamilyId");
 
                     b.HasIndex("CategoryBenchmarkId");
 
@@ -267,6 +388,8 @@ namespace MQ.DB.Migrations
                     b.HasIndex("StartedUtc");
 
                     b.HasIndex("TensorComboId");
+
+                    b.HasIndex("TensorGroupProfileId");
 
                     b.HasIndex("AiBenchmarkId", "Category");
 
@@ -306,6 +429,9 @@ namespace MQ.DB.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<uint>("AiModelHashId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ArchitectureFamilyId")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("CreatedUtc")
@@ -371,6 +497,9 @@ namespace MQ.DB.Migrations
                     b.Property<int>("StaticNgl")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("TensorGroupProfileId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("TensorSplitJson")
                         .IsRequired()
                         .HasMaxLength(4000)
@@ -386,9 +515,13 @@ namespace MQ.DB.Migrations
 
                     b.HasIndex("AiModelHashId");
 
+                    b.HasIndex("ArchitectureFamilyId");
+
                     b.HasIndex("ImatrixDefinitionId");
 
-                    b.HasIndex("AiModelHashId", "ImatrixDefinitionId", "HardwareFingerprint", "QuantizedModelFingerprint", "QuantizationKey", "DiscoveryTokenTarget")
+                    b.HasIndex("TensorGroupProfileId");
+
+                    b.HasIndex("ArchitectureFamilyId", "TensorGroupProfileId", "AiModelHashId", "ImatrixDefinitionId", "HardwareFingerprint", "QuantizedModelFingerprint", "QuantizationKey", "DiscoveryTokenTarget")
                         .IsUnique();
 
                     b.ToTable("ExecutionPlanProbeCaches");
@@ -442,7 +575,6 @@ namespace MQ.DB.Migrations
             modelBuilder.Entity("MQ.DB.Models.DbModels.LearnedBaselineTensorQuant", b =>
                 {
                     b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT");
 
                     b.Property<Guid>("AiBenchmarkId")
@@ -451,10 +583,16 @@ namespace MQ.DB.Migrations
                     b.Property<uint>("AiModelHashId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("ArchitectureFamilyId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("BaselineCanonicalKey")
                         .IsRequired()
-                        .HasMaxLength(256)
+                        .HasMaxLength(512)
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("BaselineQuantDefinitionId")
+                        .HasColumnType("INTEGER");
 
                     b.Property<byte>("BaselineQuantId")
                         .HasColumnType("INTEGER");
@@ -477,7 +615,13 @@ namespace MQ.DB.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid>("TensorComboId")
+                        .HasColumnType("TEXT");
+
                     b.Property<byte>("TensorGroupId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("TensorGroupProfileId")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("TensorName")
@@ -492,10 +636,18 @@ namespace MQ.DB.Migrations
 
                     b.HasIndex("AiBenchmarkId");
 
-                    b.HasIndex("AiModelHashId", "BaselineCanonicalKey", "TensorWeightSchemeId", "TensorName")
-                        .IsUnique();
+                    b.HasIndex("AiModelHashId");
 
-                    b.HasIndex("AiModelHashId", "BaselineQuantId", "TensorWeightSchemeId", "TensorGroupId");
+                    b.HasIndex("BaselineQuantDefinitionId");
+
+                    b.HasIndex("TensorComboId");
+
+                    b.HasIndex("TensorGroupProfileId");
+
+                    b.HasIndex("ArchitectureFamilyId", "TensorGroupProfileId", "BaselineQuantDefinitionId", "TensorGroupId");
+
+                    b.HasIndex("ArchitectureFamilyId", "TensorGroupProfileId", "BaselineQuantDefinitionId", "TensorWeightSchemeId", "TensorName")
+                        .IsUnique();
 
                     b.ToTable("LearnedBaselineTensorQuants");
                 });
@@ -509,6 +661,9 @@ namespace MQ.DB.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<uint>("AiModelHashId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ArchitectureFamilyId")
                         .HasColumnType("INTEGER");
 
                     b.Property<DateTime>("CompletedUtc")
@@ -537,17 +692,24 @@ namespace MQ.DB.Migrations
                     b.Property<Guid>("TensorComboId")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("TensorGroupProfileId")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AiBenchmarkId");
 
                     b.HasIndex("AiModelHashId");
 
+                    b.HasIndex("ArchitectureFamilyId");
+
                     b.HasIndex("ImatrixDefinitionId");
 
                     b.HasIndex("StartedUtc");
 
                     b.HasIndex("TensorComboId");
+
+                    b.HasIndex("TensorGroupProfileId");
 
                     b.ToTable("QuantizationRuns");
                 });
@@ -595,11 +757,51 @@ namespace MQ.DB.Migrations
                     b.ToTable("TensorCombos");
                 });
 
+            modelBuilder.Entity("MQ.DB.Models.DbModels.TensorGroupProfile", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ArchitectureFamilyId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FingerprintHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ArchitectureFamilyId", "FingerprintHash")
+                        .IsUnique();
+
+                    b.HasIndex("ArchitectureFamilyId", "IsActive");
+
+                    b.ToTable("TensorGroupProfiles");
+                });
+
             modelBuilder.Entity("MQ.DB.Models.DbModels.AiBenchmark", b =>
                 {
                     b.HasOne("MQ.DB.Models.DbModels.AiModelHash", "AiModelHash")
                         .WithMany()
                         .HasForeignKey("AiModelHashId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -614,11 +816,71 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.TensorGroupProfile", "TensorGroupProfile")
+                        .WithMany()
+                        .HasForeignKey("TensorGroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("AiModelHash");
+
+                    b.Navigation("ArchitectureFamily");
 
                     b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
+
+                    b.Navigation("TensorGroupProfile");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.AiBenchmarkLearnedSource", b =>
+                {
+                    b.HasOne("MQ.DB.Models.DbModels.AiBenchmark", "AiBenchmark")
+                        .WithMany("LearnedSources")
+                        .HasForeignKey("AiBenchmarkId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.BaselineQuantDefinition", "BaselineQuantDefinition")
+                        .WithMany()
+                        .HasForeignKey("BaselineQuantDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.AiBenchmark", "SourceLearningBenchmark")
+                        .WithMany()
+                        .HasForeignKey("SourceLearningBenchmarkId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("MQ.DB.Models.DbModels.TensorCombo", "TensorCombo")
+                        .WithMany()
+                        .HasForeignKey("TensorComboId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.TensorGroupProfile", "TensorGroupProfile")
+                        .WithMany()
+                        .HasForeignKey("TensorGroupProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AiBenchmark");
+
+                    b.Navigation("ArchitectureFamily");
+
+                    b.Navigation("BaselineQuantDefinition");
+
+                    b.Navigation("SourceLearningBenchmark");
+
+                    b.Navigation("TensorCombo");
+
+                    b.Navigation("TensorGroupProfile");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.ArchitectureFamilyModelHash", b =>
@@ -640,6 +902,16 @@ namespace MQ.DB.Migrations
                     b.Navigation("ArchitectureFamily");
                 });
 
+            modelBuilder.Entity("MQ.DB.Models.DbModels.BaselineQuantDefinition", b =>
+                {
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.Navigation("ArchitectureFamily");
+                });
+
             modelBuilder.Entity("MQ.DB.Models.DbModels.BenchmarkRun", b =>
                 {
                     b.HasOne("MQ.DB.Models.DbModels.AiBenchmark", "AiBenchmark")
@@ -651,6 +923,12 @@ namespace MQ.DB.Migrations
                     b.HasOne("MQ.DB.Models.DbModels.AiModelHash", "AiModelHash")
                         .WithMany()
                         .HasForeignKey("AiModelHashId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -670,15 +948,25 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.TensorGroupProfile", "TensorGroupProfile")
+                        .WithMany()
+                        .HasForeignKey("TensorGroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("AiBenchmark");
 
                     b.Navigation("AiModelHash");
+
+                    b.Navigation("ArchitectureFamily");
 
                     b.Navigation("CategoryBenchmark");
 
                     b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
+
+                    b.Navigation("TensorGroupProfile");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.CategoryBenchmark", b =>
@@ -700,14 +988,30 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("MQ.DB.Models.DbModels.ImatrixDefinition", "ImatrixDefinition")
                         .WithMany()
                         .HasForeignKey("ImatrixDefinitionId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("MQ.DB.Models.DbModels.TensorGroupProfile", "TensorGroupProfile")
+                        .WithMany()
+                        .HasForeignKey("TensorGroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("AiModelHash");
 
+                    b.Navigation("ArchitectureFamily");
+
                     b.Navigation("ImatrixDefinition");
+
+                    b.Navigation("TensorGroupProfile");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.ImatrixDefinition", b =>
@@ -735,9 +1039,41 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.BaselineQuantDefinition", "BaselineQuantDefinition")
+                        .WithMany()
+                        .HasForeignKey("BaselineQuantDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.TensorCombo", "TensorCombo")
+                        .WithMany()
+                        .HasForeignKey("TensorComboId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MQ.DB.Models.DbModels.TensorGroupProfile", "TensorGroupProfile")
+                        .WithMany()
+                        .HasForeignKey("TensorGroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("AiBenchmark");
 
                     b.Navigation("AiModelHash");
+
+                    b.Navigation("ArchitectureFamily");
+
+                    b.Navigation("BaselineQuantDefinition");
+
+                    b.Navigation("TensorCombo");
+
+                    b.Navigation("TensorGroupProfile");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.QuantizationRun", b =>
@@ -753,6 +1089,12 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("MQ.DB.Models.DbModels.ImatrixDefinition", "ImatrixDefinition")
                         .WithMany()
                         .HasForeignKey("ImatrixDefinitionId")
@@ -764,18 +1106,41 @@ namespace MQ.DB.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("MQ.DB.Models.DbModels.TensorGroupProfile", "TensorGroupProfile")
+                        .WithMany()
+                        .HasForeignKey("TensorGroupProfileId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("AiBenchmark");
 
                     b.Navigation("AiModelHash");
 
+                    b.Navigation("ArchitectureFamily");
+
                     b.Navigation("ImatrixDefinition");
 
                     b.Navigation("TensorCombo");
+
+                    b.Navigation("TensorGroupProfile");
+                });
+
+            modelBuilder.Entity("MQ.DB.Models.DbModels.TensorGroupProfile", b =>
+                {
+                    b.HasOne("MQ.DB.Models.DbModels.ArchitectureFamily", "ArchitectureFamily")
+                        .WithMany()
+                        .HasForeignKey("ArchitectureFamilyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ArchitectureFamily");
                 });
 
             modelBuilder.Entity("MQ.DB.Models.DbModels.AiBenchmark", b =>
                 {
                     b.Navigation("CategorBenchmarks");
+
+                    b.Navigation("LearnedSources");
                 });
 #pragma warning restore 612, 618
         }

@@ -466,16 +466,41 @@ with open(args.out, 'w', encoding='utf-8') as f:
         if (!File.Exists(baseModelPath))
             throw new InvalidOperationException($"Base model GGUF is required before dataset-based imatrix build. Missing: {baseModelPath}");
 
+        /*var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = imatrixBin,
+            Arguments =
+                $"--no-mmap " +
+                $"-m \"{baseModelPath}\" " +
+                $"-f \"{datasetPath}\" " +
+                $"-o \"{datPath}\" ",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };*/
+
         var psi = new System.Diagnostics.ProcessStartInfo
         {
             FileName = imatrixBin,
-            Arguments = $"--no-mmap -m \"{baseModelPath}\" -f \"{datasetPath}\" -o \"{datPath}\"",
+            Arguments =
+                $"--no-mmap " +
+                //$"-ngl 45 " +
+                //$"--tensor-split 19,22 " +
+                $"-m \"{baseModelPath}\" " +
+                $"-f \"{datasetPath}\" " +
+                $"-o \"{datPath}\" " +
+               // $"-b 128 " +
+               // $"-ub 64 " +
+                $"-fa off",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
         };
 
+        psi.Environment["GGML_CUDA_DISABLE_GRAPHS"] = "1";
+        
         string launchedCommand = $"\"{imatrixBin}\" {psi.Arguments}";
+        
         AnsiConsole.MarkupLine($"[grey]Imatrix: launching command:[/] [cyan]{Markup.Escape(launchedCommand)}[/]");
 
         using var p = System.Diagnostics.Process.Start(psi)

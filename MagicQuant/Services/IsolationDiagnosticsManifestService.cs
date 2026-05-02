@@ -155,6 +155,9 @@ public sealed class IsolationDiagnosticsManifestService
         TensorConfig lookup,
         CancellationToken ct)
     {
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+
         var row = await db.AiBenchmarks
             .AsNoTracking()
             .Include(x => x.CategorBenchmarks)
@@ -163,6 +166,8 @@ public sealed class IsolationDiagnosticsManifestService
                 c => c.Id,
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
+                    x.b.ArchitectureFamilyId == architectureFamilyId &&
+                    x.b.TensorGroupProfileId == tensorGroupProfileId &&
                     x.b.AiModelHashId == aiModelHashId &&
                     x.b.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.c.BaseQuant == lookup.BaseQuant &&

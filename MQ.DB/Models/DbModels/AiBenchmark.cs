@@ -27,6 +27,12 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
 
     public double TokensPerSecond { get; set; }
 
+    public int ArchitectureFamilyId { get; set; }
+    public ArchitectureFamily ArchitectureFamily { get; set; } = default!;
+
+    public int TensorGroupProfileId { get; set; }
+    public TensorGroupProfile TensorGroupProfile { get; set; } = default!;
+
     /// <summary>
     /// foreign key
     /// </summary>
@@ -45,6 +51,7 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
     public ImatrixDefinition? ImatrixDefinition { get; set; }
 
     public List<CategoryBenchmark> CategorBenchmarks { get; set; } = new();
+    public List<AiBenchmarkLearnedSource> LearnedSources { get; set; } = new();
 
     public void Configure(EntityTypeBuilder<AiBenchmark> builder)
     {
@@ -53,8 +60,20 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
         builder.Property(x => x.Id)
             .ValueGeneratedNever();
 
-        builder.HasIndex(x => new { x.AiModelHashId, x.ImatrixDefinitionId, x.TensorComboId })
+        builder.HasIndex(x => new { x.ArchitectureFamilyId, x.TensorGroupProfileId, x.AiModelHashId, x.ImatrixDefinitionId, x.TensorComboId })
             .IsUnique();
+
+        builder.HasIndex(x => new { x.ArchitectureFamilyId, x.TensorGroupProfileId, x.TensorComboId });
+
+        builder.HasOne(x => x.ArchitectureFamily)
+            .WithMany()
+            .HasForeignKey(x => x.ArchitectureFamilyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(x => x.TensorGroupProfile)
+            .WithMany()
+            .HasForeignKey(x => x.TensorGroupProfileId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(x => x.TensorCombo)
             .WithMany()
@@ -72,6 +91,11 @@ public class AiBenchmark : ISQLiteEntity<AiBenchmark>
             .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasMany(x => x.CategorBenchmarks)
+            .WithOne(x => x.AiBenchmark)
+            .HasForeignKey(x => x.AiBenchmarkId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasMany(x => x.LearnedSources)
             .WithOne(x => x.AiBenchmark)
             .HasForeignKey(x => x.AiBenchmarkId)
             .OnDelete(DeleteBehavior.Cascade);

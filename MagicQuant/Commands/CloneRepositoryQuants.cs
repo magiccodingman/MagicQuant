@@ -64,7 +64,6 @@ public sealed class CloneRepositoryQuants : ICommand
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
-        Cache.ForceRelearnBaselineTensorMappings = false;
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;
         Cache.ForceImatrixRebuild = Config.Current.Flags.ForceImatrixRebuild;
@@ -115,6 +114,12 @@ public sealed class CloneRepositoryQuants : ICommand
 
         var architectureFamilyService = new ArchitectureFamilyService(pyManager);
         await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(baseModelGgufPath);
+
+        var tensorGroupProfileService = new TensorGroupProfileService();
+        await tensorGroupProfileService.EnsureCurrentProfileAsync();
+
+        var resolvedCustomBaselines = await hf.PrecheckAndRegisterConfiguredBaselinesAsync();
+        await new TargetedRelearnService().PlanConfirmAndExecuteAsync(resolvedCustomBaselines);
 
         var imatrixRequest = new ImatrixRequest
         {

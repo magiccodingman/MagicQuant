@@ -226,19 +226,24 @@ groups:
       - ".*layers\\..*\\.experts\\.down_proj.*"
 
   moe_router:
-    description: "MoE router/gating tensors."
+    description: "MoE router/gating tensors. Keep this MoE-specific so dense FFN gates, attention gates, and Qwen3.6 hybrid/SSM gates do not masquerade as routers."
     patterns:
+      # Top-level router/gating forms.
+      # These are intentionally anchored to names that begin with router/gating/routing.
       - "^router.*"
       - "^gating.*"
       - "^routing.*"
 
-      # Generic gate/router forms.
-      # Negative lookbehind prevents ffn_gate.weight from being treated as router.
-      - ".*(?<!ffn_)gate\\.weight$"
-      - ".*gating_network\\.weight$"
+      # Generic MoE-specific gate/router forms.
+      # Important: do NOT use a broad pattern like .*gate\.weight$ here.
+      # That catches dense FFN gates, attention gates, and hybrid SSM gates.
       - ".*moe_gate\\.weight$"
+      - ".*moe\\.gate\\.weight$"
+      - ".*moe\\.router.*"
+      - ".*gating_network\\.weight$"
 
       # llama.cpp GGUF MoE router/gate forms.
+      # ffn_gate_inp is the router/gate input tensor, not the dense ffn_gate payload.
       - "^blk\\..*\\.ffn_gate_inp\\.weight$"
       - "^blk\\..*\\.gate_inp\\.weight$"
       - "^blk\\..*\\.router.*"
@@ -250,6 +255,9 @@ groups:
       - "^blk\\..*\\.ffn_gate_inp_shexp\\.weight$"
 
       # Qwen3.5 / Qwen3.6 native HF MoE router.
+      # Keep this scoped to mlp.gate, but be aware that some dense architectures
+      # may use gate_proj for ordinary gated MLP. gate_proj belongs to FFN/expert
+      # groups above, not this router group.
       - ".*mlp\\.gate\\.weight$"
 
       # Gemma-style router tensors.
@@ -257,8 +265,16 @@ groups:
       - ".*layers\\..*\\.router\\.per_expert_scale$"
       - ".*layers\\..*\\.router\\.scale$"
 
+      # Do NOT add:
+      #   - ".*gate\\.weight$"
+      #   - ".*(?<!ffn_)gate\\.weight$"
+      #
+      # Those are too broad. They catch tensors like:
+      #   blk.N.attn_gate.weight
+      # which are not MoE routers on dense/hybrid Qwen3.6-style models.
+
   ssm:
-    description: "State-space / hybrid sequence-mixing tensors used by Qwen3.6-style hybrid architectures. These are material tensors and should be learned as a semantic group, not treated as base-quant exceptions."
+    description: "State-space / hybrid sequence-mixing tensors used by Qwen3.6-style hybrid architectures. These are material tensors when the runtime supports the group, but may also be allowed to fall back through base_quant_exceptions when this semantic group is not active."
     patterns:
       # Qwen3.6 GGUF SSM forms seen in the tensor learning failure log.
       - "^blk\\..*\\.ssm_a$"
@@ -267,6 +283,11 @@ groups:
       - "^blk\\..*\\.ssm_conv1d\\.weight$"
       - "^blk\\..*\\.ssm_dt\\.bias$"
       - "^blk\\..*\\.ssm_out\\.weight$"
+
+      # Qwen3.6 / hybrid attention-state gate.
+      # This is a gate tensor, but not an MoE router. Keep it here so it does not
+      # get vacuumed into moe_router by generic gate patterns.
+      - "^blk\\..*\\.attn_gate\\.weight$"
 
       # Broader architecture-aware SSM / state-space catch-alls.
       # Keep these below the exact GGUF names so the known forms are obvious.
@@ -295,9 +316,18 @@ base_quant_exceptions:
     - ".*position.*"
 
     # Qwen3.6 / hybrid state-space tensors.
+    # These are duplicated with the ssm group intentionally:
+    #   - If the runtime profile supports ssm as an active group, they are learned there.
+    #   - If the runtime profile does not support ssm yet, they safely fall back to BaseQuant.
+    # This avoids false assignment into unrelated groups such as moe_router.
     - "^blk\\..*\\.ssm_a$"
     - "^blk\\..*\\.ssm_alpha\\.weight$"
     - "^blk\\..*\\.ssm_beta\\.weight$"
     - "^blk\\..*\\.ssm_conv1d\\.weight$"
     - "^blk\\..*\\.ssm_dt\\.bias$"
     - "^blk\\..*\\.ssm_out\\.weight$"
+
+    # Qwen3.6 / hybrid attention-state gate.
+    # This is not a dense FFN gate and not an MoE router. If ssm is not active,
+    # allow it to fallback rather than being misclassified.
+    - "^blk\\..*\\.attn_gate\\.weight$"

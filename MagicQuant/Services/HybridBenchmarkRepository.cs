@@ -36,11 +36,15 @@ public sealed class HybridBenchmarkRepository
             return null;
 
         int? activeImatrixId = await ResolveActiveImatrixIdAsync(db, scopedAiModelHashId.Value, ct);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
         var query = db.AiBenchmarks
             .AsNoTracking()
             .Include(x => x.TensorCombo)
             .Include(x => x.CategorBenchmarks)
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId)
+            .Where(x => x.TensorGroupProfileId == tensorGroupProfileId)
             .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
             .Where(x => x.TensorCombo.BaseQuant == config.BaseQuant)
             .Where(x => x.TensorCombo.Embeddings == config.Embeddings)
@@ -165,9 +169,13 @@ public sealed class HybridBenchmarkRepository
             return null;
 
         int? activeImatrixId = await ResolveActiveImatrixIdAsync(db, scopedAiModelHashId.Value, ct);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
         return await db.QuantizationRuns
             .AsNoTracking()
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId)
+            .Where(x => x.TensorGroupProfileId == tensorGroupProfileId)
             .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
             .Where(x => x.ImatrixDefinitionId == activeImatrixId)
             .Where(x => x.TensorComboId == tensorComboId.Value)
@@ -185,14 +193,25 @@ public sealed class HybridBenchmarkRepository
         CancellationToken ct = default)
     {
         await using var db = new MagicQuantContext();
-        var scopedAiModelHashId = await ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db, ct);
-        if (scopedAiModelHashId == null)
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        var normalizedCanonicalKey = BaselineDefinitionResolver.NormalizeCanonicalKey(canonicalBaselineKey);
+        var baselineDefinitionId = await db.BaselineQuantDefinitions
+            .AsNoTracking()
+            .Where(x => (x.ArchitectureFamilyId == architectureFamilyId || x.ArchitectureFamilyId == null) &&
+                        x.NormalizedCanonicalKey == normalizedCanonicalKey)
+            .OrderByDescending(x => x.ArchitectureFamilyId.HasValue)
+            .Select(x => (int?)x.Id)
+            .FirstOrDefaultAsync(ct);
+
+        if (!baselineDefinitionId.HasValue)
             return new Dictionary<string, string>(StringComparer.Ordinal);
 
         var query = db.LearnedBaselineTensorQuants
             .AsNoTracking()
-            .Where(x => x.AiModelHashId == scopedAiModelHashId.Value)
-            .Where(x => x.BaselineCanonicalKey == canonicalBaselineKey);
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId)
+            .Where(x => x.TensorGroupProfileId == tensorGroupProfileId)
+            .Where(x => x.BaselineQuantDefinitionId == baselineDefinitionId.Value);
 
         if (groupId != null)
             query = query.Where(x => x.TensorGroupId == groupId.Value);
@@ -248,11 +267,15 @@ public sealed class HybridBenchmarkRepository
             return new List<BenchmarkSnapshotRecord>();
 
         int? activeImatrixId = await ResolveActiveImatrixIdAsync(db, scopedAiModelHashId.Value, ct);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
         var query = db.AiBenchmarks
             .AsNoTracking()
             .Include(x => x.TensorCombo)
             .Include(x => x.CategorBenchmarks)
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId)
+            .Where(x => x.TensorGroupProfileId == tensorGroupProfileId)
             .Where(x => x.AiModelHashId == scopedAiModelHashId.Value);
 
         if (strictImatrixContext)

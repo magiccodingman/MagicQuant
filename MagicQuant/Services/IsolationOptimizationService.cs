@@ -812,6 +812,8 @@ public class IsolationOptimizationService
             return null;
 
         var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, exactAiModelHashId.Value, createIfMissing: false, ct);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
         var lookup = (TensorConfig)quant;
 
         var row = await db.AiBenchmarks
@@ -821,6 +823,8 @@ public class IsolationOptimizationService
                 c => c.Id,
                 (b, c) => new { b, c })
             .FirstOrDefaultAsync(x =>
+                    x.b.ArchitectureFamilyId == architectureFamilyId &&
+                    x.b.TensorGroupProfileId == tensorGroupProfileId &&
                     x.b.AiModelHashId == exactAiModelHashId.Value &&
                     x.b.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.c.BaseQuant == lookup.BaseQuant &&

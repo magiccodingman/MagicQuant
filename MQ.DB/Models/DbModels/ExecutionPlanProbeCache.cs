@@ -8,6 +8,12 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
+    public int ArchitectureFamilyId { get; set; }
+    public ArchitectureFamily ArchitectureFamily { get; set; } = default!;
+
+    public int TensorGroupProfileId { get; set; }
+    public TensorGroupProfile TensorGroupProfile { get; set; } = default!;
+
     public uint AiModelHashId { get; set; }
     public AiModelHash AiModelHash { get; set; } = default!;
 
@@ -50,10 +56,14 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
         builder.Property(x => x.GpuMemoryLimitsJson).HasMaxLength(4000);
         builder.Property(x => x.TensorSplitJson).HasMaxLength(4000);
 
+        builder.HasIndex(x => x.ArchitectureFamilyId);
+        builder.HasIndex(x => x.TensorGroupProfileId);
         builder.HasIndex(x => x.AiModelHashId);
         builder.HasIndex(x => x.ImatrixDefinitionId);
         builder.HasIndex(x => new
         {
+            x.ArchitectureFamilyId,
+            x.TensorGroupProfileId,
             x.AiModelHashId,
             x.ImatrixDefinitionId,
             x.HardwareFingerprint,
@@ -61,6 +71,16 @@ public class ExecutionPlanProbeCache : ISQLiteEntity<ExecutionPlanProbeCache>
             x.QuantizationKey,
             x.DiscoveryTokenTarget
         }).IsUnique();
+
+        builder.HasOne(x => x.ArchitectureFamily)
+            .WithMany()
+            .HasForeignKey(x => x.ArchitectureFamilyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(x => x.TensorGroupProfile)
+            .WithMany()
+            .HasForeignKey(x => x.TensorGroupProfileId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(x => x.AiModelHash)
             .WithMany()

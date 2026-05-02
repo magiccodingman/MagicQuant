@@ -89,7 +89,9 @@ public class Cache
 
     public static int? CurrentArchitectureFamilyId { get; set; }
 
-    public static bool ForceRelearnBaselineTensorMappings { get; set; }
+    public static int? CurrentTensorGroupProfileId { get; set; }
+
+    public static string? CurrentTensorGroupProfileFingerprintHash { get; set; }
 
     public static bool ForceRefreshHardwareProbe { get; set; }
 

@@ -63,7 +63,6 @@ public class Evolution : ICommand
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
-        Cache.ForceRelearnBaselineTensorMappings = Config.Current.Flags.ForceRelearnBaselineTensorMappings;
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;
         Cache.ForceImatrixRebuild = Config.Current.Flags.ForceImatrixRebuild;
@@ -95,26 +94,11 @@ public class Evolution : ICommand
 
         var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
 
-        var customBaselineService = new HuggingFaceBaselineService(pyManager);
-        var resolvedCustomBaselines = await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
-
-        if (Config.Current.Baselines.CustomRepositories.Any(x => x.Enabled) && resolvedCustomBaselines.Count == 0)
-        {
-            throw new InvalidOperationException(
-                "Custom baseline repositories were enabled, but no custom baselines resolved into the runtime registry.");
-        }
-
         await EnsureSqliteReadyAsync();
 
         var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
         var imatrixService = new ImatrixService();
-
-        if (Cache.ForceRelearnBaselineTensorMappings)
-        {
-            await quantizationService.InvalidateBaselineArtifactsAsync();
-            AnsiConsole.MarkupLine("[yellow]Forced relearn is ON:[/] pure baseline samples will be rebuilt and relearned.");
-        }
 
         string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
@@ -124,6 +108,20 @@ public class Evolution : ICommand
 
         var architectureFamilyService = new ArchitectureFamilyService(pyManager);
         await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(bf16ModelGgufPath);
+
+        var tensorGroupProfileService = new TensorGroupProfileService();
+        await tensorGroupProfileService.EnsureCurrentProfileAsync();
+
+        var customBaselineService = new HuggingFaceBaselineService(pyManager);
+        var resolvedCustomBaselines = await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
+
+        if (Config.Current.Baselines.CustomRepositories.Any(x => x.Enabled) && resolvedCustomBaselines.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Custom baseline repositories were enabled, but no custom baselines resolved into the runtime registry.");
+        }
+
+        await new TargetedRelearnService().PlanConfirmAndExecuteAsync(resolvedCustomBaselines);
 
         var imatrixRequest = new ImatrixRequest
         {
@@ -176,7 +174,6 @@ public class Evolution : ICommand
         }
 
         bool nativeTruthAlreadyLearned =
-            !Cache.ForceRelearnBaselineTensorMappings &&
             await quantizationService.HasNativeSourceLearnedTruthAsync();
         if (nativeTruthAlreadyLearned && loadedPlanFromCache)
         {
@@ -430,21 +427,13 @@ public class Evolution : ICommand
             requiredDomains: RequiredNativeKldDomains);
 
         bool mustRegenerateNativeBenchmarkArtifacts =
-            Cache.ForceRelearnBaselineTensorMappings ||
             !status.IsValid;
 
         if (mustRegenerateNativeBenchmarkArtifacts)
         {
             AnsiConsole.Write(new Rule("[yellow]Native BF16 Benchmark/KLD Artifact Validation[/]") { Justification = Justify.Left });
 
-            if (Cache.ForceRelearnBaselineTensorMappings)
-            {
-                AnsiConsole.MarkupLine("[yellow]Forced relearn is ON:[/] native BF16 benchmark/logit artifacts will be regenerated.");
-            }
-            else
-            {
-                AnsiConsole.MarkupLine("[yellow]Native BF16 benchmark/KLD artifacts are missing or incomplete.[/] Regenerating required artifacts.");
-            }
+            AnsiConsole.MarkupLine("[yellow]Native BF16 benchmark/KLD artifacts are missing or incomplete.[/] Regenerating required artifacts.");
 
             PrintNativeBenchmarkEnvironmentIssues(status);
 
@@ -481,6 +470,18 @@ public class Evolution : ICommand
             AnsiConsole.MarkupLine("[grey]Native BF16 benchmark/KLD artifacts already exist and passed validation.[/]");
         }
 
+        // Disk artifact validation is not enough. Native tensor learning is tied to the
+        // persisted TensorCombo/AiBenchmark identity. The repair path above may run in
+        // transient mode so it can regenerate logits even when stale DB truth exists; after
+        // the artifacts are valid, explicitly hydrate/validate the SQLite benchmark row
+        // from those artifacts before native-source learning tries to attach to it.
+        await EnsureNativeBenchmarkDbTruthAsync(
+            benchmarkService: benchmarkService,
+            baseModelQuant: baseModelQuant,
+            bf16ModelGgufPath: bf16ModelGgufPath,
+            baseBenchDir: baseBenchDir,
+            baseLogitsDir: baseLogitsDir);
+
         if (!nativeTruthAlreadyLearned)
         {
             await quantizationService.LearnNativeSourceTruthAsync(bf16ModelGgufPath);
@@ -489,6 +490,35 @@ public class Evolution : ICommand
         {
             AnsiConsole.MarkupLine(
                 "[grey]Skipping native-source tensor relearn because learned native-source truth already exists.[/]");
+        }
+    }
+
+    private static async Task EnsureNativeBenchmarkDbTruthAsync(
+        BenchmarkService benchmarkService,
+        HybridQuant baseModelQuant,
+        string bf16ModelGgufPath,
+        string baseBenchDir,
+        string baseLogitsDir)
+    {
+        bool previousSuppressBenchmarkPersistence = Cache.SuppressBenchmarkPersistence;
+
+        try
+        {
+            Cache.SuppressBenchmarkPersistence = false;
+
+            await benchmarkService.RunAllBenchmarksAsync(
+                quantConfig: baseModelQuant,
+                modelPath: bf16ModelGgufPath,
+                benchDir: baseBenchDir,
+                klLogitsDir: baseLogitsDir,
+                saveLogits: true,
+                domainsOverride: RequiredNativeKldDomains);
+
+            AnsiConsole.MarkupLine("[grey]Native BF16 benchmark DB truth hydrated/validated.[/]");
+        }
+        finally
+        {
+            Cache.SuppressBenchmarkPersistence = previousSuppressBenchmarkPersistence;
         }
     }
 
@@ -696,7 +726,6 @@ public class Evolution : ICommand
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Optional if set in YAML)");
-        AnsiConsole.MarkupLine("  [green]--relearn-baseline-mappings[/]    Delete and relearn baseline tensor mappings (Optional)");
         AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
         AnsiConsole.MarkupLine("  [green]--use-imatrix[/]    Enable imatrix acquisition/build and allow imatrix-required search candidates (Optional)");
         AnsiConsole.MarkupLine("  [green]--allow-high-precision-hybrids[/]    Keep BF16/F16 explicit group candidates in final surviving combos (Optional, default false)");

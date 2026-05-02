@@ -89,6 +89,15 @@ public sealed class TensorWeightScheme
                scheme.UniqueId == F32.UniqueId;
     }
 
+
+    public static TensorWeightScheme FromId(byte id)
+    {
+        var found = All.FirstOrDefault(x => x.UniqueId == id);
+        if (found == null)
+            throw new InvalidOperationException($"Unknown tensor weight scheme id '{id}'.");
+        return found;
+    }
+
     // Compatibility shim for any older code still referencing BF16_F16.
     public static TensorWeightScheme BF16_F16 => GetCurrentNativePrecisionScheme();
 
@@ -259,6 +268,8 @@ public sealed class TensorWeightScheme
         IQ2_S,
         IQ2_XS,
         IQ2_XXS,
-        Q4_K
+        Q4_K,
+        Q4_K_S,
+        Q5_K_S
     ];
 }

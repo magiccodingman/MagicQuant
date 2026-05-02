@@ -30,6 +30,7 @@ public static class MagicQuantYamlLoader
             .Build();
 
         var yaml = File.ReadAllText(configPath);
+        RejectLegacyGlobalRelearnYaml(yaml, configPath);
         var loaded = deserializer.Deserialize<MagicQuantYamlConfig>(yaml) ?? MagicQuantYamlConfig.CreateDefault();
       
         ApplyCliOverrides(loaded, args);
@@ -68,7 +69,6 @@ public static class MagicQuantYamlLoader
 
         Cache.UseImatrix = config.Flags.UseImatrix;
         Cache.ForceImatrixRebuild = config.Flags.ForceImatrixRebuild;
-        Cache.ForceRelearnBaselineTensorMappings = config.Flags.ForceRelearnBaselineTensorMappings;
         Cache.ForceRefreshHardwareProbe = config.Flags.ForceRefreshHardwareProbe;
 
         config.Hardware.GpuMemoryLimitsGb ??= new Dictionary<int, double>();
@@ -190,6 +190,18 @@ public static class MagicQuantYamlLoader
         return result;
     }
 
+
+    private static void RejectLegacyGlobalRelearnYaml(string yaml, string configPath)
+    {
+        if (yaml.IndexOf("force_relearn_baseline_tensor_mappings", StringComparison.OrdinalIgnoreCase) < 0)
+            return;
+
+        throw new InvalidOperationException(
+            $"Config '{configPath}' contains removed option 'flags.force_relearn_baseline_tensor_mappings'. " +
+            "This global destructive relearn mode has been removed. Use targeted relearn commands under 'learning:' " +
+            "or per custom include 'force_relearn: true'.");
+    }
+
     private static void ApplyCliOverrides(MagicQuantYamlConfig config, IReadOnlyList<CliArg> args)
     {
         string? Get(string name) => args.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))?.Value;
@@ -202,7 +214,8 @@ public static class MagicQuantYamlLoader
 
         if (Has("use-imatrix")) config.Flags.UseImatrix = true;
         if (Has("imatrix-force-rebuild")) config.Flags.ForceImatrixRebuild = true;
-        if (Has("relearn-baseline-mappings")) config.Flags.ForceRelearnBaselineTensorMappings = true;
+        if (Has("relearn-baseline-mappings") || Has("force-relearn-baseline-tensor-mappings"))
+            throw new InvalidOperationException("--relearn-baseline-mappings was removed because it globally wiped learned tensor truth. Use YAML learning.force_relearn_architecture_family, learning.force_relearn_standard_baselines, or custom_repositories/includes/force_relearn instead.");
         if (Has("recheck-hardware-probe") || Has("force-refresh-hardware-probe") || Has("force_refresh_hardware_probe")) config.Flags.ForceRefreshHardwareProbe = true;
         if (Has("allow-high-precision-hybrids")) config.Flags.AllowHighPrecisionHybrids = true;
 

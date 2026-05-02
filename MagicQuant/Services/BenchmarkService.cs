@@ -542,10 +542,14 @@ public class BenchmarkService
         await using var db = new MagicQuantContext();
         var aiModelHashId = await GetOrCreateAiModelHashIdAsync(db, ct);
         var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, aiModelHashId, createIfMissing: false, ct);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
         var row = await db.ExecutionPlanProbeCaches
             .AsNoTracking()
             .FirstOrDefaultAsync(x =>
+                x.ArchitectureFamilyId == architectureFamilyId &&
+                x.TensorGroupProfileId == tensorGroupProfileId &&
                 x.AiModelHashId == aiModelHashId &&
                 x.ImatrixDefinitionId == imatrixDefinitionId &&
                 x.HardwareFingerprint == key.HardwareFingerprint &&
@@ -642,9 +646,13 @@ public class BenchmarkService
         await using var db = new MagicQuantContext();
         var aiModelHashId = await GetOrCreateAiModelHashIdAsync(db, ct);
         var imatrixDefinitionId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, aiModelHashId, createIfMissing: true, ct);
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
 
         var existing = await db.ExecutionPlanProbeCaches
             .FirstOrDefaultAsync(x =>
+                x.ArchitectureFamilyId == architectureFamilyId &&
+                x.TensorGroupProfileId == tensorGroupProfileId &&
                 x.AiModelHashId == aiModelHashId &&
                 x.ImatrixDefinitionId == imatrixDefinitionId &&
                 x.HardwareFingerprint == key.HardwareFingerprint &&
@@ -659,6 +667,8 @@ public class BenchmarkService
         {
             existing = new ExecutionPlanProbeCache
             {
+                ArchitectureFamilyId = architectureFamilyId,
+                TensorGroupProfileId = tensorGroupProfileId,
                 AiModelHashId = aiModelHashId,
                 ImatrixDefinitionId = imatrixDefinitionId,
                 HardwareFingerprint = key.HardwareFingerprint,
@@ -1154,7 +1164,7 @@ public class BenchmarkService
         var existingBench = await db.AiBenchmarks
             .Include(x => x.CategorBenchmarks)
             .AsNoTracking()
-            .FirstOrDefaultAsync(b => b.AiModelHashId == aiModelHash.Id && b.ImatrixDefinitionId == identity.ImatrixDefinitionId && b.TensorComboId == tensorCombo.Id);
+            .FirstOrDefaultAsync(b => b.ArchitectureFamilyId == TensorGroupProfileService.RequireCurrentArchitectureFamilyId() && b.TensorGroupProfileId == TensorGroupProfileService.RequireCurrentProfileId() && b.AiModelHashId == aiModelHash.Id && b.ImatrixDefinitionId == identity.ImatrixDefinitionId && b.TensorComboId == tensorCombo.Id);
 
         // 1. DB truth first
         if (existingBench != null && HasRequiredCategories(existingBench, requestedDomains, requireKld))
@@ -1216,12 +1226,14 @@ public class BenchmarkService
 
         var trackedBench = await db.AiBenchmarks
             .Include(x => x.CategorBenchmarks)
-            .FirstOrDefaultAsync(x => x.AiModelHashId == aiModelHash.Id && x.ImatrixDefinitionId == identity.ImatrixDefinitionId && x.TensorComboId == tensorCombo.Id);
+            .FirstOrDefaultAsync(x => x.ArchitectureFamilyId == TensorGroupProfileService.RequireCurrentArchitectureFamilyId() && x.TensorGroupProfileId == TensorGroupProfileService.RequireCurrentProfileId() && x.AiModelHashId == aiModelHash.Id && x.ImatrixDefinitionId == identity.ImatrixDefinitionId && x.TensorComboId == tensorCombo.Id);
 
         if (trackedBench == null)
         {
             trackedBench = new AiBenchmark
             {
+                ArchitectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId(),
+                TensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId(),
                 AiModelHashId = aiModelHash.Id,
                 ImatrixDefinitionId = identity.ImatrixDefinitionId,
                 TensorComboId = tensorCombo.Id,
@@ -1556,9 +1568,14 @@ public class BenchmarkService
                     ? res.ModelSizeBytes!.Value
                     : (File.Exists(modelPath) ? (ulong)new FileInfo(modelPath).Length : 0UL);
 
+            int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+            int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+
             var bench = await db.AiBenchmarks
                 .Include(x => x.CategorBenchmarks)
                 .FirstOrDefaultAsync(x =>
+                    x.ArchitectureFamilyId == architectureFamilyId &&
+                    x.TensorGroupProfileId == tensorGroupProfileId &&
                     x.AiModelHashId == model.Id &&
                     x.ImatrixDefinitionId == imatrixDefinitionId &&
                     x.TensorComboId == combo.Id);
@@ -1567,6 +1584,8 @@ public class BenchmarkService
             {
                 bench = new AiBenchmark
                 {
+                    ArchitectureFamilyId = architectureFamilyId,
+                    TensorGroupProfileId = tensorGroupProfileId,
                     AiModelHashId = model.Id,
                     ImatrixDefinitionId = imatrixDefinitionId,
                     TensorComboId = combo.Id
@@ -1652,6 +1671,8 @@ public class BenchmarkService
                     db.BenchmarkRuns.Add(new BenchmarkRun
                     {
                         Id = Guid.NewGuid(),
+                        ArchitectureFamilyId = architectureFamilyId,
+                        TensorGroupProfileId = tensorGroupProfileId,
                         AiModelHashId = model.Id,
                         ImatrixDefinitionId = imatrixDefinitionId,
                         TensorComboId = combo.Id,
@@ -1668,6 +1689,8 @@ public class BenchmarkService
 
                 await db.SaveChangesAsync();
             }
+
+            await ReplaceBenchmarkLearnedSourcesAsync(db, bench, combo, architectureFamilyId, tensorGroupProfileId);
 
             await transaction.CommitAsync();
         }
@@ -1688,6 +1711,70 @@ public class BenchmarkService
 
             throw;
         }
+    }
+
+
+    private static async Task ReplaceBenchmarkLearnedSourcesAsync(
+        MagicQuantContext db,
+        AiBenchmark bench,
+        TensorCombo combo,
+        int architectureFamilyId,
+        int tensorGroupProfileId)
+    {
+        await db.AiBenchmarkLearnedSources
+            .Where(x => x.AiBenchmarkId == bench.Id)
+            .ExecuteDeleteAsync();
+
+        var groupSlots = new (byte GroupId, byte StoredValue)[]
+        {
+            (TReg.Embeddings.UniqueId, combo.Embeddings),
+            (TReg.LmHead.UniqueId, combo.LmHead),
+            (TReg.AttnQ.UniqueId, combo.AttnQ),
+            (TReg.AttnKV.UniqueId, combo.AttnKV),
+            (TReg.AttnOutput.UniqueId, combo.AttnOutput),
+            (TReg.FfnUpGate.UniqueId, combo.FfnUpGate),
+            (TReg.FfnDown.UniqueId, combo.FfnDown),
+            (TReg.MoeExperts.UniqueId, combo.MoeExperts),
+            (TReg.MoeRouter.UniqueId, combo.MoeRouter)
+        };
+
+        foreach (var (groupId, storedValue) in groupSlots)
+        {
+            if (storedValue == 0)
+                continue;
+
+            var runtimeBaselineId = BaselineQuants.DecodeTensorConfigGroupSlotToBaselineId(storedValue);
+            if (runtimeBaselineId == BaselineQuants.BF16_Hybrid.UniqueId ||
+                runtimeBaselineId == BaselineQuants.F16_Hybrid.UniqueId ||
+                runtimeBaselineId == BaselineQuants.NativeSourceUniqueId)
+                continue;
+
+            var definition = await db.BaselineQuantDefinitions
+                .AsNoTracking()
+                .Where(x => (x.ArchitectureFamilyId == architectureFamilyId || x.ArchitectureFamilyId == null) &&
+                            x.RuntimeBaselineId == runtimeBaselineId)
+                .OrderByDescending(x => x.ArchitectureFamilyId.HasValue)
+                .FirstOrDefaultAsync();
+
+            if (definition == null)
+                continue;
+
+            db.AiBenchmarkLearnedSources.Add(new AiBenchmarkLearnedSource
+            {
+                Id = Guid.NewGuid(),
+                AiBenchmarkId = bench.Id,
+                ArchitectureFamilyId = architectureFamilyId,
+                TensorGroupProfileId = tensorGroupProfileId,
+                TensorComboId = combo.Id,
+                TensorGroupId = groupId,
+                BaselineQuantDefinitionId = definition.Id,
+                SourceLearningBenchmarkId = null,
+                BaselineCanonicalKey = definition.CanonicalKey,
+                CreatedUtc = DateTime.UtcNow
+            });
+        }
+
+        await db.SaveChangesAsync();
     }
 
     private static byte DomainToCategory(string domain)
@@ -1715,6 +1802,8 @@ public class BenchmarkService
         db.BenchmarkRuns.Add(new BenchmarkRun
         {
             Id = Guid.NewGuid(),
+            ArchitectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId(),
+            TensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId(),
             AiModelHashId = aiModelHashId,
             ImatrixDefinitionId = imatrixDefinitionId,
             TensorComboId = tensorComboId,

@@ -5,6 +5,7 @@ using MagicQuant.Configuration;
 using MagicQuant.Helpers;
 using MQ.DB;
 using MQ.DB.Models;
+using MQ.DB.Models.DbModels;
 using Spectre.Console;
 
 namespace MagicQuant.Services;
@@ -18,192 +19,273 @@ public sealed class HuggingFaceBaselineService
         _python = python ?? throw new ArgumentNullException(nameof(python));
     }
 
-    public async Task<IReadOnlyList<ResolvedCustomBaselineSpec>> PrecheckAndRegisterConfiguredBaselinesAsync(CancellationToken ct = default)
+
+public async Task<IReadOnlyList<ResolvedCustomBaselineSpec>> PrecheckAndRegisterConfiguredBaselinesAsync(CancellationToken ct = default)
+{
+    await EnsureHubSupportAsync();
+
+    int architectureFamilyId = Cache.CurrentArchitectureFamilyId
+        ?? throw new InvalidOperationException("Custom baseline sync requires the architecture family to be resolved first.");
+
+    var enabledRepos = Config.Current.Baselines.CustomRepositories.Where(x => x.Enabled).ToList();
+    var resolved = new List<ResolvedCustomBaselineSpec>();
+    BaselineQuants.ResetDynamicCustomBaselines();
+
+    AnsiConsole.Write(new Rule("[yellow]Custom Baseline DB Sync[/]") { Justification = Justify.Left });
+    AnsiConsole.MarkupLine($"[grey]Enabled custom repositories:[/] [cyan]{enabledRepos.Count:N0}[/]");
+
+    await using var db = new MagicQuantContext();
+    var existingDefinitions = await db.BaselineQuantDefinitions
+        .Where(x => x.ArchitectureFamilyId == architectureFamilyId && x.IsCustomBaseline)
+        .ToListAsync(ct);
+
+    foreach (var definition in existingDefinitions)
     {
-        await EnsureHubSupportAsync();
-
-        var enabledRepos = Config.Current.Baselines.CustomRepositories.Where(x => x.Enabled).ToList();
-        var resolved = new List<ResolvedCustomBaselineSpec>();
-        BaselineQuants.ResetDynamicCustomBaselines();
-
-        AnsiConsole.Write(new Rule("[yellow]Custom Baseline Precheck[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"[grey]Enabled custom repositories:[/] [cyan]{enabledRepos.Count:N0}[/]");
-
-        if (enabledRepos.Count == 0)
-        {
-            AnsiConsole.MarkupLine("[grey]No enabled custom repositories were configured for this run.[/]");
-            Config.SetResolvedCustomBaselines(Array.Empty<ResolvedCustomBaselineSpec>());
-            BaselineQuants.ValidateIntegrityOrThrow();
-            return resolved;
-        }
-
-        var existingDynamicIdsByCanonicalKey = LoadExistingDynamicBaselineIds();
-        var reservedIds = BaselineQuants.GetAllRecognizedBaselines()
-            .Select(x => x.UniqueId)
-            .ToHashSet();
-
-        foreach (var persistedId in existingDynamicIdsByCanonicalKey.Values)
-            reservedIds.Add(persistedId);
-
-        byte nextId = BaselineQuants.GetFirstAvailableDynamicBaselineId();
-
-        foreach (var repo in enabledRepos)
-        {
-            if (string.IsNullOrWhiteSpace(repo.RepoId))
-                throw new InvalidOperationException("Custom baseline repository entry is missing repo_id.");
-
-            if (repo.Includes.Count == 0)
-                throw new InvalidOperationException($"Custom baseline repository '{repo.RepoId}' is enabled but has zero include entries.");
-
-            AnsiConsole.MarkupLine($"[cyan]Repo:[/] {Markup.Escape(repo.RepoId)} [grey](includes={repo.Includes.Count})[/]");
-
-            var repoFiles = await ListRepoFilesAsync(repo.RepoId, ct);
-            if (repoFiles.Count == 0)
-                throw new InvalidOperationException($"No files were returned from Hugging Face repo '{repo.RepoId}'.");
-
-            var ggufRepoFiles = repoFiles.Where(x => x.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)).ToList();
-            AnsiConsole.MarkupLine($"  [grey]GGUF files discovered:[/] [cyan]{ggufRepoFiles.Count:N0}[/]");
-
-            string shortSourceName = string.IsNullOrWhiteSpace(repo.ShortSourceName)
-                ? DeriveShortSourceName(repo.RepoId)
-                : repo.ShortSourceName!.Trim();
-
-            foreach (var include in repo.Includes)
-            {
-                if (string.IsNullOrWhiteSpace(include.BaselineFamily))
-                    throw new InvalidOperationException($"Repo '{repo.RepoId}' has an include entry missing baseline_family.");
-
-                var standardFamily = BaselineQuants.ResolveBuiltInStandardBaseline(include.BaselineFamily)
-                    ?? throw new InvalidOperationException(
-                        $"Custom baseline include '{include.BaselineFamily}' in repo '{repo.RepoId}' could not be matched to a built-in baseline family.");
-
-                string resolvedFileName = ResolveRepoFileName(repoFiles, include, standardFamily);
-                string displayName = string.IsNullOrWhiteSpace(include.DisplayName)
-                    ? $"{shortSourceName}-{standardFamily.Names[0]}"
-                    : include.DisplayName!.Trim();
-
-                string canonicalKey = BuildCanonicalKey(repo.RepoId, resolvedFileName, standardFamily.Names[0]);
-                bool requiresImatrix = include.RequiresImatrix ?? standardFamily.RequiresImatrix;
-                bool allowAsLearning = include.AllowAsLearningBaseline ?? repo.AllowAsLearningBaseline;
-                bool allowAsCarrier = include.AllowAsCombinationCarrier ?? repo.AllowAsCombinationCarrier;
-                bool allowAsExplicit = include.AllowAsExplicitGroupCandidate ?? repo.AllowAsExplicitGroupCandidate;
-                string quantizeBaseName = string.IsNullOrWhiteSpace(include.QuantizeBaseName)
-                    ? standardFamily.Names[0]
-                    : include.QuantizeBaseName!.Trim();
-
-                var bannedGroups = include.BannedGroupIds.Count > 0
-                    ? include.BannedGroupIds.ToArray()
-                    : standardFamily.BannedGroupIds.ToArray();
-
-                byte dynamicBaselineId = ResolveDynamicBaselineId(
-                    canonicalKey,
-                    existingDynamicIdsByCanonicalKey,
-                    reservedIds,
-                    ref nextId);
-
-                var dynamicBaseline = BaselineQuants.CreateDynamicCustomBaseline(
-                    uniqueId: dynamicBaselineId,
-                    displayName: displayName,
-                    quantizeBaseArgumentName: quantizeBaseName,
-                    sourceRepository: repo.RepoId,
-                    sourceFileName: resolvedFileName,
-                    shortSourceName: shortSourceName,
-                    sourceOwner: DeriveSourceOwner(repo.RepoId),
-                    sourceKind: "huggingface_repo",
-                    canonicalKey: canonicalKey,
-                    primaryTensorWeightScheme: standardFamily.PrimaryTensorWeightScheme,
-                    learnedMatchTensorWeightSchemes: standardFamily.LearnedMatchTensorWeightSchemes,
-                    bannedGroupIds: bannedGroups,
-                    requiresImatrix: requiresImatrix,
-                    isLearningBaseline: allowAsLearning,
-                    isCombinationCarrierCandidate: allowAsCarrier,
-                    isExplicitGroupCombinationCandidate: allowAsExplicit,
-                    bitRange: standardFamily.BitRange,
-                    explicitCandidateSortOrder: standardFamily.ExplicitCandidateSortOrder);
-
-                BaselineQuants.RegisterDynamicCustomBaseline(dynamicBaseline);
-
-                var spec = new ResolvedCustomBaselineSpec
-                {
-                    DynamicBaselineId = dynamicBaseline.UniqueId,
-                    CanonicalKey = dynamicBaseline.CanonicalKey,
-                    DisplayName = dynamicBaseline.Names[0],
-                    RepoId = repo.RepoId,
-                    SourceOwner = dynamicBaseline.SourceOwner ?? string.Empty,
-                    SourceFileName = dynamicBaseline.SourceFileName ?? string.Empty,
-                    ShortSourceName = dynamicBaseline.ShortSourceName ?? shortSourceName,
-                    BaselineFamily = standardFamily.Names[0],
-                    QuantizeBaseName = dynamicBaseline.QuantizeBaseArgumentName,
-                    RequiresImatrix = dynamicBaseline.RequiresImatrix,
-                    AllowAsLearningBaseline = dynamicBaseline.IsLearningBaseline,
-                    AllowAsCombinationCarrier = dynamicBaseline.IsCombinationCarrierCandidate,
-                    AllowAsExplicitGroupCandidate = dynamicBaseline.IsExplicitGroupCombinationCandidate,
-                    BannedGroupIds = dynamicBaseline.BannedGroupIds
-                };
-
-                resolved.Add(spec);
-                AnsiConsole.MarkupLine(
-                    $"  [green]Resolved:[/] id=[cyan]{dynamicBaseline.UniqueId}[/] family=[yellow]{Markup.Escape(standardFamily.Names[0])}[/] file=[blue]{Markup.Escape(resolvedFileName)}[/] learning={allowAsLearning} carrier={allowAsCarrier} explicit={allowAsExplicit}");
-            }
-        }
-
-        if (enabledRepos.Count > 0 && resolved.Count == 0)
-            throw new InvalidOperationException("Custom baseline repositories were enabled, but zero custom baselines resolved into the runtime registry. Check YAML property names and include entries.");
-
-        Config.SetResolvedCustomBaselines(resolved);
-        BaselineQuants.ValidateIntegrityOrThrow();
-
-        AnsiConsole.MarkupLine($"[green]Custom baseline precheck complete:[/] [cyan]{resolved.Count:N0}[/] resolved custom baseline(s).");
-        return resolved;
+        definition.IsActiveInCurrentConfig = false;
+        definition.LastUpdatedUtc = DateTime.UtcNow;
     }
 
-    private static Dictionary<string, byte> LoadExistingDynamicBaselineIds()
+    RegisterHistoricalDefinitions(existingDefinitions);
+
+    var existingDynamicIdsByCanonicalKey = existingDefinitions
+        .Where(x => !string.IsNullOrWhiteSpace(x.NormalizedCanonicalKey))
+        .GroupBy(x => x.NormalizedCanonicalKey, StringComparer.Ordinal)
+        .ToDictionary(g => g.Key, g => g.OrderBy(x => x.RuntimeBaselineId).First().RuntimeBaselineId, StringComparer.Ordinal);
+
+    var reservedIds = BaselineQuants.GetAllRecognizedBaselines().Select(x => x.UniqueId).ToHashSet();
+    foreach (var persistedId in existingDefinitions.Select(x => x.RuntimeBaselineId))
+        reservedIds.Add(persistedId);
+
+    byte nextId = BaselineQuants.GetFirstAvailableDynamicBaselineId();
+    var now = DateTime.UtcNow;
+
+    foreach (var repo in enabledRepos)
+    {
+        if (string.IsNullOrWhiteSpace(repo.RepoId))
+            throw new InvalidOperationException("Custom baseline repository entry is missing repo_id.");
+
+        if (repo.Includes.Count == 0)
+            throw new InvalidOperationException($"Custom baseline repository '{repo.RepoId}' is enabled but has zero include entries.");
+
+        AnsiConsole.MarkupLine($"[cyan]Repo:[/] {Markup.Escape(repo.RepoId)} [grey](includes={repo.Includes.Count})[/]");
+
+        var repoFiles = await ListRepoFilesAsync(repo.RepoId, ct);
+        if (repoFiles.Count == 0)
+            throw new InvalidOperationException($"No files were returned from Hugging Face repo '{repo.RepoId}'.");
+
+        var ggufRepoFiles = repoFiles.Where(x => x.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)).ToList();
+        AnsiConsole.MarkupLine($"  [grey]GGUF files discovered:[/] [cyan]{ggufRepoFiles.Count:N0}[/]");
+
+        string shortSourceName = string.IsNullOrWhiteSpace(repo.ShortSourceName)
+            ? DeriveShortSourceName(repo.RepoId)
+            : repo.ShortSourceName!.Trim();
+
+        foreach (var include in repo.Includes)
+        {
+            if (string.IsNullOrWhiteSpace(include.BaselineFamily))
+                throw new InvalidOperationException($"Repo '{repo.RepoId}' has an include entry missing baseline_family.");
+
+            var standardFamily = BaselineQuants.ResolveBuiltInStandardBaseline(include.BaselineFamily)
+                ?? throw new InvalidOperationException(
+                    $"Custom baseline include '{include.BaselineFamily}' in repo '{repo.RepoId}' could not be matched to a built-in baseline family.");
+
+            string resolvedFileName = ResolveRepoFileName(repoFiles, include, standardFamily);
+            string normalizedRepo = BaselineDefinitionResolver.NormalizeRepoId(repo.RepoId);
+            string normalizedFile = BaselineDefinitionResolver.NormalizeFileName(resolvedFileName);
+            string canonicalKey = BuildCanonicalKey(Cache.CurrentArchitectureFamilyName, repo.RepoId, resolvedFileName);
+            string normalizedCanonicalKey = BaselineDefinitionResolver.NormalizeCanonicalKey(canonicalKey);
+
+            string displayName = string.IsNullOrWhiteSpace(include.DisplayName)
+                ? $"{shortSourceName}-{standardFamily.Names[0]}"
+                : include.DisplayName!.Trim();
+
+            bool requiresImatrix = include.RequiresImatrix ?? standardFamily.RequiresImatrix;
+            bool allowAsLearning = include.AllowAsLearningBaseline ?? repo.AllowAsLearningBaseline;
+            bool allowAsCarrier = include.AllowAsCombinationCarrier ?? repo.AllowAsCombinationCarrier;
+            bool allowAsExplicit = include.AllowAsExplicitGroupCandidate ?? repo.AllowAsExplicitGroupCandidate;
+            string quantizeBaseName = string.IsNullOrWhiteSpace(include.QuantizeBaseName)
+                ? standardFamily.Names[0]
+                : include.QuantizeBaseName!.Trim();
+
+            var bannedGroups = include.BannedGroupIds.Count > 0
+                ? include.BannedGroupIds.ToArray()
+                : standardFamily.BannedGroupIds.ToArray();
+
+            var definition = existingDefinitions.FirstOrDefault(x =>
+                string.Equals(x.NormalizedSourceRepository, normalizedRepo, StringComparison.Ordinal) &&
+                string.Equals(x.NormalizedSourceFileName, normalizedFile, StringComparison.Ordinal));
+
+            if (definition != null && !string.Equals(definition.BaselineFamily, standardFamily.Names[0], StringComparison.Ordinal) && !include.ForceRelearn)
+            {
+                throw new InvalidOperationException(
+                    $"Custom baseline semantic family changed for {repo.RepoId}/{resolvedFileName}: " +
+                    $"DB has '{definition.BaselineFamily}', YAML now says '{standardFamily.Names[0]}'. " +
+                    "This is destructive. Set this include's force_relearn: true so MagicQuant can plan and confirm targeted invalidation before resyncing the definition.");
+            }
+
+            byte dynamicBaselineId = definition?.RuntimeBaselineId ?? ResolveDynamicBaselineId(
+                normalizedCanonicalKey,
+                existingDynamicIdsByCanonicalKey,
+                reservedIds,
+                ref nextId);
+
+            var nextDefinition = new BaselineQuantDefinition
+            {
+                ArchitectureFamilyId = architectureFamilyId,
+                RuntimeBaselineId = dynamicBaselineId,
+                CanonicalKey = canonicalKey,
+                NormalizedCanonicalKey = normalizedCanonicalKey,
+                BaselineName = displayName,
+                DisplayName = displayName,
+                QuantizeBaseArgumentName = quantizeBaseName,
+                DefaultTensorSchemeId = standardFamily.PrimaryTensorWeightScheme.UniqueId,
+                DefaultTensorSchemeName = standardFamily.PrimaryTensorWeightScheme.Names[0],
+                SourceKind = repo.SourceKind,
+                SourceOwner = DeriveSourceOwner(repo.RepoId),
+                SourceRepository = repo.RepoId,
+                NormalizedSourceRepository = normalizedRepo,
+                SourceFileName = resolvedFileName,
+                NormalizedSourceFileName = normalizedFile,
+                ShortSourceName = shortSourceName,
+                BaselineFamily = standardFamily.Names[0],
+                IsCustomBaseline = true,
+                IsLearningBaseline = allowAsLearning,
+                IsCombinationCarrierCandidate = allowAsCarrier,
+                IsExplicitGroupCombinationCandidate = allowAsExplicit,
+                RequiresImatrix = requiresImatrix,
+                BitRange = standardFamily.BitRange,
+                ExplicitCandidateSortOrder = standardFamily.ExplicitCandidateSortOrder,
+                IsActiveInCurrentConfig = true,
+                FirstSeenUtc = definition?.FirstSeenUtc ?? now,
+                LastSeenUtc = now,
+                LastUpdatedUtc = now
+            };
+
+            if (definition == null)
+            {
+                definition = nextDefinition;
+                db.BaselineQuantDefinitions.Add(definition);
+                existingDefinitions.Add(definition);
+            }
+            else
+            {
+                MagicQuantContext.ApplyBaselineDefinitionUpdate(definition, nextDefinition, preserveFirstSeen: true);
+            }
+
+            var dynamicBaseline = BaselineQuants.CreateDynamicCustomBaseline(
+                uniqueId: dynamicBaselineId,
+                displayName: displayName,
+                quantizeBaseArgumentName: quantizeBaseName,
+                sourceRepository: repo.RepoId,
+                sourceFileName: resolvedFileName,
+                shortSourceName: shortSourceName,
+                sourceOwner: DeriveSourceOwner(repo.RepoId),
+                sourceKind: repo.SourceKind,
+                canonicalKey: canonicalKey,
+                primaryTensorWeightScheme: standardFamily.PrimaryTensorWeightScheme,
+                learnedMatchTensorWeightSchemes: standardFamily.LearnedMatchTensorWeightSchemes,
+                bannedGroupIds: bannedGroups,
+                requiresImatrix: requiresImatrix,
+                isLearningBaseline: allowAsLearning,
+                isCombinationCarrierCandidate: allowAsCarrier,
+                isExplicitGroupCombinationCandidate: allowAsExplicit,
+                bitRange: standardFamily.BitRange,
+                explicitCandidateSortOrder: standardFamily.ExplicitCandidateSortOrder);
+
+            BaselineQuants.RegisterDynamicCustomBaseline(dynamicBaseline);
+
+            var spec = new ResolvedCustomBaselineSpec
+            {
+                DynamicBaselineId = dynamicBaseline.UniqueId,
+                BaselineQuantDefinitionId = definition.Id == 0 ? null : definition.Id,
+                CanonicalKey = dynamicBaseline.CanonicalKey,
+                DisplayName = dynamicBaseline.Names[0],
+                RepoId = repo.RepoId,
+                SourceOwner = dynamicBaseline.SourceOwner ?? string.Empty,
+                SourceFileName = dynamicBaseline.SourceFileName ?? string.Empty,
+                ShortSourceName = dynamicBaseline.ShortSourceName ?? shortSourceName,
+                BaselineFamily = standardFamily.Names[0],
+                QuantizeBaseName = dynamicBaseline.QuantizeBaseArgumentName,
+                RequiresImatrix = dynamicBaseline.RequiresImatrix,
+                AllowAsLearningBaseline = dynamicBaseline.IsLearningBaseline,
+                AllowAsCombinationCarrier = dynamicBaseline.IsCombinationCarrierCandidate,
+                AllowAsExplicitGroupCandidate = dynamicBaseline.IsExplicitGroupCombinationCandidate,
+                ForceRelearn = include.ForceRelearn,
+                IsActiveInCurrentConfig = true,
+                BannedGroupIds = dynamicBaseline.BannedGroupIds
+            };
+
+            resolved.Add(spec);
+            AnsiConsole.MarkupLine(
+                $"  [green]Resolved:[/] id=[cyan]{dynamicBaseline.UniqueId}[/] family=[yellow]{Markup.Escape(standardFamily.Names[0])}[/] file=[blue]{Markup.Escape(resolvedFileName)}[/] learning={allowAsLearning} carrier={allowAsCarrier} explicit={allowAsExplicit} relearn={include.ForceRelearn}");
+        }
+    }
+
+    await db.SaveChangesAsync(ct);
+
+    foreach (var spec in resolved.Where(x => x.BaselineQuantDefinitionId == null))
+    {
+        var definition = await db.BaselineQuantDefinitions.AsNoTracking().FirstAsync(x =>
+            x.ArchitectureFamilyId == architectureFamilyId &&
+            x.RuntimeBaselineId == spec.DynamicBaselineId, ct);
+        spec.BaselineQuantDefinitionId = definition.Id;
+    }
+
+    RegisterHistoricalDefinitions(existingDefinitions.Where(x => !x.IsActiveInCurrentConfig));
+
+    Config.SetResolvedCustomBaselines(resolved);
+    BaselineQuants.ValidateIntegrityOrThrow();
+
+    AnsiConsole.MarkupLine($"[green]Custom baseline sync complete:[/] [cyan]{resolved.Count:N0}[/] active custom baseline(s); [cyan]{existingDefinitions.Count(x => !x.IsActiveInCurrentConfig):N0}[/] inactive historical definition(s) retained.");
+    return resolved;
+}
+
+private static void RegisterHistoricalDefinitions(IEnumerable<BaselineQuantDefinition> definitions)
+{
+    foreach (var definition in definitions.Where(x => x.IsCustomBaseline))
     {
         try
         {
-            using var db = new MagicQuantContext();
-
-            return db.BaselineQuantDefinitions
-                .AsNoTracking()
-                .Where(x => x.IsCustomBaseline && !string.IsNullOrWhiteSpace(x.CanonicalKey))
-                .OrderBy(x => x.BaselineQuantId)
-                .ToDictionary(x => x.CanonicalKey, x => x.BaselineQuantId, StringComparer.Ordinal);
+            var runtime = BaselineDefinitionResolver.ToRuntimeBaseline(definition, forceInactiveRegistration: true);
+            BaselineQuants.RegisterDynamicCustomBaseline(runtime);
         }
         catch
         {
-            return new Dictionary<string, byte>(StringComparer.Ordinal);
+            // A bad historical row should not prevent active YAML from being resolved.
+            // It simply will not be available for runtime TensorConfig hydration until fixed.
         }
     }
+}
 
-    private static byte ResolveDynamicBaselineId(
-        string canonicalKey,
-        IReadOnlyDictionary<string, byte> existingDynamicIdsByCanonicalKey,
-        HashSet<byte> reservedIds,
-        ref byte nextId)
+private static byte ResolveDynamicBaselineId(
+    string normalizedCanonicalKey,
+    IReadOnlyDictionary<string, byte> existingDynamicIdsByCanonicalKey,
+    HashSet<byte> reservedIds,
+    ref byte nextId)
+{
+    if (!string.IsNullOrWhiteSpace(normalizedCanonicalKey) &&
+        existingDynamicIdsByCanonicalKey.TryGetValue(normalizedCanonicalKey, out var existingId))
     {
-        if (!string.IsNullOrWhiteSpace(canonicalKey) &&
-            existingDynamicIdsByCanonicalKey.TryGetValue(canonicalKey, out var existingId))
-        {
-            reservedIds.Add(existingId);
-            return existingId;
-        }
-
-        while (reservedIds.Contains(nextId))
-        {
-            if (nextId >= 199)
-                throw new InvalidOperationException("No free dynamic baseline ids remain in the configured range.");
-
-            nextId++;
-        }
-
-        var allocated = nextId;
-        reservedIds.Add(allocated);
-
-        if (nextId < 199)
-            nextId++;
-
-        return allocated;
+        reservedIds.Add(existingId);
+        return existingId;
     }
+
+    while (reservedIds.Contains(nextId))
+    {
+        if (nextId >= 199)
+            throw new InvalidOperationException("No free dynamic baseline ids remain in the configured range.");
+
+        nextId++;
+    }
+
+    var allocated = nextId;
+    reservedIds.Add(allocated);
+
+    if (nextId < 199)
+        nextId++;
+
+    return allocated;
+}
 
     public async Task<string> DownloadBaselineAsync(BaselineQuants baseline, string destinationPath, bool forceRedownload = false, CancellationToken ct = default)
     {
@@ -511,8 +593,8 @@ public sealed class HuggingFaceBaselineService
         return matches[0];
     }
 
-    private static string BuildCanonicalKey(string repoId, string fileName, string family)
-        => $"hf:{repoId.Trim().ToLowerInvariant()}::{fileName.Trim().ToLowerInvariant()}::{family.Trim().ToLowerInvariant()}";
+    private static string BuildCanonicalKey(string architectureFamilyName, string repoId, string fileName)
+        => BaselineDefinitionResolver.BuildCustomCanonicalKey(architectureFamilyName, repoId, fileName);
 
     private static string DeriveShortSourceName(string repoId)
     {

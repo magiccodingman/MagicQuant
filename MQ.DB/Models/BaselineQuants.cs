@@ -249,11 +249,19 @@ public record BaselineQuants(
 
         lock (DynamicLock)
         {
-            if (GetAllRecognizedBaselines().Any(x => x.UniqueId == baseline.UniqueId))
-                throw new InvalidOperationException($"Dynamic baseline id collision detected for id '{baseline.UniqueId}'.");
+            var existingDynamic = DynamicCustomBaselines.FirstOrDefault(x => x.UniqueId == baseline.UniqueId || string.Equals(x.CanonicalKey, baseline.CanonicalKey, StringComparison.Ordinal));
+            if (existingDynamic != null)
+            {
+                DynamicCustomBaselines.Remove(existingDynamic);
+            }
+            else
+            {
+                var builtInCollision = StandardBaselines.Concat(ExactAliases)
+                    .FirstOrDefault(x => x.UniqueId == baseline.UniqueId || string.Equals(x.CanonicalKey, baseline.CanonicalKey, StringComparison.Ordinal));
 
-            if (GetAllRecognizedBaselines().Any(x => string.Equals(x.CanonicalKey, baseline.CanonicalKey, StringComparison.Ordinal)))
-                throw new InvalidOperationException($"Dynamic baseline canonical key collision detected for '{baseline.CanonicalKey}'.");
+                if (builtInCollision != null)
+                    throw new InvalidOperationException($"Dynamic baseline collision detected against built-in baseline '{builtInCollision.Names[0]}' for id/key '{baseline.UniqueId}/{baseline.CanonicalKey}'.");
+            }
 
             DynamicCustomBaselines.Add(baseline);
         }

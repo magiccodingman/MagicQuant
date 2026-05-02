@@ -8,6 +8,12 @@ public class BenchmarkRun : ISQLiteEntity<BenchmarkRun>
 {
     public Guid Id { get; set; }
 
+    public int ArchitectureFamilyId { get; set; }
+    public ArchitectureFamily ArchitectureFamily { get; set; } = default!;
+
+    public int TensorGroupProfileId { get; set; }
+    public TensorGroupProfile TensorGroupProfile { get; set; } = default!;
+
     public uint AiModelHashId { get; set; }
     public AiModelHash AiModelHash { get; set; } = default!;
 
@@ -48,6 +54,8 @@ public class BenchmarkRun : ISQLiteEntity<BenchmarkRun>
         builder.Property(x => x.Id)
             .ValueGeneratedNever();
 
+        builder.HasIndex(x => x.ArchitectureFamilyId);
+        builder.HasIndex(x => x.TensorGroupProfileId);
         builder.HasIndex(x => x.AiModelHashId);
         builder.HasIndex(x => x.ImatrixDefinitionId);
         builder.HasIndex(x => x.TensorComboId);
@@ -58,6 +66,16 @@ public class BenchmarkRun : ISQLiteEntity<BenchmarkRun>
 
         builder.Property(x => x.Error)
             .HasMaxLength(4000);
+
+        builder.HasOne(x => x.ArchitectureFamily)
+            .WithMany()
+            .HasForeignKey(x => x.ArchitectureFamilyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(x => x.TensorGroupProfile)
+            .WithMany()
+            .HasForeignKey(x => x.TensorGroupProfileId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(x => x.AiModelHash)
             .WithMany()
