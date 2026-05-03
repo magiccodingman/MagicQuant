@@ -175,7 +175,7 @@ candidate_selection:
   # Default false: do not spend final prediction/build attempts trying to replace
   # 8-bit anchors such as Q8_0 during strict dominance or near-anchor replacement.
   # Q8 is treated as the highest-fidelity practical anchor unless this is enabled.
-  allow_eight_bit_anchor_replacements: false
+  allow_eight_bit_anchor_replacements: true
 
 output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
@@ -245,7 +245,7 @@ baselines:
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.6-27B-UD-Q2_K_XL.ggufy
+        - file_name: Qwen3.6-27B-UD-Q2_K_XL.gguf
           baseline_family: IQ2_M
           quantize_base_name: IQ2_M
           display_name: UD-Q2_K_XL

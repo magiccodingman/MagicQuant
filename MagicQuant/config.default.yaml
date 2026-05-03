@@ -253,7 +253,7 @@ candidate_selection:
   # Default false: do not spend final prediction/build attempts trying to replace
   # 8-bit anchors such as Q8_0 during strict dominance or near-anchor replacement.
   # Q8 is treated as the highest-fidelity practical anchor unless this is enabled.
-  allow_eight_bit_anchor_replacements: false
+  allow_eight_bit_anchor_replacements: true
 
 output:
   # Optional explicit output directory.

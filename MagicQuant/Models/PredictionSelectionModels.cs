@@ -79,6 +79,19 @@ public sealed class HybridSelectionCandidate
     public double PredictedGainOverLine { get; init; }
     public int AttemptOrder { get; init; }
     public string WindowLabel { get; init; } = string.Empty;
+
+    // Diagnostic-only context captured at selection time. These values do not
+    // change acceptance rules; they explain how the candidate was found, how
+    // many neighbors existed, and how hard the retry aperture was capped.
+    public long CandidatePoolSize { get; init; }
+    public long WindowCandidateCount { get; init; }
+    public long LineBeatingCandidateCount { get; init; }
+    public int FetchedCandidateCount { get; init; }
+    public int CandidatesAfterBrutalityCount { get; init; }
+    public int CandidateAttemptLimit { get; init; }
+    public int PhaseWindowIndex { get; init; }
+    public int PhaseWindowCount { get; init; }
+    public IReadOnlyList<string> CandidateSelectionNotes { get; init; } = Array.Empty<string>();
 }
 
 public sealed class CandidateValidationResult
@@ -87,6 +100,7 @@ public sealed class CandidateValidationResult
     public BenchmarkSnapshotRecord? Snapshot { get; init; }
     public bool Accepted { get; init; }
     public string Message { get; init; } = string.Empty;
+    public string FailureCode { get; init; } = string.Empty;
 }
 
 public sealed class BaselineEliminationRecord

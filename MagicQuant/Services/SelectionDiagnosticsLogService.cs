@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MagicQuant.Models;
 using MQ.DB;
+using MQ.DB.Models;
 using Spectre.Console;
 
 namespace MagicQuant.Services;
@@ -52,6 +53,8 @@ public sealed class SelectionDiagnosticsLogService
             baselineFamily = snap.BaselineFamily,
             isHybrid = snap.IsHybrid,
             isExternalPureBaseline = snap.IsExternalPureBaseline,
+            isExternalRebuiltBaseline = snap.IsExternalRebuiltBaseline,
+            isMaterializedTensorMapped = snap.IsMaterializedTensorMapped,
             sizeBytes = snap.SizeBytes,
             sizeGiB = ToGb(snap.SizeBytes),
             kld = snap.Kld,
@@ -70,11 +73,15 @@ public sealed class SelectionDiagnosticsLogService
         double? actualGainOverLine = null;
         long? sizeMissBytes = null;
         double? kldMiss = null;
+        bool? actualInsideSizeWindow = null;
+        bool? actualBeatLine = null;
 
         if (snap != null)
         {
             actualLine = InterpolateKldLine(snap.SizeBytes, c.HigherDamageAnchor, c.LowerDamageAnchor);
             actualGainOverLine = actualLine.Value - snap.Kld;
+            actualInsideSizeWindow = snap.SizeBytes >= c.WindowMinSizeBytes && snap.SizeBytes <= c.WindowMaxSizeBytes;
+            actualBeatLine = snap.Kld + Config.SelectionMinimumKldImprovementEpsilon < actualLine.Value;
 
             if (snap.SizeBytes < c.WindowMinSizeBytes)
                 sizeMissBytes = (long)c.WindowMinSizeBytes - (long)snap.SizeBytes;
@@ -83,23 +90,43 @@ public sealed class SelectionDiagnosticsLogService
             else
                 sizeMissBytes = 0;
 
-            kldMiss = snap.Kld - actualLine.Value;
+            kldMiss = snap.Kld + Config.SelectionMinimumKldImprovementEpsilon - actualLine.Value;
         }
 
         return new
         {
             reason = c.Reason.ToString(),
             attemptOrder = c.AttemptOrder,
+            attemptLimit = c.CandidateAttemptLimit,
             windowLabel = c.WindowLabel,
+            phaseWindowIndex = c.PhaseWindowIndex,
+            phaseWindowCount = c.PhaseWindowCount,
             candidateKey = TensorConfigIdentity.ToKey(c.Prediction.Config),
             candidateInternalName = HybridBenchmarkRepository.BuildDisplayName(c.Prediction.Quant),
+            bitSpace = DescribeBitSpace(c.Prediction.Config),
+            overrideSummary = DescribeOverrides(c.Prediction.Config),
+            baseQuant = c.Prediction.Quant.BaseQuant.Names[0],
+            baseBitRange = c.Prediction.Quant.BaseQuant.BitRange,
+            failureCode = failure.FailureCode,
             predicted = new
             {
                 sizeBytes = c.Prediction.PredictedSizeBytes,
                 sizeGiB = ToGb(c.Prediction.PredictedSizeBytes),
                 kld = c.Prediction.PredictedKld,
                 lineKldAtPredictedSize = c.LinearExpectedKld,
-                gainOverLine = c.PredictedGainOverLine
+                gainOverLine = c.PredictedGainOverLine,
+                confidence = c.Prediction.PredictionConfidence,
+                rank = c.Prediction.PredictedRank
+            },
+            selectionContext = new
+            {
+                candidatePoolSize = c.CandidatePoolSize,
+                windowCandidateCount = c.WindowCandidateCount,
+                lineBeatingCandidateCount = c.LineBeatingCandidateCount,
+                fetchedCandidateCount = c.FetchedCandidateCount,
+                candidatesAfterBrutalityCount = c.CandidatesAfterBrutalityCount,
+                candidateAttemptLimit = c.CandidateAttemptLimit,
+                notes = c.CandidateSelectionNotes
             },
             actual = snap == null
                 ? null
@@ -112,13 +139,23 @@ public sealed class SelectionDiagnosticsLogService
                     ppl = snap.Ppl,
                     lineKldAtActualSize = actualLine,
                     gainOverLine = actualGainOverLine,
+                    insideSizeWindow = actualInsideSizeWindow,
+                    beatLine = actualBeatLine,
                     sizeMissBytes,
-                    kldMiss
+                    kldMiss,
+                    positiveKldShortfall = kldMiss.HasValue ? (double?)Math.Max(0d, kldMiss.Value) : null
                 },
             anchors = new
             {
                 higherDamageSmaller = ToAnchorLog(c.HigherDamageAnchor),
                 lowerDamageLarger = ToAnchorLog(c.LowerDamageAnchor)
+            },
+            acceptancePolicy = new
+            {
+                minimumKldImprovementEpsilon = Config.SelectionMinimumKldImprovementEpsilon,
+                windowMinSizeBytes = c.WindowMinSizeBytes,
+                windowMaxSizeBytes = c.WindowMaxSizeBytes,
+                mustBeatLineByEpsilon = true
             },
             accepted = failure.Accepted,
             message = failure.Message
@@ -131,6 +168,8 @@ public sealed class SelectionDiagnosticsLogService
         {
             key = TensorConfigIdentity.ToKey(anchor.Config),
             displayName = anchor.DisplayName,
+            provider = anchor.ProviderName,
+            baselineFamily = anchor.BaselineFamily,
             sizeBytes = anchor.SizeBytes,
             sizeGiB = ToGb(anchor.SizeBytes),
             kld = anchor.Kld,
@@ -153,6 +192,40 @@ public sealed class SelectionDiagnosticsLogService
 
         double t = Math.Clamp((candidateSize - smallSize) / (double)(largeSize - smallSize), 0d, 1d);
         return higherDamageSmaller.Kld + ((lowerDamageLarger.Kld - higherDamageSmaller.Kld) * t);
+    }
+
+
+    private static string DescribeBitSpace(TensorConfig config)
+    {
+        var baseQuant = BaselineQuants.FromId(config.BaseQuant);
+        var overrides = DescribeOverrides(config);
+        return string.IsNullOrWhiteSpace(overrides)
+            ? $"base={baseQuant.Names[0]}({baseQuant.BitRange}b); overrides=inherit-all"
+            : $"base={baseQuant.Names[0]}({baseQuant.BitRange}b); overrides={overrides}";
+    }
+
+    private static string DescribeOverrides(TensorConfig config)
+    {
+        var parts = new List<string>();
+        AddOverride(parts, "E", config.Embeddings);
+        AddOverride(parts, "H", config.LmHead);
+        AddOverride(parts, "Q", config.AttnQ);
+        AddOverride(parts, "K", config.AttnKV);
+        AddOverride(parts, "O", config.AttnOutput);
+        AddOverride(parts, "U", config.FfnUpGate);
+        AddOverride(parts, "D", config.FfnDown);
+        AddOverride(parts, "X", config.MoeExperts);
+        AddOverride(parts, "R", config.MoeRouter);
+        return string.Join(", ", parts);
+    }
+
+    private static void AddOverride(List<string> parts, string groupToken, byte storedSlot)
+    {
+        if (BaselineQuants.IsNullTensorConfigGroupSlot(storedSlot))
+            return;
+
+        var baseline = BaselineQuants.DecodeTensorConfigGroupSlotToBaseline(storedSlot);
+        parts.Add($"{groupToken}:{baseline.Names[0]}({baseline.BitRange}b)");
     }
 
     private static string ResolveGgufDirectory()

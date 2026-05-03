@@ -142,6 +142,7 @@ public sealed class BenchmarkSnapshotRecord
     public string DisplayName { get; init; } = string.Empty;
     public string ProviderName { get; init; } = string.Empty;
     public string BaselineFamily { get; init; } = string.Empty;
+
     /// <summary>
     /// True only for MagicQuant-discovered mixed tensor configurations.
     /// Exact/base-only blankets and uniform external rebuilt baselines are not hybrids.
@@ -161,6 +162,7 @@ public sealed class BenchmarkSnapshotRecord
     /// overrides are only exact/native anchors or a uniform external baseline rebuild.
     /// </summary>
     public bool IsMaterializedTensorMapped { get; init; }
+
     public ulong SizeBytes { get; init; }
     public double Kld { get; init; }
     public double Ppl { get; init; }

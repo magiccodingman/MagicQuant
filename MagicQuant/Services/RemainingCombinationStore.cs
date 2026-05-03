@@ -3,6 +3,7 @@ using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
 using MQ.DB.Models;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace MagicQuant.Services;
@@ -25,7 +26,7 @@ public sealed class RemainingCombinationStore
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = $"SELECT COUNT(*) FROM {TableName};";
-        return Convert.ToInt64(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        return ToInt64(await cmd.ExecuteScalarAsync(ct));
     }
 
     public async Task<List<TensorConfig>> LoadAllAsync(CancellationToken ct = default)
@@ -129,9 +130,9 @@ FROM {TableName};";
         using var r = await cmd.ExecuteReaderAsync(ct);
         await r.ReadAsync(ct);
 
-        long total = Convert.ToInt64(r.GetValue(0));
-        long predicted = Convert.ToInt64(r.GetValue(1));
-        long ranked = Convert.ToInt64(r.GetValue(2));
+        long total = ToInt64(r.GetValue(0));
+        long predicted = ToInt64(r.GetValue(1));
+        long ranked = ToInt64(r.GetValue(2));
 
         return new PredictionMaterializationStatus
         {
@@ -139,11 +140,93 @@ FROM {TableName};";
             PredictedRows = predicted,
             MissingPredictionRows = Math.Max(0, total - predicted),
             RankedRows = ranked,
-            MinPredictedKld = r.IsDBNull(3) ? null : Convert.ToDouble(r.GetValue(3)),
-            MaxPredictedKld = r.IsDBNull(4) ? null : Convert.ToDouble(r.GetValue(4)),
-            MinPredictedSizeBytes = r.IsDBNull(5) ? null : Convert.ToUInt64(r.GetValue(5)),
-            MaxPredictedSizeBytes = r.IsDBNull(6) ? null : Convert.ToUInt64(r.GetValue(6))
+            MinPredictedKld = r.IsDBNull(3) ? null : ToDouble(r.GetValue(3)),
+            MaxPredictedKld = r.IsDBNull(4) ? null : ToDouble(r.GetValue(4)),
+            MinPredictedSizeBytes = r.IsDBNull(5) ? null : ToUInt64(r.GetValue(5)),
+            MaxPredictedSizeBytes = r.IsDBNull(6) ? null : ToUInt64(r.GetValue(6))
         };
+    }
+
+    public async Task<long> CountStrictDominanceCandidatesAsync(
+        BenchmarkSnapshotRecord anchor,
+        CancellationToken ct = default)
+    {
+        string sql = $@"
+SELECT COUNT(*)
+FROM {TableName}
+WHERE PredictedKld IS NOT NULL
+  AND PredictedSizeBytes IS NOT NULL
+  AND PredictionRank IS NOT NULL
+  AND {CombinationDuckDbSchema.HybridPredicateSql}
+  AND PredictedSizeBytes <= ?
+  AND PredictedKld + ? < ?;";
+
+        return await ExecuteCountAsync(
+            sql,
+            new object[] { anchor.SizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.Kld },
+            ct);
+    }
+
+    public async Task<long> CountPredictedHybridCandidatesInSizeWindowAsync(
+        ulong minSize,
+        ulong maxSize,
+        CancellationToken ct = default)
+    {
+        string sql = $@"
+SELECT COUNT(*)
+FROM {TableName}
+WHERE PredictedKld IS NOT NULL
+  AND PredictedSizeBytes IS NOT NULL
+  AND PredictionRank IS NOT NULL
+  AND {CombinationDuckDbSchema.HybridPredicateSql}
+  AND PredictedSizeBytes BETWEEN ? AND ?;";
+
+        return await ExecuteCountAsync(sql, new object[] { minSize, maxSize }, ct);
+    }
+
+    public async Task<long> CountBetterThanLinearCandidatesAsync(
+        BenchmarkSnapshotRecord higherDamageSmaller,
+        BenchmarkSnapshotRecord lowerDamageLarger,
+        ulong minSize,
+        ulong maxSize,
+        CancellationToken ct = default)
+    {
+        string sql = $@"
+WITH scored AS (
+    SELECT PredictedKld,
+           PredictedSizeBytes,
+           (CAST(? AS DOUBLE)
+             + ((CAST(PredictedSizeBytes AS DOUBLE) - CAST(? AS DOUBLE)) / GREATEST(CAST(? AS DOUBLE), 1.0))
+             * (CAST(? AS DOUBLE) - CAST(? AS DOUBLE))) AS LinearExpectedKld
+    FROM {TableName}
+    WHERE PredictedKld IS NOT NULL
+      AND PredictedSizeBytes IS NOT NULL
+      AND PredictionRank IS NOT NULL
+      AND {CombinationDuckDbSchema.HybridPredicateSql}
+      AND PredictedSizeBytes BETWEEN ? AND ?
+)
+SELECT COUNT(*)
+FROM scored
+WHERE LinearExpectedKld - PredictedKld > ?;";
+
+        double denominator = Math.Max(
+            (double)lowerDamageLarger.SizeBytes - higherDamageSmaller.SizeBytes,
+            1d);
+
+        return await ExecuteCountAsync(
+            sql,
+            new object[]
+            {
+                higherDamageSmaller.Kld,
+                (double)higherDamageSmaller.SizeBytes,
+                denominator,
+                lowerDamageLarger.Kld,
+                higherDamageSmaller.Kld,
+                minSize,
+                maxSize,
+                Config.SelectionMinimumKldImprovementEpsilon
+            },
+            ct);
     }
 
     public async Task<IReadOnlyList<RankSafePredictionRow>> QueryStrictDominanceCandidatesAsync(
@@ -258,8 +341,8 @@ LIMIT ?;";
         while (await r.ReadAsync(ct))
         {
             var prediction = MapPredictedRow(r);
-            double line = Convert.ToDouble(r.GetValue(14));
-            double gain = Convert.ToDouble(r.GetValue(15));
+            double line = ToDouble(r.GetValue(14));
+            double gain = ToDouble(r.GetValue(15));
 
             list.Add(new HybridSelectionCandidate
             {
@@ -310,10 +393,10 @@ LIMIT ?;";
         {
             Config = config,
             Quant = (HybridQuant)config,
-            PredictedKld = Convert.ToDouble(r.GetValue(10)),
-            PredictedSizeBytes = Convert.ToUInt64(r.GetValue(11)),
-            PredictionConfidence = Convert.ToDouble(r.GetValue(12)),
-            PredictedRank = Convert.ToUInt64(r.GetValue(13)),
+            PredictedKld = ToDouble(r.GetValue(10)),
+            PredictedSizeBytes = ToUInt64(r.GetValue(11)),
+            PredictionConfidence = ToDouble(r.GetValue(12)),
+            PredictedRank = ToUInt64(r.GetValue(13)),
             IsPredictable = true,
             IsSizePredictable = true
         };
@@ -322,16 +405,16 @@ LIMIT ?;";
     private static TensorConfig ReadTensorConfig(System.Data.Common.DbDataReader r)
     {
         return new TensorConfig(
-            Convert.ToByte(r.GetValue(0)),
-            Convert.ToByte(r.GetValue(1)),
-            Convert.ToByte(r.GetValue(2)),
-            Convert.ToByte(r.GetValue(3)),
-            Convert.ToByte(r.GetValue(4)),
-            Convert.ToByte(r.GetValue(5)),
-            Convert.ToByte(r.GetValue(6)),
-            Convert.ToByte(r.GetValue(7)),
-            Convert.ToByte(r.GetValue(8)),
-            Convert.ToByte(r.GetValue(9)));
+            ToByte(r.GetValue(0)),
+            ToByte(r.GetValue(1)),
+            ToByte(r.GetValue(2)),
+            ToByte(r.GetValue(3)),
+            ToByte(r.GetValue(4)),
+            ToByte(r.GetValue(5)),
+            ToByte(r.GetValue(6)),
+            ToByte(r.GetValue(7)),
+            ToByte(r.GetValue(8)),
+            ToByte(r.GetValue(9)));
     }
 
     private static void AddSlotParameters(DuckDBCommand command, TensorConfig config)
@@ -346,6 +429,65 @@ LIMIT ?;";
         command.Parameters.Add(new DuckDBParameter { Value = config.FfnDown });
         command.Parameters.Add(new DuckDBParameter { Value = config.MoeExperts });
         command.Parameters.Add(new DuckDBParameter { Value = config.MoeRouter });
+    }
+
+    private async Task<long> ExecuteCountAsync(string sql, object[] args, CancellationToken ct)
+    {
+        using var c = new DuckDBConnection(ConnectionString);
+        await c.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(c, ct);
+        await EnsureTensorConfigsTableExistsAsync(c, ct);
+
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var arg in args)
+            cmd.Parameters.Add(new DuckDBParameter { Value = arg });
+
+        return ToInt64(await cmd.ExecuteScalarAsync(ct));
+    }
+
+    private static long ToInt64(object? value)
+    {
+        if (value is null || value is DBNull)
+            return 0L;
+
+        if (value is BigInteger big)
+            return (long)big;
+
+        return Convert.ToInt64(value);
+    }
+
+    private static ulong ToUInt64(object? value)
+    {
+        if (value is null || value is DBNull)
+            return 0UL;
+
+        if (value is BigInteger big)
+            return (ulong)big;
+
+        return Convert.ToUInt64(value);
+    }
+
+    private static byte ToByte(object? value)
+    {
+        if (value is null || value is DBNull)
+            return 0;
+
+        if (value is BigInteger big)
+            return (byte)big;
+
+        return Convert.ToByte(value);
+    }
+
+    private static double ToDouble(object? value)
+    {
+        if (value is null || value is DBNull)
+            return 0d;
+
+        if (value is BigInteger big)
+            return (double)big;
+
+        return Convert.ToDouble(value);
     }
 
     private static async Task ConfigureFastLoadSessionAsync(DuckDBConnection connection, CancellationToken ct)
@@ -405,7 +547,7 @@ LIMIT ?;";
         cmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?;";
         cmd.Parameters.Add(new DuckDBParameter { Value = TableName });
 
-        long matches = Convert.ToInt64(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        long matches = ToInt64(await cmd.ExecuteScalarAsync(ct));
         if (matches > 0)
             return;
 
