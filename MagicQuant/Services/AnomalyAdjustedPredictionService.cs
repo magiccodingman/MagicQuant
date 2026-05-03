@@ -1,4 +1,5 @@
 using DuckDB.NET.Data;
+using System.Text.Json;
 using MagicQuant.Models;
 using MQ.DB;
 using MQ.DB.Models;
@@ -52,6 +53,8 @@ WHERE BaseRankSafeKld IS NOT NULL;", ct);
             if (before == 0)
                 continue;
 
+            var beforeStats = await LoadPredictionStatsAsync(c, where, ct);
+
             string expression = adjustment < 0d
                 ? $"GREATEST(COALESCE(AnomalyAdjustmentKld, 0.0) + ({SqlDouble(adjustment)}), -LEAST({SqlDouble(Config.AnomalyDetection.MaxNegativeAdjustmentKld)}, COALESCE(BaseRankSafeKld, 0.0) * {SqlDouble(Config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld)}))"
                 : $"LEAST(COALESCE(AnomalyAdjustmentKld, 0.0) + ({SqlDouble(adjustment)}), LEAST({SqlDouble(Config.AnomalyDetection.MaxPositiveAdjustmentKld)}, COALESCE(BaseRankSafeKld, 0.0) * {SqlDouble(Config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld)}))";
@@ -63,7 +66,10 @@ SET AnomalyAdjustmentKld = {expression},
     PredictedKld = GREATEST(0.0, COALESCE(BaseRankSafeKld, PredictedKld, 0.0) + {expression})
 WHERE {where};", ct);
 
+            var afterStats = await LoadPredictionStatsAsync(c, where, ct);
+
             totalMatched += before;
+            var actual = ExtractActualEffect(rule);
             var log = new
             {
                 ruleId = rule.Id,
@@ -71,7 +77,13 @@ WHERE {where};", ct);
                 ruleType = rule.RuleType,
                 referenceQuant = SafeName(rule.ReferenceQuantId),
                 groupSetHash = rule.GroupSetHash,
+                basePredictedKld = beforeStats.AverageBasePredictedKld,
                 adjustment,
+                adjustedPredictedKld = afterStats.AverageFinalPredictedKld,
+                actualCandidateKld = actual.CandidateKld,
+                actualTwinKld = actual.TwinKld,
+                actualGainOrHarm = actual.GainOrHarm,
+                adjustmentReason = actual.HasActualEffect ? "measured-actual-counterfactual-effect" : "prediction-space-gap-fallback",
                 matchedRows = before,
                 confidence = rule.Confidence,
                 groups = rule.GroupStates
@@ -89,7 +101,11 @@ WHERE {where};", ct);
 
             AnsiConsole.MarkupLine(
                 $"[green]Applying anomaly rule:[/] rule=[cyan]{Markup.Escape(DescribeRule(rule))}[/] direction=[cyan]{Markup.Escape(rule.RuleDirection)}[/] " +
-                $"adjustment=[cyan]{adjustment:0.000000}[/] matched DuckDB rows=[cyan]{before:N0}[/]");
+                $"basePredictedKld=[cyan]{beforeStats.AverageBasePredictedKld:0.000000}[/] adjustment=[cyan]{adjustment:0.000000}[/] " +
+                $"adjustedPredictedKld=[cyan]{afterStats.AverageFinalPredictedKld:0.000000}[/] " +
+                $"actualCandidateKld=[cyan]{FmtNullable(actual.CandidateKld)}[/] actualTwinKld=[cyan]{FmtNullable(actual.TwinKld)}[/] " +
+                $"actualGainOrHarm=[cyan]{FmtNullable(actual.GainOrHarm)}[/] reason=[cyan]{Markup.Escape(actual.HasActualEffect ? "measured-actual-counterfactual-effect" : "prediction-space-gap-fallback")}[/] " +
+                $"matched DuckDB rows=[cyan]{before:N0}[/]");
         }
 
         await ReRankAsync(c, ct);
@@ -218,6 +234,63 @@ WHERE {CombinationDuckDbSchema.BuildSlotEqualityPredicate("t", "r")};", ct);
         return ToInt64(await cmd.ExecuteScalarAsync(ct));
     }
 
+
+    private static async Task<PredictionMatchStats> LoadPredictionStatsAsync(DuckDBConnection c, string where, CancellationToken ct)
+    {
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = $@"
+SELECT AVG(COALESCE(BaseRankSafeKld, PredictedKld)),
+       AVG(COALESCE(FinalPredictedKld, PredictedKld))
+FROM {CombinationDuckDbSchema.TableName}
+WHERE {where};";
+
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct))
+            return new PredictionMatchStats(0d, 0d);
+
+        return new PredictionMatchStats(ToDouble(r.GetValue(0)), ToDouble(r.GetValue(1)));
+    }
+
+    private static ActualRuleEffect ExtractActualEffect(AnomalyInteractionRule rule)
+    {
+        if (string.IsNullOrWhiteSpace(rule.MetadataJson))
+            return new ActualRuleEffect(null, null, null, false);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rule.MetadataJson);
+            var root = doc.RootElement;
+            double? candidate = TryGetDouble(root, "actualCandidateKld");
+            double? twin = TryGetDouble(root, "actualTwinKld");
+            double? gain = TryGetDouble(root, "actualGainOrHarm");
+            return new ActualRuleEffect(candidate, twin, gain, candidate.HasValue && twin.HasValue && gain.HasValue);
+        }
+        catch
+        {
+            return new ActualRuleEffect(null, null, null, false);
+        }
+    }
+
+    private static double? TryGetDouble(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var d)
+            ? d
+            : null;
+    }
+
+    private static string FmtNullable(double? value) => value.HasValue ? value.Value.ToString("0.000000") : "n/a";
+
+    private static double ToDouble(object? value)
+    {
+        if (value is null || value is DBNull)
+            return 0d;
+
+        if (value is BigInteger big)
+            return (double)big;
+
+        return Convert.ToDouble(value);
+    }
+
     private static long ToInt64(object? value)
     {
         if (value is null || value is DBNull)
@@ -251,6 +324,9 @@ WHERE {CombinationDuckDbSchema.BuildSlotEqualityPredicate("t", "r")};", ct);
             .Select(x => $"{ColumnNameForGroupId(x.TensorGroupId)}={SafeName(x.CandidateQuantId)}")) +
                $" in {SafeName(rule.ReferenceQuantId)} context";
     }
+
+    private readonly record struct PredictionMatchStats(double AverageBasePredictedKld, double AverageFinalPredictedKld);
+    private readonly record struct ActualRuleEffect(double? CandidateKld, double? TwinKld, double? GainOrHarm, bool HasActualEffect);
 
     private static string SafeName(byte quantId)
     {

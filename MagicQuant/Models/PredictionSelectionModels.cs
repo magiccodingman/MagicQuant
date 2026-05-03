@@ -26,6 +26,7 @@ public sealed class RankSafePredictionRow
     public ulong? ActualSizeBytes { get; set; }
     public int? ActualRank { get; set; }
     public ulong? PredictedRank { get; set; }
+    public double AnomalyAdjustmentKld { get; set; }
 
     public double AbsoluteKldError =>
         double.IsNaN(ActualKld) ? double.NaN : Math.Abs(PredictedKld - ActualKld);

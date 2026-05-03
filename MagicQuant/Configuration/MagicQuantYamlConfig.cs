@@ -261,14 +261,24 @@ public sealed class RuntimeAnomalyDetectionConfig
     public double MaxPredictionSpaceGapVsTwinKld { get; set; } = 0.00050d;
     public double MaxRelativePredictionPenaltyVsTwin { get; set; } = 0.35d;
     public double PredictionSpaceViolationMargin { get; set; } = 0.00005d;
-    public double AnomalyAdjustmentShrinkFactor { get; set; } = 0.70d;
+    public double AnomalyAdjustmentShrinkFactor { get; set; } = 0.50d;
     public double MinRuleConfidenceToApply { get; set; } = 0.50d;
-    public double MaxNegativeAdjustmentKld { get; set; } = 0.002d;
-    public double MaxPositiveAdjustmentKld { get; set; } = 0.002d;
+    public double MaxNegativeAdjustmentKld { get; set; } = 0.00075d;
+    public double MaxPositiveAdjustmentKld { get; set; } = 0.00075d;
     public double MaxAdjustmentFractionOfBaseKld { get; set; } = 0.75d;
     public int MaxSmokeCandidatesPerReferenceZone { get; set; } = 12;
     public bool PersistSuppressionResults { get; set; } = true;
     public bool VerboseAnomalyLogging { get; set; } = true;
+    public RuntimeConfirmedAnomalyExpansionConfig ConfirmedAnomalyExpansion { get; set; } = new();
+}
+
+public sealed class RuntimeConfirmedAnomalyExpansionConfig
+{
+    public bool Enabled { get; set; } = true;
+    public int MaxNeighborsPerConfirmedRule { get; set; } = 6;
+    public int MaxTotalExpansionProbes { get; set; } = 12;
+    public List<string> AllowedReferenceQuants { get; set; } = ["Q8_0"];
+    public List<string> AllowedCandidateQuants { get; set; } = ["Q6_K", "UD-Q6_K_XL", "Q5_K", "UD-Q5_K_XL"];
 }
 
 public sealed class RuntimeLearningConfig

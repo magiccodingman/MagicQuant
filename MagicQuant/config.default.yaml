@@ -286,16 +286,16 @@ anomaly_detection:
   prediction_space_violation_margin: 0.00005
 
   # Shrink applied to prediction-space adjustment after a rule is confirmed.
-  anomaly_adjustment_shrink_factor: 0.70
+  anomaly_adjustment_shrink_factor: 0.50
 
   # Minimum confidence required before applying a confirmed anomaly rule.
   min_rule_confidence_to_apply: 0.50
 
   # Absolute cap on total negative anomaly adjustment in prediction-space KLD units.
-  max_negative_adjustment_kld: 0.002
+  max_negative_adjustment_kld: 0.00075
 
   # Absolute cap on positive harmful interaction adjustment in prediction-space KLD units.
-  max_positive_adjustment_kld: 0.002
+  max_positive_adjustment_kld: 0.00075
 
   # Fractional cap relative to BaseRankSafeKld.
   max_adjustment_fraction_of_base_kld: 0.75
@@ -308,6 +308,19 @@ anomaly_detection:
 
   # Emit detailed anomaly logs.
   verbose_anomaly_logging: true
+
+  # Small bounded sniff pass around already-confirmed beneficial contextual anomalies.
+  confirmed_anomaly_expansion:
+    enabled: true
+    max_neighbors_per_confirmed_rule: 6
+    max_total_expansion_probes: 12
+    allowed_reference_quants:
+      - Q8_0
+    allowed_candidate_quants:
+      - Q6_K
+      - UD-Q6_K_XL
+      - Q5_K
+      - UD-Q5_K_XL
 
 output:
   # Optional explicit output directory.

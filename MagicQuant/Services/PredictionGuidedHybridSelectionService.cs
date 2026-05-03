@@ -1,7 +1,10 @@
 using System.Text.Json;
 using MagicQuant.Models;
 using MagicQuant.Services.Progress;
+using Microsoft.EntityFrameworkCore;
 using MQ.DB;
+using MQ.DB.Data;
+using MQ.DB.Models.DbModels;
 using MQ.DB.Models;
 using Spectre.Console;
 
@@ -66,6 +69,13 @@ public sealed class PredictionGuidedHybridSelectionService
         var interior = await RunInteriorSubspaceDiscoveryAsync(current, validationFailures, validationAttempts, phaseDiagnostics, ct);
         current = MergeAndDominanceFilter(current, interior.AcceptedSnapshots, eliminationRecords, "interior subspace discovery dominated by real benchmark truth");
 
+        var bestConfirmedAnomaly = await LoadBestConfirmedBeneficialAnomalySnapshotAsync(ct);
+        if (bestConfirmedAnomaly != null && current.All(x => TensorConfigIdentity.ToKey(x.Config) != TensorConfigIdentity.ToKey(bestConfirmedAnomaly.Config)))
+        {
+            AnsiConsole.MarkupLine($"[yellow]Best confirmed anomaly reconciliation:[/] adding probe-confirmed anomaly to final frontier consideration: [cyan]{Markup.Escape(bestConfirmedAnomaly.DisplayName)}[/]");
+            current = MergeAndDominanceFilter(current, new[] { bestConfirmedAnomaly }, eliminationRecords, "best confirmed beneficial anomaly included for final reconciliation");
+        }
+
         current = ApplyMeaningfulSpacing(current, eliminationRecords);
 
         var finalDominance = _finalEliminator.Eliminate(current);
@@ -85,13 +95,14 @@ public sealed class PredictionGuidedHybridSelectionService
             }
         }
 
+        await WriteAnomalySelectionReconciliationAsync(finalDominance.Survivors, bestConfirmedAnomaly, ct);
         await WriteSelectionPhaseDiagnosticsAsync(phaseDiagnostics, validationFailures, validationAttempts, ct);
 
         return new PredictionGuidedSelectionResult
         {
             Survivors = finalDominance.Survivors.ToList(),
             Eliminations = eliminationRecords
-                .DistinctBy(x => $"{TensorConfigIdentity.ToKey(x.Eliminated.Config)}::{TensorConfigIdentity.ToKey(x.Eliminator.Config)}::{x.Reason}")
+                .DistinctBy(x => $"{TensorConfigIdentity.ToKey(x.Eliminated.Config)}::{TensorConfigIdentity.ToKey(x.Eliminator.Config)}::{NormalizePublicEliminationReason(x.Reason)}")
                 .ToList(),
             ValidationFailures = validationFailures
         };
@@ -154,6 +165,11 @@ public sealed class PredictionGuidedHybridSelectionService
                 CandidateSelectionNotes = ["Strict query requires predicted size <= anchor size and predicted KLD + epsilon < anchor KLD."]
             }).ToList();
 
+            var strictNotes = new List<string> { "Strict query requires predicted size <= anchor size and predicted KLD + epsilon < anchor KLD." };
+            bool anomalyStrictMode = IsQ8Anchor(anchor) || candidates.Any(x => Math.Abs(x.Prediction.AnomalyAdjustmentKld) > 1e-12);
+            if (anomalyStrictMode)
+                strictNotes.Add("Q8/anomaly strict mode: validate all fetched candidates up to the configured attempt limit before choosing by actual KLD/size truth.");
+
             var diag = new SelectionPhaseDiagnostic
             {
                 Phase = "StrictDominanceReplacement",
@@ -169,16 +185,17 @@ public sealed class PredictionGuidedHybridSelectionService
                 CandidatesAfterBrutalityCount = strictRows.Count,
                 SelectedForValidationCount = candidates.Count,
                 CandidateAttemptLimit = Config.SelectionMaxFallbackAttemptsPerAnchor,
-                TopCandidates = candidates.Take(DiagnosticPreviewDisplayCount).Select(ToCandidatePreviewLog).ToList()
+                TopCandidates = candidates.Take(DiagnosticPreviewDisplayCount).Select(ToCandidatePreviewLog).ToList(),
+                Notes = strictNotes
             };
             phaseDiagnostics.Add(diag);
 
-            AnsiConsole.MarkupLine($"[grey]Strict candidates for {Markup.Escape(anchor.DisplayName)}:[/] pool={poolCount:N0}, selected={candidates.Count:N0}/{Config.SelectionMaxFallbackAttemptsPerAnchor:N0}");
+            AnsiConsole.MarkupLine($"[grey]Strict candidates for {Markup.Escape(anchor.DisplayName)}:[/] pool={poolCount:N0}, selected={candidates.Count:N0}/{Config.SelectionMaxFallbackAttemptsPerAnchor:N0}, q8/anomaly-mode={anomalyStrictMode}");
 
             if (candidates.Count == 0)
                 continue;
 
-            CandidateValidationResult? acceptedForAnchor = null;
+            var acceptedForAnchor = new List<CandidateValidationResult>();
             foreach (var candidate in candidates)
             {
                 var validation = await BuildAndValidateSingleAsync(
@@ -192,27 +209,220 @@ public sealed class PredictionGuidedHybridSelectionService
 
                 if (validation.Accepted && validation.Snapshot != null)
                 {
-                    acceptedForAnchor = validation;
-                    accepted.Add(validation.Snapshot);
-                    eliminations.Add(new BaselineEliminationRecord
-                    {
-                        Eliminated = anchor,
-                        Eliminator = validation.Snapshot,
-                        Reason = "strict hybrid dominance: lower KLD at same-or-smaller real size"
-                    });
-                    break;
+                    acceptedForAnchor.Add(validation);
+                    if (!anomalyStrictMode)
+                        break;
+
+                    continue;
                 }
 
                 validationFailures.Add(validation);
             }
 
-            if (acceptedForAnchor == null)
+            if (acceptedForAnchor.Count == 0)
             {
                 AnsiConsole.MarkupLine($"[grey]No strict predicted replacement validated for anchor:[/] {Markup.Escape(anchor.DisplayName)}");
+                continue;
             }
+
+            var chosen = ChooseBestStrictDominanceCandidate(anchor, acceptedForAnchor);
+            accepted.Add(chosen.Snapshot!);
+            eliminations.Add(new BaselineEliminationRecord
+            {
+                Eliminated = anchor,
+                Eliminator = chosen.Snapshot!,
+                Reason = "strict hybrid dominance: best accepted actual KLD at same-or-smaller real size"
+            });
+
+            var nonChosen = acceptedForAnchor
+                .Where(x => !ReferenceEquals(x, chosen))
+                .Select(x => new
+                {
+                    candidate = x.Snapshot!.DisplayName,
+                    actualKld = x.Snapshot.Kld,
+                    actualSizeBytes = x.Snapshot.SizeBytes,
+                    reasonLost = ExplainStrictAcceptedLoss(anchor, chosen.Snapshot!, x.Snapshot)
+                })
+                .ToList();
+
+            strictNotes.Add($"validated candidates={validationAttempts.Count(v => v.Candidate.WindowLabel == $"strict <= {anchor.DisplayName}")}; accepted candidates={acceptedForAnchor.Count}; chosen={chosen.Snapshot!.DisplayName}");
+            foreach (var loss in nonChosen)
+                strictNotes.Add($"accepted-but-not-chosen: {loss.candidate} lost because {loss.reasonLost}");
+
+            AnsiConsole.MarkupLine("[green]Best strict dominance candidate selected:[/]");
+            AnsiConsole.MarkupLine($"[grey]  anchor=[/] [cyan]{Markup.Escape(anchor.DisplayName)}[/]");
+            AnsiConsole.MarkupLine($"[grey]  chosen=[/] [cyan]{Markup.Escape(chosen.Snapshot!.DisplayName)}[/]");
+            AnsiConsole.MarkupLine($"[grey]  actualKld=[/] [cyan]{chosen.Snapshot.Kld:0.000000}[/]");
+            AnsiConsole.MarkupLine($"[grey]  actualSizeBytes=[/] [cyan]{chosen.Snapshot.SizeBytes:N0}[/]");
+            AnsiConsole.MarkupLine($"[grey]  gainVsAnchor=[/] [cyan]{anchor.Kld - chosen.Snapshot.Kld:0.000000}[/]");
+            AnsiConsole.MarkupLine($"[grey]  acceptedCandidateCount=[/] [cyan]{acceptedForAnchor.Count:N0}[/]");
+            AnsiConsole.MarkupLine($"[grey]  reason=[/] [cyan]{Markup.Escape(ResolveStrictChosenReason(anchor, chosen.Snapshot!))}[/]");
         }
 
         return new PhaseValidationResult { AcceptedSnapshots = accepted };
+    }
+
+
+
+    private async Task<BenchmarkSnapshotRecord?> LoadBestConfirmedBeneficialAnomalySnapshotAsync(CancellationToken ct)
+    {
+        if (!Config.AnomalyDetection.Enabled)
+            return null;
+
+        await using var db = new MagicQuantContext();
+        var modelHashId = await ArchitectureFamilyService.ResolveScopedAiModelHashIdOrNullAsync(db, ct);
+        if (modelHashId == null)
+            return null;
+
+        int architectureFamilyId = TensorGroupProfileService.RequireCurrentArchitectureFamilyId();
+        int tensorGroupProfileId = TensorGroupProfileService.RequireCurrentProfileId();
+        int? imatrixId = await ImatrixIdentityService.ResolveCurrentImatrixDefinitionIdAsync(db, modelHashId.Value, createIfMissing: false, ct);
+
+        // SQLite cannot translate ulong ordering expressions. Keep the database query
+        // to filtering/include only, then rank the tiny scoped anomaly observation set
+        // in LINQ-to-Objects. This preserves the intended ordering without tripping
+        // Microsoft.Data.Sqlite on SizeSavingsBytes.
+        var observations = await db.AnomalyProbeObservations
+            .AsNoTracking()
+            .Include(x => x.ProbeTensorCombo)
+            .Where(x => x.ArchitectureFamilyId == architectureFamilyId)
+            .Where(x => x.TensorGroupProfileId == tensorGroupProfileId)
+            .Where(x => x.AiModelHashId == modelHashId.Value)
+            .Where(x => x.ImatrixDefinitionId == imatrixId)
+            .Where(x => x.BenchmarkCategory == (byte)BenchmarkCategory.General)
+            .Where(x => x.RuleDirection == AnomalyRuleDirection.Beneficial.ToString())
+            .Where(x => x.Accepted)
+            .Where(x => x.IsContextualAnomalyProbe && !x.OldBf16Isolation && x.AllActiveGroupsExplicit)
+            .Where(x => x.ProbeTensorCombo != null)
+            .ToListAsync(ct);
+
+        var observation = observations
+            .OrderByDescending(x => x.ActualGainVsTwin)
+            .ThenBy(x => x.ActualKld)
+            .ThenByDescending(x => x.SizeSavingsBytes)
+            .FirstOrDefault();
+
+        if (observation?.ProbeTensorCombo == null)
+            return null;
+
+        var combo = observation.ProbeTensorCombo;
+        var config = new TensorConfig(combo.BaseQuant, combo.Embeddings, combo.LmHead, combo.AttnQ, combo.AttnKV, combo.AttnOutput, combo.FfnUpGate, combo.FfnDown, combo.MoeExperts, combo.MoeRouter);
+        return await _repository.LoadBenchmarkSnapshotAsync(config, ct);
+    }
+
+    private async Task WriteAnomalySelectionReconciliationAsync(
+        IReadOnlyList<BenchmarkSnapshotRecord> survivors,
+        BenchmarkSnapshotRecord? bestAnomaly,
+        CancellationToken ct)
+    {
+        if (!Config.AnomalyDetection.Enabled)
+            return;
+
+        object payload;
+        if (bestAnomaly == null)
+        {
+            payload = new
+            {
+                generatedAtUtc = DateTime.UtcNow,
+                anomalyModeEnabled = true,
+                bestConfirmedAnomaly = (object?)null,
+                selectedAnomalyDerivedSurvivor = (object?)null,
+                bestAnomalyWasSelected = false,
+                reasonNotSelected = "no confirmed beneficial anomaly observation was available"
+            };
+        }
+        else
+        {
+            string bestKey = TensorConfigIdentity.ToKey(bestAnomaly.Config);
+            bool selected = survivors.Any(x => TensorConfigIdentity.ToKey(x.Config) == bestKey);
+            string reason = selected ? string.Empty : ExplainBestAnomalyNotSelected(bestAnomaly, survivors);
+            payload = new
+            {
+                generatedAtUtc = DateTime.UtcNow,
+                anomalyModeEnabled = true,
+                bestConfirmedAnomaly = ToAnchorLog(bestAnomaly),
+                selectedAnomalyDerivedSurvivor = selected ? ToAnchorLog(bestAnomaly) : null,
+                bestAnomalyWasSelected = selected,
+                reasonNotSelected = reason,
+                survivorKeys = survivors.Select(x => new { key = TensorConfigIdentity.ToKey(x.Config), x.DisplayName, x.Kld, x.SizeBytes }).ToList()
+            };
+
+            AnsiConsole.MarkupLine("[yellow]Best confirmed beneficial anomaly:[/]");
+            AnsiConsole.MarkupLine($"[grey]  candidate=[/] [cyan]{Markup.Escape(bestAnomaly.DisplayName)}[/]");
+            AnsiConsole.MarkupLine($"[grey]  actualCandidateKld=[/] [cyan]{bestAnomaly.Kld:0.000000}[/]");
+            AnsiConsole.MarkupLine($"[grey]  actualCandidateSizeBytes=[/] [cyan]{bestAnomaly.SizeBytes:N0}[/]");
+            AnsiConsole.MarkupLine($"[grey]  selectedAsSurvivor=[/] [cyan]{selected}[/]");
+            if (!selected)
+                AnsiConsole.MarkupLine($"[grey]  reasonNotSelected=[/] [yellow]{Markup.Escape(reason)}[/]");
+        }
+
+        if (!string.IsNullOrWhiteSpace(Cache.OutputDirectory))
+        {
+            string manifestDir = Path.Combine(Cache.OutputDirectory!, "magicquant-manifest");
+            Directory.CreateDirectory(manifestDir);
+            await File.WriteAllTextAsync(Path.Combine(manifestDir, "magicquant.anomaly-selection-reconciliation.json"), JsonSerializer.Serialize(payload, JsonOptions), ct);
+        }
+    }
+
+    private static string ExplainBestAnomalyNotSelected(BenchmarkSnapshotRecord bestAnomaly, IReadOnlyList<BenchmarkSnapshotRecord> survivors)
+    {
+        var dominator = survivors.FirstOrDefault(x => x.SizeBytes <= bestAnomaly.SizeBytes && x.Kld <= bestAnomaly.Kld && (x.SizeBytes < bestAnomaly.SizeBytes || x.Kld < bestAnomaly.Kld));
+        if (dominator != null)
+            return $"dominated by survivor {dominator.DisplayName}";
+
+        var lower = survivors.OrderBy(x => x.Kld).ThenBy(x => x.SizeBytes).FirstOrDefault();
+        if (lower != null && lower.Kld < bestAnomaly.Kld)
+            return $"survivor {lower.DisplayName} has lower actual KLD; spacing/final frontier kept that candidate";
+
+        return "not selected after spacing/final dominance; no direct dominator found";
+    }
+
+    private static bool IsQ8Anchor(BenchmarkSnapshotRecord anchor)
+    {
+        try
+        {
+            return BaselineQuants.FromId(anchor.Config.BaseQuant).Names.Any(x => x.Contains("Q8", StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return anchor.DisplayName.Contains("Q8", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private static CandidateValidationResult ChooseBestStrictDominanceCandidate(
+        BenchmarkSnapshotRecord anchor,
+        IReadOnlyList<CandidateValidationResult> accepted)
+    {
+        return accepted
+            .Where(x => x.Snapshot != null)
+            .OrderBy(x => x.Snapshot!.Kld)
+            .ThenBy(x => x.Snapshot!.SizeBytes)
+            .ThenByDescending(x => anchor.Kld - x.Snapshot!.Kld)
+            .ThenBy(x => x.Candidate.Prediction.PredictedRank ?? ulong.MaxValue)
+            .ThenByDescending(x => x.Candidate.Prediction.PredictionConfidence)
+            .First();
+    }
+
+    private static string ResolveStrictChosenReason(BenchmarkSnapshotRecord anchor, BenchmarkSnapshotRecord chosen)
+        => $"lowest actual KLD among accepted strict dominance candidates, then smaller actual size, gainVsAnchor={anchor.Kld - chosen.Kld:0.000000}";
+
+    private static string ExplainStrictAcceptedLoss(
+        BenchmarkSnapshotRecord anchor,
+        BenchmarkSnapshotRecord chosen,
+        BenchmarkSnapshotRecord loser)
+    {
+        if (loser.Kld > chosen.Kld)
+            return $"higher actual KLD ({loser.Kld:0.000000} > {chosen.Kld:0.000000})";
+
+        if (Math.Abs(loser.Kld - chosen.Kld) < 1e-12 && loser.SizeBytes > chosen.SizeBytes)
+            return $"same actual KLD but larger actual size ({loser.SizeBytes:N0} > {chosen.SizeBytes:N0})";
+
+        double chosenGain = anchor.Kld - chosen.Kld;
+        double loserGain = anchor.Kld - loser.Kld;
+        if (Math.Abs(loser.Kld - chosen.Kld) < 1e-12 && loser.SizeBytes == chosen.SizeBytes && loserGain < chosenGain)
+            return $"weaker gain over anchor ({loserGain:0.000000} < {chosenGain:0.000000})";
+
+        return "lost by prediction rank/confidence tie-breaker after actual KLD and size were equivalent";
     }
 
     private async Task<PhaseValidationResult> RunNearBaselineReplacementAsync(
@@ -1259,6 +1469,23 @@ public sealed class PredictionGuidedHybridSelectionService
     }
 
     private static ulong Distance(ulong left, ulong right) => left >= right ? left - right : right - left;
+
+    private static string NormalizePublicEliminationReason(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            return string.Empty;
+
+        if (reason.Contains("dominance", StringComparison.OrdinalIgnoreCase))
+            return "dominance";
+
+        if (reason.Contains("spacing", StringComparison.OrdinalIgnoreCase))
+            return "spacing";
+
+        if (reason.Contains("strict", StringComparison.OrdinalIgnoreCase))
+            return "strict-dominance";
+
+        return reason.Trim().ToLowerInvariant();
+    }
 
     private static bool Dominates(BenchmarkSnapshotRecord better, BenchmarkSnapshotRecord worse)
     {

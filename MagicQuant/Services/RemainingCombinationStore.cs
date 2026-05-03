@@ -242,7 +242,8 @@ SELECT {CombinationDuckDbSchema.SlotColumnList},
        {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
        PredictedSizeBytes,
        PredictionConfidence,
-       PredictionRank
+       PredictionRank,
+       COALESCE(AnomalyAdjustmentKld, 0.0) AS AnomalyAdjustmentKld
 FROM {TableName}
 WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
   AND PredictedSizeBytes IS NOT NULL
@@ -385,12 +386,12 @@ LIMIT ?;";
         using var r = await cmd.ExecuteReaderAsync(ct);
         var list = new List<RankSafePredictionRow>();
         while (await r.ReadAsync(ct))
-            list.Add(MapPredictedRow(r));
+            list.Add(MapPredictedRow(r, anomalyAdjustmentColumnIndex: r.FieldCount > 14 ? 14 : null));
 
         return list;
     }
 
-    private static RankSafePredictionRow MapPredictedRow(System.Data.Common.DbDataReader r)
+    private static RankSafePredictionRow MapPredictedRow(System.Data.Common.DbDataReader r, int? anomalyAdjustmentColumnIndex = null)
     {
         var config = ReadTensorConfig(r);
 
@@ -402,6 +403,7 @@ LIMIT ?;";
             PredictedSizeBytes = ToUInt64(r.GetValue(11)),
             PredictionConfidence = ToDouble(r.GetValue(12)),
             PredictedRank = ToUInt64(r.GetValue(13)),
+            AnomalyAdjustmentKld = anomalyAdjustmentColumnIndex.HasValue ? ToDouble(r.GetValue(anomalyAdjustmentColumnIndex.Value)) : 0d,
             IsPredictable = true,
             IsSizePredictable = true
         };

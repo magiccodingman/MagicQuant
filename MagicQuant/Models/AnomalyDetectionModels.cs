@@ -42,7 +42,8 @@ public enum AnomalySeedClass
     HistoricalMissingTwin = 2,
     PredictionSpaceSmoke = 3,
     ExploratorySingle = 4,
-    ExploratoryPair = 5
+    ExploratoryPair = 5,
+    ConfirmedAnomalyNeighborhoodProbe = 6
 }
 
 public enum AnomalyProbeClassification
@@ -86,8 +87,6 @@ public sealed class AnomalyMovementAnalysis
 public sealed class AnomalySmokeCandidate
 {
     public string Source { get; init; } = string.Empty;
-    public AnomalySeedClass SeedClass { get; init; } = AnomalySeedClass.PredictionSpaceSmoke;
-    public int Priority { get; init; }
     public TensorConfig CandidateConfig { get; init; }
     public TensorConfig TwinConfig { get; init; }
     public HybridQuant CandidateQuant => (HybridQuant)CandidateConfig;
@@ -101,7 +100,10 @@ public sealed class AnomalySmokeCandidate
     public ulong? ActualSizeSavingsBytes { get; init; }
     public bool PlannedProbeWillMeasureSize { get; init; }
     public string TwinLookupMode { get; init; } = string.Empty;
-    public string TwinLookupDetail { get; init; } = string.Empty;
+    public string RejectionReason { get; init; } = string.Empty;
+    public bool MatchedConfirmedAnomalyPattern { get; init; }
+    public bool TwinFoundInLookupDictionary { get; init; }
+    public AnomalySeedClass SeedClass { get; init; } = AnomalySeedClass.PredictionSpaceSmoke;
     public double PredictionSpaceGapVsTwin { get; init; }
     public ulong? CandidatePredictionRank { get; init; }
     public ulong? TwinPredictionRank { get; init; }
@@ -119,13 +121,13 @@ public sealed class AnomalySmokeCandidate
 public sealed class AnomalyProbePlan
 {
     public AnomalySmokeCandidate Seed { get; init; } = default!;
-    public AnomalySeedClass ProbePlanClass { get; init; }
-    public int Priority { get; init; }
     public TensorConfig ReferenceConfig { get; init; }
     public TensorConfig ProbeConfig { get; init; }
     public IReadOnlyList<AnomalyChangedGroup> ProbeGroups { get; init; } = Array.Empty<AnomalyChangedGroup>();
     public string ProbeType { get; init; } = string.Empty;
     public string HypothesisLabel { get; init; } = string.Empty;
+    public AnomalySeedClass SeedClass { get; init; }
+    public AnomalySeedClass ProbePriorityClass { get; init; }
 }
 
 public sealed class AnomalyProbeResult
@@ -155,4 +157,40 @@ public sealed class AnomalyRunResult
     public IReadOnlyList<AnomalyProbePlan> ProbePlans { get; init; } = Array.Empty<AnomalyProbePlan>();
     public IReadOnlyList<AnomalyProbeResult> ProbeResults { get; init; } = Array.Empty<AnomalyProbeResult>();
     public AnomalyAdjustmentSummary AdjustmentSummary { get; init; } = new();
+    public object? BestAnomalyReconciliation { get; init; }
+}
+
+public sealed class AnomalySmokeScanDiagnostics
+{
+    public long PredictedRowsScanned { get; set; }
+    public long SparseRowsSkipped { get; set; }
+    public long SparseRowsNormalized { get; set; }
+    public long Bf16ExactRowsSkipped { get; set; }
+    public long PureReferenceRowsSkipped { get; set; }
+    public long ContextualRowsScanned { get; set; }
+    public long TwinLookupCount { get; set; }
+    public long DictionaryTwinHits { get; set; }
+    public long MissingTwins { get; set; }
+    public long FallbackDbTwinLookups { get; set; }
+    public long MovementNotMonotoneDowngrade { get; set; }
+    public long MixedTradeIgnored { get; set; }
+    public long SizeSavingsBelowThreshold { get; set; }
+    public long PredictionSpaceGapTooLarge { get; set; }
+    public long QueuedSmokeCandidates { get; set; }
+    public long LoadPredictedRowsMs { get; set; }
+    public long BuildLookupDictionaryMs { get; set; }
+    public long ScanRowsMs { get; set; }
+    public IReadOnlyList<object> RejectedPreview { get; set; } = Array.Empty<object>();
+    public IReadOnlyList<object> ClosestGapFailures { get; set; } = Array.Empty<object>();
+}
+
+public sealed class ProbePlanningDiagnostics
+{
+    public int ExistingRuleKeysLoaded { get; set; }
+    public int SkippedExistingRuleOrSuppression { get; set; }
+    public int SkippedDuplicate { get; set; }
+    public int SkippedInvalidMovement { get; set; }
+    public int SkippedBudget { get; set; }
+    public int ProbesQueued { get; set; }
+    public int ExpansionProbesQueued { get; set; }
 }
