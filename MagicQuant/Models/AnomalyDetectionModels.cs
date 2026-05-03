@@ -36,6 +36,15 @@ public enum AnomalyRuleStatus
     Retired = 4
 }
 
+public enum AnomalySeedClass
+{
+    ConfirmedHistoricalCounterfactual = 1,
+    HistoricalMissingTwin = 2,
+    PredictionSpaceSmoke = 3,
+    ExploratorySingle = 4,
+    ExploratoryPair = 5
+}
+
 public enum AnomalyProbeClassification
 {
     BeneficialAnomaly = 1,
@@ -77,6 +86,8 @@ public sealed class AnomalyMovementAnalysis
 public sealed class AnomalySmokeCandidate
 {
     public string Source { get; init; } = string.Empty;
+    public AnomalySeedClass SeedClass { get; init; } = AnomalySeedClass.PredictionSpaceSmoke;
+    public int Priority { get; init; }
     public TensorConfig CandidateConfig { get; init; }
     public TensorConfig TwinConfig { get; init; }
     public HybridQuant CandidateQuant => (HybridQuant)CandidateConfig;
@@ -84,9 +95,13 @@ public sealed class AnomalySmokeCandidate
     public AnomalyMovementAnalysis Movement { get; init; } = new();
     public double CandidatePredictedKld { get; init; }
     public double TwinPredictedKld { get; init; }
-    public ulong CandidatePredictedSizeBytes { get; init; }
-    public ulong TwinPredictedSizeBytes { get; init; }
-    public ulong SizeSavingsBytes { get; init; }
+    public ulong? CandidatePredictedSizeBytes { get; init; }
+    public ulong? TwinPredictedSizeBytes { get; init; }
+    public ulong? PredictedSizeSavingsBytes { get; init; }
+    public ulong? ActualSizeSavingsBytes { get; init; }
+    public bool PlannedProbeWillMeasureSize { get; init; }
+    public string TwinLookupMode { get; init; } = string.Empty;
+    public string TwinLookupDetail { get; init; } = string.Empty;
     public double PredictionSpaceGapVsTwin { get; init; }
     public ulong? CandidatePredictionRank { get; init; }
     public ulong? TwinPredictionRank { get; init; }
@@ -104,6 +119,8 @@ public sealed class AnomalySmokeCandidate
 public sealed class AnomalyProbePlan
 {
     public AnomalySmokeCandidate Seed { get; init; } = default!;
+    public AnomalySeedClass ProbePlanClass { get; init; }
+    public int Priority { get; init; }
     public TensorConfig ReferenceConfig { get; init; }
     public TensorConfig ProbeConfig { get; init; }
     public IReadOnlyList<AnomalyChangedGroup> ProbeGroups { get; init; } = Array.Empty<AnomalyChangedGroup>();

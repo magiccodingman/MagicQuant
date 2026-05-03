@@ -105,6 +105,13 @@ public sealed class AnomalyRuleRepository
                 InactiveGroupsJson = JsonSerializer.Serialize(_movement.BuildInactiveGroupList(), JsonOptions),
                 ReferenceTensorConfigKey = TensorConfigIdentity.ToKey(result.Plan.ReferenceConfig),
                 ProbeTensorConfigKey = TensorConfigIdentity.ToKey(result.Plan.ProbeConfig),
+                ReferenceDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)result.Plan.ReferenceConfig),
+                ProbeDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)result.Plan.ProbeConfig),
+                ReferenceInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)result.Plan.ReferenceConfig),
+                ProbeInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)result.Plan.ProbeConfig),
+                SeedClass = result.Plan.Seed.SeedClass.ToString(),
+                SeedPriority = result.Plan.Seed.Priority,
+                ProbePlanClass = result.Plan.ProbePlanClass.ToString(),
                 IsContextualAnomalyProbe = true,
                 OldBf16Isolation = false,
                 AllActiveGroupsExplicit = _movement.HasAllActiveGroupsExplicit(result.Plan.ReferenceConfig) && _movement.HasAllActiveGroupsExplicit(result.Plan.ProbeConfig),
@@ -163,6 +170,7 @@ public sealed class AnomalyRuleRepository
             string groupSetHash = _movement.BuildChangedGroupHash(probeGroups);
             string direction = first.RuleDirection.ToString();
             byte referenceQuantId = first.Plan.ReferenceConfig.BaseQuant;
+            string referenceContextKey = _movement.ReferenceContextKey(first.Plan.ReferenceConfig);
 
             var rule = await db.AnomalyInteractionRules
                 .Include(x => x.GroupStates)
@@ -173,6 +181,7 @@ public sealed class AnomalyRuleRepository
                     x.ImatrixDefinitionId == scope.ImatrixDefinitionId &&
                     x.BenchmarkCategory == (byte)BenchmarkCategory.General &&
                     x.ReferenceQuantId == referenceQuantId &&
+                    x.ReferenceContextKey == referenceContextKey &&
                     x.GroupSetHash == groupSetHash &&
                     x.RuleDirection == direction,
                     ct);
@@ -193,6 +202,10 @@ public sealed class AnomalyRuleRepository
                     CandidateEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig), JsonOptions),
                     InactiveGroupsJson = JsonSerializer.Serialize(_movement.BuildInactiveGroupList(), JsonOptions),
                     FullTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig),
+                    ReferenceDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig),
+                    CandidateDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig),
+                    ReferenceInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig),
+                    CandidateInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig),
                     RuleDirection = direction,
                     GroupSetHash = groupSetHash,
                     CreatedUtc = DateTime.UtcNow
@@ -221,6 +234,10 @@ public sealed class AnomalyRuleRepository
             rule.CandidateEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig), JsonOptions);
             rule.InactiveGroupsJson = JsonSerializer.Serialize(_movement.BuildInactiveGroupList(), JsonOptions);
             rule.FullTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig);
+            rule.ReferenceDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig);
+            rule.CandidateDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig);
+            rule.ReferenceInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig);
+            rule.CandidateInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig);
             rule.UpdatedUtc = DateTime.UtcNow;
             rule.MetadataJson = JsonSerializer.Serialize(new
             {
@@ -233,6 +250,15 @@ public sealed class AnomalyRuleRepository
                 inactiveGroups = _movement.BuildInactiveGroupList(),
                 first.Plan.ProbeType,
                 first.Plan.HypothesisLabel,
+                seedClass = first.Plan.Seed.SeedClass.ToString(),
+                probePlanClass = first.Plan.ProbePlanClass.ToString(),
+                priority = first.Plan.Priority,
+                referenceTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ReferenceConfig),
+                probeTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig),
+                referenceDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig),
+                probeDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig),
+                referenceInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig),
+                probeInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig),
                 groups = probeGroups.Select(ToGroupLog).ToList()
             }, JsonOptions);
 
@@ -288,6 +314,7 @@ public sealed class AnomalyRuleRepository
         await using var db = new MagicQuantContext();
         var scope = await ResolveScopeAsync(db, ct);
         string hash = _movement.BuildChangedGroupHash(groups);
+        string referenceContextKey = _movement.ReferenceContextKey(reference);
 
         return await db.AnomalyInteractionRules
             .AsNoTracking()
@@ -298,6 +325,7 @@ public sealed class AnomalyRuleRepository
                 x.ImatrixDefinitionId == scope.ImatrixDefinitionId &&
                 x.BenchmarkCategory == (byte)BenchmarkCategory.General &&
                 x.ReferenceQuantId == reference.BaseQuant &&
+                x.ReferenceContextKey == referenceContextKey &&
                 x.GroupSetHash == hash &&
                 x.RuleStatus != AnomalyRuleStatus.Retired.ToString(),
                 ct);

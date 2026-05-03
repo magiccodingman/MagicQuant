@@ -28,6 +28,8 @@ public sealed class AnomalyWorkflowService
     private readonly QuantFidelityComparerService _movement;
     private readonly AnomalyRuleRepository _rules;
     private readonly AnomalyAdjustedPredictionService _adjuster;
+    private IReadOnlyList<DuckSmokeRejectedPreview> _lastDuckRejectedSmokePreview = Array.Empty<DuckSmokeRejectedPreview>();
+    private IReadOnlyList<DuckSmokeRejectedPreview> _lastDuckFailedGapPreview = Array.Empty<DuckSmokeRejectedPreview>();
 
     public AnomalyWorkflowService(
         RemainingCombinationStore store,
@@ -75,6 +77,8 @@ public sealed class AnomalyWorkflowService
                 historicalCount = historical.Count,
                 duckPredictionSpaceCount = duck.Count,
                 selectedSmokeCount = smoke.Count,
+                duckRejectedSmokePreview = _lastDuckRejectedSmokePreview,
+                duckClosestFailedGapPreview = _lastDuckFailedGapPreview,
                 smoke = smoke.Select(ToSmokeLog).ToList()
             }, ct);
 
@@ -186,7 +190,8 @@ public sealed class AnomalyWorkflowService
             if (movement.DowngradeCount > Config.AnomalyDetection.MaxProbeGroupCount)
                 continue;
 
-            byKey.TryGetValue(TensorConfigIdentity.ToKey(twinConfig), out var twin);
+            var twinLookup = LookupHistoricalContextualTwin(twinConfig, byKey);
+            var twin = twinLookup.ExplicitTwin;
             if (twin != null && ShouldSkipInvalidContextualAnomalyConfig(twin.Config, "history-existing-twin", out var existingTwinSkipReason))
             {
                 skippedNonContextualTwin++;
@@ -194,8 +199,14 @@ public sealed class AnomalyWorkflowService
                 continue;
             }
 
+            if (Config.AnomalyDetection.VerboseAnomalyLogging)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[grey]Historical twin lookup:[/] candidate={Markup.Escape(candidate.DisplayName)} explicitContext={twinLookup.ExplicitFound} sparsePure={twinLookup.SparseFound} mode={Markup.Escape(twinLookup.Mode)} detail={Markup.Escape(twinLookup.Detail)}");
+            }
+
             predictionLookup.TryGetValue(TensorConfigIdentity.ToKey(candidate.Config), out var candidatePrediction);
-            predictionLookup.TryGetValue(TensorConfigIdentity.ToKey(twinConfig), out var twinPrediction);
+            var twinPrediction = LookupPredictionForContextualTwin(twinConfig, predictionLookup, out var predictionTwinLookupMode);
 
             bool confirmed = twin != null &&
                              candidate.SizeBytes <= twin.SizeBytes &&
@@ -204,17 +215,26 @@ public sealed class AnomalyWorkflowService
             if (!confirmed && twin != null && twin.Kld <= candidate.Kld)
                 continue;
 
+            ulong? predictedSavingsBytes = ComputeNullableSavings(twinPrediction?.PredictedSizeBytes, candidatePrediction?.PredictedSizeBytes);
+            ulong? actualSavingsBytes = twin == null ? null : ComputeNullableSavings(twin.SizeBytes, candidate.SizeBytes) ?? 0UL;
+
             smoke.Add(new AnomalySmokeCandidate
             {
                 Source = "history",
+                SeedClass = confirmed ? AnomalySeedClass.ConfirmedHistoricalCounterfactual : AnomalySeedClass.HistoricalMissingTwin,
+                Priority = confirmed ? 1000 : 700,
                 CandidateConfig = candidate.Config,
                 TwinConfig = twinConfig,
                 Movement = movement,
                 CandidatePredictedKld = candidatePrediction?.BaseRankSafeKld ?? candidatePrediction?.FinalPredictedKld ?? candidate.Kld,
                 TwinPredictedKld = twinPrediction?.BaseRankSafeKld ?? twinPrediction?.FinalPredictedKld ?? twin?.Kld ?? 0d,
-                CandidatePredictedSizeBytes = candidatePrediction?.PredictedSizeBytes ?? candidate.SizeBytes,
-                TwinPredictedSizeBytes = twinPrediction?.PredictedSizeBytes ?? twin?.SizeBytes ?? candidate.SizeBytes,
-                SizeSavingsBytes = twin != null && twin.SizeBytes > candidate.SizeBytes ? twin.SizeBytes - candidate.SizeBytes : 0UL,
+                CandidatePredictedSizeBytes = candidatePrediction?.PredictedSizeBytes,
+                TwinPredictedSizeBytes = twinPrediction?.PredictedSizeBytes,
+                PredictedSizeSavingsBytes = predictedSavingsBytes,
+                ActualSizeSavingsBytes = actualSavingsBytes,
+                PlannedProbeWillMeasureSize = twin == null,
+                TwinLookupMode = twinLookup.Mode,
+                TwinLookupDetail = $"actual={twinLookup.Detail}; prediction={predictionTwinLookupMode}",
                 PredictionSpaceGapVsTwin = (candidatePrediction?.BaseRankSafeKld ?? candidate.Kld) - (twinPrediction?.BaseRankSafeKld ?? twin?.Kld ?? candidate.Kld),
                 CandidatePredictionRank = candidatePrediction?.PredictionRank,
                 TwinPredictionRank = twinPrediction?.PredictionRank,
@@ -228,7 +248,7 @@ public sealed class AnomalyWorkflowService
                 IsConfirmedFromHistory = confirmed,
                 Message = confirmed
                     ? "Existing explicit contextual quantized benchmark history contains a monotone downgrade candidate that beats its higher-bit twin."
-                    : "Existing explicit contextual quantized benchmark history has monotone downgrade smoke but the exact twin is missing."
+                    : "Existing explicit contextual quantized benchmark history has monotone downgrade smoke but the exact explicit contextual twin is missing."
             });
         }
 
@@ -247,6 +267,8 @@ public sealed class AnomalyWorkflowService
         var rows = await LoadPredictionRowsAsync(DuckSmokeScanLimit, ct);
         var explicitRows = new Dictionary<string, PredictionDuckRow>(StringComparer.Ordinal);
         var result = new List<AnomalySmokeCandidate>();
+        var rejectedPreview = new List<DuckSmokeRejectedPreview>();
+        var failedGapPreview = new List<DuckSmokeRejectedPreview>();
         int skippedIsolation = 0;
         int skippedSparse = 0;
         int normalizedSparse = 0;
@@ -255,6 +277,8 @@ public sealed class AnomalyWorkflowService
         int skippedMovement = 0;
         int skippedNoTwin = 0;
         int logicalTwinFallback = 0;
+        int explicitTwinFound = 0;
+        int sparseTwinPredictionUsed = 0;
         int skippedSavings = 0;
         int skippedGap = 0;
         int contextualScanned = 0;
@@ -296,6 +320,7 @@ public sealed class AnomalyWorkflowService
             {
                 skippedIsolation++;
                 LogSkippedInvalidContextualAnomalyConfig("duckdb-normalized-candidate", row.Config, candidateSkipReason, skippedIsolation);
+                AddDuckRejected(rejectedPreview, row.Config, twin, "Unknown", null, null, candidateSkipReason);
                 continue;
             }
 
@@ -303,6 +328,7 @@ public sealed class AnomalyWorkflowService
             {
                 skippedIsolation++;
                 LogSkippedInvalidContextualAnomalyConfig("duckdb-twin", twin, twinSkipReason, skippedIsolation);
+                AddDuckRejected(rejectedPreview, row.Config, twin, "Unknown", null, null, twinSkipReason);
                 continue;
             }
 
@@ -314,68 +340,95 @@ public sealed class AnomalyWorkflowService
                 {
                     AnsiConsole.MarkupLine("[grey]Ignored anomaly smoke:[/] classification=MixedTrade reason=normal protect/compress frontier behavior");
                 }
+
+                AddDuckRejected(rejectedPreview, row.Config, twin, movement.Classification.ToString(), null, null, "MixedTrade normal protect/compress frontier behavior");
                 continue;
             }
 
             if (movement.Classification != AnomalyMovementClassification.MonotoneDowngrade)
             {
                 skippedMovement++;
+                AddDuckRejected(rejectedPreview, row.Config, twin, movement.Classification.ToString(), null, null, "MovementNotMonotoneDowngrade");
                 continue;
             }
 
             if (movement.DowngradeCount <= 0 || movement.DowngradeCount > Config.AnomalyDetection.MaxProbeGroupCount)
             {
                 skippedMovement++;
+                AddDuckRejected(rejectedPreview, row.Config, twin, movement.Classification.ToString(), null, null, $"ChangedGroupCountOutsideBudget count={movement.DowngradeCount}");
                 continue;
             }
 
-            var twinRow = await LoadContextualTwinPredictionRowAsync(twin, explicitRows, ct);
-            if (twinRow == null)
+            var twinLookup = await LoadContextualTwinPredictionRowAsync(twin, explicitRows, ct);
+            if (twinLookup.Row == null)
             {
                 skippedNoTwin++;
+                AddDuckRejected(rejectedPreview, row.Config, twin, movement.Classification.ToString(), null, null, $"NoHigherBitTwinPredictionFound lookup={twinLookup.Mode}");
                 continue;
             }
 
-            if (TensorConfigIdentity.ToKey(twinRow.Config) != TensorConfigIdentity.ToKey(twin))
+            if (twinLookup.Mode.Contains("explicit", StringComparison.OrdinalIgnoreCase))
+                explicitTwinFound++;
+            if (twinLookup.Mode.Contains("sparse", StringComparison.OrdinalIgnoreCase))
+                sparseTwinPredictionUsed++;
+
+            if (TensorConfigIdentity.ToKey(twinLookup.Row.Config) != TensorConfigIdentity.ToKey(twin))
                 logicalTwinFallback++;
 
-            if (twinRow.PredictedSizeBytes <= row.PredictedSizeBytes)
+            if (Config.AnomalyDetection.VerboseAnomalyLogging && (explicitTwinFound + sparseTwinPredictionUsed) <= 12)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[grey]DuckDB twin lookup:[/] candidate={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName((HybridQuant)row.Config))} explicitContext={twinLookup.ExplicitContextSearched} sparsePure={twinLookup.SparsePureSearched} mode={Markup.Escape(twinLookup.Mode)} detail={Markup.Escape(twinLookup.Detail)}");
+            }
+
+            if (twinLookup.Row.PredictedSizeBytes <= row.PredictedSizeBytes)
             {
                 skippedSavings++;
+                AddDuckRejected(rejectedPreview, row.Config, twin, movement.Classification.ToString(), 0UL, row.BaseRankSafeKld - twinLookup.Row.BaseRankSafeKld, "PredictedSizeSavingsNotPositive");
                 continue;
             }
 
-            ulong savingsBytes = twinRow.PredictedSizeBytes - row.PredictedSizeBytes;
-            double savingsPercent = savingsBytes * 100d / Math.Max(1d, twinRow.PredictedSizeBytes);
+            ulong savingsBytes = twinLookup.Row.PredictedSizeBytes - row.PredictedSizeBytes;
+            double savingsPercent = savingsBytes * 100d / Math.Max(1d, twinLookup.Row.PredictedSizeBytes);
             if (savingsPercent < Config.AnomalyDetection.MinPredictedSizeSavingsVsTwinPercent)
             {
                 skippedSavings++;
+                AddDuckRejected(rejectedPreview, row.Config, twin, movement.Classification.ToString(), savingsBytes, row.BaseRankSafeKld - twinLookup.Row.BaseRankSafeKld, $"PredictedSizeSavingsBelowThreshold {savingsPercent:0.000}%");
                 continue;
             }
 
-            double gap = row.BaseRankSafeKld - twinRow.BaseRankSafeKld;
+            double gap = row.BaseRankSafeKld - twinLookup.Row.BaseRankSafeKld;
             if (gap > Config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld)
             {
                 skippedGap++;
+                var preview = CreateDuckRejected(row.Config, twin, movement.Classification.ToString(), savingsBytes, gap, $"PredictionSpaceGapTooLarge threshold={Config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld:0.000000}");
+                rejectedPreview.Add(preview);
+                failedGapPreview.Add(preview);
                 continue;
             }
 
-            double score = ComputeSmokeScore(gap, savingsPercent, movement.DowngradeCount, row.PredictionRank, twinRow.PredictionRank);
+            double score = ComputeSmokeScore(gap, savingsPercent, movement.DowngradeCount, row.PredictionRank, twinLookup.Row.PredictionRank);
 
             result.Add(new AnomalySmokeCandidate
             {
                 Source = "duckdb-prediction-space",
+                SeedClass = AnomalySeedClass.PredictionSpaceSmoke,
+                Priority = 500,
                 CandidateConfig = row.Config,
                 TwinConfig = twin,
                 Movement = movement,
                 CandidatePredictedKld = row.BaseRankSafeKld,
-                TwinPredictedKld = twinRow.BaseRankSafeKld,
+                TwinPredictedKld = twinLookup.Row.BaseRankSafeKld,
                 CandidatePredictedSizeBytes = row.PredictedSizeBytes,
-                TwinPredictedSizeBytes = twinRow.PredictedSizeBytes,
-                SizeSavingsBytes = savingsBytes,
+                TwinPredictedSizeBytes = twinLookup.Row.PredictedSizeBytes,
+                PredictedSizeSavingsBytes = savingsBytes,
+                ActualSizeSavingsBytes = null,
+                PlannedProbeWillMeasureSize = true,
+                TwinLookupMode = twinLookup.Mode,
+                TwinLookupDetail = twinLookup.Detail,
                 PredictionSpaceGapVsTwin = gap,
                 CandidatePredictionRank = row.PredictionRank,
-                TwinPredictionRank = twinRow.PredictionRank,
+                TwinPredictionRank = twinLookup.Row.PredictionRank,
                 SmokeScore = score,
                 SmokeStrength = gap <= 0d ? "Strong" : "Close",
                 Message = "Prediction-space contextual monotone downgrade candidate is close enough to its higher-bit quantized twin to justify probes. Sparse DuckDB source rows, when present, were normalized into explicit active context before classification."
@@ -389,6 +442,8 @@ public sealed class AnomalyWorkflowService
         AnsiConsole.MarkupLine($"[grey]  BF16/exact rows skipped=[/] [cyan]{skippedIsolation:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  pure/logical reference rows skipped=[/] [cyan]{skippedPure:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  contextual quantized rows scanned=[/] [cyan]{contextualScanned:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]  explicit higher-bit twin predictions found=[/] [cyan]{explicitTwinFound:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]  sparse pure carrier twin predictions used=[/] [cyan]{sparseTwinPredictionUsed:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  logical higher-bit twin fallback used=[/] [cyan]{logicalTwinFallback:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  no higher-bit twin found=[/] [cyan]{skippedNoTwin:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  movement not monotone downgrade=[/] [cyan]{skippedMovement:N0}[/]");
@@ -397,10 +452,21 @@ public sealed class AnomalyWorkflowService
         AnsiConsole.MarkupLine($"[grey]  prediction-space gap too large=[/] [cyan]{skippedGap:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  queued smoke candidates=[/] [cyan]{result.Count:N0}[/]");
 
+        _lastDuckRejectedSmokePreview = rejectedPreview
+            .OrderBy(x => x.PredictionSpaceGap ?? double.MaxValue)
+            .ThenByDescending(x => x.PredictedSizeSavingsBytes ?? 0UL)
+            .Take(10)
+            .ToList();
+        _lastDuckFailedGapPreview = failedGapPreview
+            .OrderBy(x => x.PredictionSpaceGap ?? double.MaxValue)
+            .Take(10)
+            .ToList();
+
         if (result.Count == 0 && rows.Count > 0)
         {
             AnsiConsole.MarkupLine(
-                "[yellow]DuckDB contextual smoke scan produced zero candidates.[/] This is valid only if all predicted rows were filtered by explicit-context validity, monotone-downgrade movement, size-savings, or prediction-gap thresholds above.");
+                "[yellow]DuckDB contextual smoke scan produced zero candidates.[/] Rejected-smoke preview follows so threshold/clean-space decisions are visible.");
+            WriteRejectedSmokePreview(_lastDuckRejectedSmokePreview, _lastDuckFailedGapPreview);
         }
 
         return result
@@ -465,9 +531,12 @@ public sealed class AnomalyWorkflowService
                 if (!seen.Add(key))
                     continue;
 
+                var planClass = ResolveProbePlanClass(subset, seed);
                 var plan = new AnomalyProbePlan
                 {
                     Seed = seed,
+                    ProbePlanClass = planClass,
+                    Priority = seed.Priority + (planClass == AnomalySeedClass.ExploratoryPair ? 20 : planClass == AnomalySeedClass.ExploratorySingle ? 10 : 0),
                     ReferenceConfig = reference,
                     ProbeConfig = probeConfig,
                     ProbeGroups = subset,
@@ -479,10 +548,10 @@ public sealed class AnomalyWorkflowService
             }
 
             AnsiConsole.MarkupLine(
-                $"[yellow]Potential anomaly smoke:[/] classification={seed.Movement.Classification} candidate={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(seed.CandidateQuant))} " +
-                $"higher-bit twin={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(seed.TwinQuant))} changed groups={Markup.Escape(_movement.DescribeGroups(changed))} " +
+                $"[yellow]Potential anomaly smoke:[/] seedClass={seed.SeedClass} priority={seed.Priority} classification={seed.Movement.Classification} candidate={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(seed.CandidateQuant))} " +
+                $"higher-bit twin={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(seed.TwinQuant))} twinLookup={Markup.Escape(seed.TwinLookupMode)} changed groups={Markup.Escape(_movement.DescribeGroups(changed))} " +
                 $"upgradeCount={seed.Movement.UpgradeCount} downgradeCount={seed.Movement.DowngradeCount} " +
-                $"prediction-space gap={seed.PredictionSpaceGapVsTwin:0.000000} predicted size savings={seed.SizeSavingsBytes:N0} probes queued={perSeed:N0}");
+                $"prediction-space gap={seed.PredictionSpaceGapVsTwin:0.000000} predicted size savings={Markup.Escape(FormatOptionalBytes(seed.PredictedSizeSavingsBytes))} actual size savings={Markup.Escape(FormatOptionalBytes(seed.ActualSizeSavingsBytes))} plannedProbeWillMeasureSize={seed.PlannedProbeWillMeasureSize} probes queued={perSeed:N0}");
         }
 
         return plans;
@@ -763,24 +832,126 @@ LIMIT 1;";
     }
 
 
-    private async Task<PredictionDuckRow?> LoadContextualTwinPredictionRowAsync(
+    private async Task<TwinPredictionLookupResult> LoadContextualTwinPredictionRowAsync(
         TensorConfig explicitTwin,
         IReadOnlyDictionary<string, PredictionDuckRow> explicitRows,
         CancellationToken ct)
     {
         string explicitKey = TensorConfigIdentity.ToKey(explicitTwin);
         if (explicitRows.TryGetValue(explicitKey, out var inMemoryExplicit))
-            return inMemoryExplicit;
+        {
+            return new TwinPredictionLookupResult(
+                inMemoryExplicit with { Config = explicitTwin },
+                "explicit-context-memory",
+                "Searched explicit all-active context in current DuckDB scan; found in memory.",
+                ExplicitContextSearched: true,
+                SparsePureSearched: false);
+        }
 
         var explicitRow = await LoadSinglePredictionRowAsync(explicitTwin, ct);
         if (explicitRow != null)
-            return explicitRow with { Config = explicitTwin };
+        {
+            return new TwinPredictionLookupResult(
+                explicitRow with { Config = explicitTwin },
+                "explicit-context-duckdb",
+                "Searched explicit all-active context in DuckDB; found exact contextual twin.",
+                ExplicitContextSearched: true,
+                SparsePureSearched: false);
+        }
 
         // The normal generator may only contain the pure sparse carrier for an all-Q8/all-Q6
         // reference. For smoke scoring, that sparse carrier is allowed as a prediction source
         // only; the anomaly seed/probe/twin identity remains the explicit activated blanket.
-        var sparsePure = new TensorConfig(
-            explicitTwin.BaseQuant,
+        var sparsePure = BuildSparsePureCarrier(explicitTwin.BaseQuant);
+
+        var sparseRow = await LoadSinglePredictionRowAsync(sparsePure, ct);
+        if (sparseRow != null)
+        {
+            return new TwinPredictionLookupResult(
+                sparseRow with { Config = sparsePure },
+                "sparse-pure-carrier-prediction-fallback",
+                "Searched explicit all-active context first; missing. Searched sparse pure carrier for prediction-space scoring only; found fallback. Contextual anomaly identity remains explicit.",
+                ExplicitContextSearched: true,
+                SparsePureSearched: true);
+        }
+
+        return new TwinPredictionLookupResult(
+            null,
+            "missing-explicit-and-sparse",
+            "Searched explicit all-active context and sparse pure carrier; no prediction row found.",
+            ExplicitContextSearched: true,
+            SparsePureSearched: true);
+    }
+
+    private HistoricalTwinLookup LookupHistoricalContextualTwin(
+        TensorConfig explicitTwin,
+        IReadOnlyDictionary<string, BenchmarkSnapshotRecord> snapshotsByKey)
+    {
+        string explicitKey = TensorConfigIdentity.ToKey(explicitTwin);
+        var sparsePure = BuildSparsePureCarrier(explicitTwin.BaseQuant);
+        string sparseKey = TensorConfigIdentity.ToKey(sparsePure);
+
+        snapshotsByKey.TryGetValue(explicitKey, out var explicitSnapshot);
+        bool sparseFound = snapshotsByKey.ContainsKey(sparseKey);
+
+        if (explicitSnapshot != null)
+        {
+            return new HistoricalTwinLookup(
+                explicitSnapshot,
+                ExplicitFound: true,
+                SparseFound: sparseFound,
+                Mode: sparseFound ? "explicit-context-preferred;sparse-pure-also-present" : "explicit-context-found",
+                Detail: sparseFound
+                    ? "Searched explicit all-active context and sparse pure carrier. Using explicit contextual twin for anomaly truth."
+                    : "Searched explicit all-active context. Using explicit contextual twin for anomaly truth.");
+        }
+
+        if (sparseFound)
+        {
+            return new HistoricalTwinLookup(
+                null,
+                ExplicitFound: false,
+                SparseFound: true,
+                Mode: "sparse-pure-found-ignored-for-contextual-truth",
+                Detail: "Searched explicit all-active context first; missing. Sparse pure carrier exists but is not trusted as contextual anomaly truth.");
+        }
+
+        return new HistoricalTwinLookup(
+            null,
+            ExplicitFound: false,
+            SparseFound: false,
+            Mode: "missing-explicit-and-sparse",
+            Detail: "Searched explicit all-active context and sparse pure carrier; no historical twin benchmark found.");
+    }
+
+    private static PredictionDuckRow? LookupPredictionForContextualTwin(
+        TensorConfig explicitTwin,
+        IReadOnlyDictionary<string, PredictionDuckRow> predictionLookup,
+        out string lookupMode)
+    {
+        string explicitKey = TensorConfigIdentity.ToKey(explicitTwin);
+        if (predictionLookup.TryGetValue(explicitKey, out var explicitPrediction))
+        {
+            lookupMode = "explicit-context-prediction-found";
+            return explicitPrediction with { Config = explicitTwin };
+        }
+
+        var sparsePure = BuildSparsePureCarrier(explicitTwin.BaseQuant);
+        string sparseKey = TensorConfigIdentity.ToKey(sparsePure);
+        if (predictionLookup.TryGetValue(sparseKey, out var sparsePrediction))
+        {
+            lookupMode = "sparse-pure-prediction-fallback";
+            return sparsePrediction with { Config = sparsePure };
+        }
+
+        lookupMode = "prediction-missing-explicit-and-sparse";
+        return null;
+    }
+
+    private static TensorConfig BuildSparsePureCarrier(byte baseQuant)
+    {
+        return new TensorConfig(
+            baseQuant,
             BaselineQuants.TensorConfigNullSlotValue,
             BaselineQuants.TensorConfigNullSlotValue,
             BaselineQuants.TensorConfigNullSlotValue,
@@ -790,10 +961,100 @@ LIMIT 1;";
             BaselineQuants.TensorConfigNullSlotValue,
             BaselineQuants.TensorConfigNullSlotValue,
             BaselineQuants.TensorConfigNullSlotValue);
-
-        var sparseRow = await LoadSinglePredictionRowAsync(sparsePure, ct);
-        return sparseRow == null ? null : sparseRow with { Config = sparsePure };
     }
+
+    private static ulong? ComputeNullableSavings(ulong? referenceBytes, ulong? candidateBytes)
+    {
+        if (!referenceBytes.HasValue || !candidateBytes.HasValue)
+            return null;
+
+        return referenceBytes.Value > candidateBytes.Value
+            ? referenceBytes.Value - candidateBytes.Value
+            : 0UL;
+    }
+
+    private static void AddDuckRejected(
+        List<DuckSmokeRejectedPreview> rejected,
+        TensorConfig candidate,
+        TensorConfig twin,
+        string movement,
+        ulong? predictedSizeSavingsBytes,
+        double? predictionSpaceGap,
+        string rejectionReason)
+    {
+        rejected.Add(CreateDuckRejected(candidate, twin, movement, predictedSizeSavingsBytes, predictionSpaceGap, rejectionReason));
+    }
+
+    private static DuckSmokeRejectedPreview CreateDuckRejected(
+        TensorConfig candidate,
+        TensorConfig twin,
+        string movement,
+        ulong? predictedSizeSavingsBytes,
+        double? predictionSpaceGap,
+        string rejectionReason)
+    {
+        return new DuckSmokeRejectedPreview(
+            TensorConfigIdentity.ToKey(candidate),
+            TensorConfigIdentity.ToKey(twin),
+            HybridBenchmarkRepository.BuildDisplayName((HybridQuant)candidate),
+            HybridBenchmarkRepository.BuildDisplayName((HybridQuant)twin),
+            movement,
+            predictedSizeSavingsBytes,
+            predictionSpaceGap,
+            rejectionReason);
+    }
+
+    private static void WriteRejectedSmokePreview(
+        IReadOnlyList<DuckSmokeRejectedPreview> rejected,
+        IReadOnlyList<DuckSmokeRejectedPreview> failedGap)
+    {
+        var preview = rejected
+            .OrderBy(x => x.PredictionSpaceGap ?? double.MaxValue)
+            .ThenByDescending(x => x.PredictedSizeSavingsBytes ?? 0UL)
+            .Take(10)
+            .ToList();
+
+        if (preview.Count > 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Top rejected DuckDB smoke preview:[/]");
+            foreach (var item in preview)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[grey]  candidate=[/]{Markup.Escape(item.CandidateName)} [grey]twin=[/]{Markup.Escape(item.TwinName)} [grey]movement=[/]{Markup.Escape(item.Movement)} [grey]predictedSizeSavings=[/]{Markup.Escape(FormatOptionalBytes(item.PredictedSizeSavingsBytes))} [grey]gap=[/]{Markup.Escape(FormatOptionalDouble(item.PredictionSpaceGap))} [grey]reason=[/]{Markup.Escape(item.RejectionReason)}");
+            }
+        }
+
+        var closestGapFailures = failedGap
+            .OrderBy(x => x.PredictionSpaceGap ?? double.MaxValue)
+            .Take(10)
+            .ToList();
+
+        if (closestGapFailures.Count > 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Closest monotone downgrade candidates that failed prediction-space gap threshold:[/]");
+            foreach (var item in closestGapFailures)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[grey]  candidate=[/]{Markup.Escape(item.CandidateName)} [grey]twin=[/]{Markup.Escape(item.TwinName)} [grey]predictedSizeSavings=[/]{Markup.Escape(FormatOptionalBytes(item.PredictedSizeSavingsBytes))} [grey]gap=[/]{Markup.Escape(FormatOptionalDouble(item.PredictionSpaceGap))} [grey]reason=[/]{Markup.Escape(item.RejectionReason)}");
+            }
+        }
+    }
+
+    private static string FormatOptionalBytes(ulong? value) => value.HasValue ? $"{value.Value:N0}" : "n/a";
+
+    private static string FormatOptionalDouble(double? value) => value.HasValue ? value.Value.ToString("0.000000", CultureInfo.InvariantCulture) : "n/a";
+
+    private static AnomalySeedClass ResolveProbePlanClass(IReadOnlyList<AnomalyChangedGroup> subset, AnomalySmokeCandidate seed)
+    {
+        if (subset.Count == 1)
+            return AnomalySeedClass.ExploratorySingle;
+
+        if (subset.Count == 2)
+            return AnomalySeedClass.ExploratoryPair;
+
+        return seed.SeedClass;
+    }
+
 
     private static PredictionDuckRow ReadPredictionDuckRow(System.Data.Common.DbDataReader r)
     {
@@ -870,6 +1131,9 @@ LIMIT 1;";
 
         AnsiConsole.MarkupLine("[yellow]Contextual anomaly probe:[/]");
         AnsiConsole.MarkupLine($"[grey]  kind=[/] [cyan]{Markup.Escape(plan.ProbeType)}[/]");
+        AnsiConsole.MarkupLine($"[grey]  seedClass=[/] [cyan]{Markup.Escape(plan.Seed.SeedClass.ToString())}[/] [grey]probePlanClass=[/] [cyan]{Markup.Escape(plan.ProbePlanClass.ToString())}[/] [grey]priority=[/] [cyan]{plan.Priority}[/]");
+        AnsiConsole.MarkupLine($"[grey]  referenceName=[/] [cyan]{Markup.Escape(HybridBenchmarkRepository.BuildDisplayName((HybridQuant)plan.ReferenceConfig))}[/]");
+        AnsiConsole.MarkupLine($"[grey]  probeName=[/] [cyan]{Markup.Escape(HybridBenchmarkRepository.BuildDisplayName((HybridQuant)plan.ProbeConfig))}[/]");
         AnsiConsole.MarkupLine($"[grey]  referenceQuant=[/] [cyan]{Markup.Escape(SafeName(plan.ReferenceConfig.BaseQuant))}[/]");
         AnsiConsole.MarkupLine($"[grey]  base=[/] [cyan]{Markup.Escape(SafeName(plan.ProbeConfig.BaseQuant))}[/]");
         AnsiConsole.MarkupLine("[grey]  effective groups:[/]");
@@ -1023,6 +1287,8 @@ LIMIT 1;";
         return new
         {
             x.Source,
+            seedClass = x.SeedClass.ToString(),
+            x.Priority,
             isContextualAnomalySmoke = true,
             oldBf16Isolation = false,
             allActiveGroupsExplicit = _movement.HasAllActiveGroupsExplicit(x.CandidateConfig) && _movement.HasAllActiveGroupsExplicit(x.TwinConfig),
@@ -1050,7 +1316,13 @@ LIMIT 1;";
             x.PredictionSpaceGapVsTwin,
             x.CandidatePredictedSizeBytes,
             x.TwinPredictedSizeBytes,
-            x.SizeSavingsBytes,
+            x.PredictedSizeSavingsBytes,
+            x.ActualSizeSavingsBytes,
+            predictedSizeSavingsDisplay = FormatOptionalBytes(x.PredictedSizeSavingsBytes),
+            actualSizeSavingsDisplay = FormatOptionalBytes(x.ActualSizeSavingsBytes),
+            x.PlannedProbeWillMeasureSize,
+            x.TwinLookupMode,
+            x.TwinLookupDetail,
             x.CandidatePredictionRank,
             x.TwinPredictionRank,
             x.SmokeScore,
@@ -1075,6 +1347,8 @@ LIMIT 1;";
             probe = TensorConfigIdentity.ToKey(x.ProbeConfig),
             referenceName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)x.ReferenceConfig),
             probeName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)x.ProbeConfig),
+            referenceInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)x.ReferenceConfig),
+            probeInternalName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)x.ProbeConfig),
             referenceEffectiveGroups = _movement.BuildEffectiveGroupVector(x.ReferenceConfig),
             candidateEffectiveGroups = _movement.BuildEffectiveGroupVector(x.ProbeConfig),
             inactiveGroups = _movement.BuildInactiveGroupList(),
@@ -1083,6 +1357,9 @@ LIMIT 1;";
             movement.DowngradeCount,
             movement.SameCount,
             movement.UnknownCount,
+            seedClass = x.Seed.SeedClass.ToString(),
+            probePlanClass = x.ProbePlanClass.ToString(),
+            x.Priority,
             x.ProbeType,
             x.HypothesisLabel,
             groups = x.ProbeGroups.Select(g => new
@@ -1127,6 +1404,12 @@ LIMIT 1;";
             x.CandidateEffectiveGroupsJson,
             x.InactiveGroupsJson,
             x.FullTensorConfigKey,
+            x.ReferenceDisplayName,
+            x.CandidateDisplayName,
+            x.ReferenceInternalName,
+            x.CandidateInternalName,
+            allActiveGroupsExplicit = true,
+            oldBf16Isolation = false,
             x.GroupSetHash,
             x.GroupCount,
             x.MeanActualGainVsTwin,
@@ -1186,4 +1469,28 @@ LIMIT 1;";
         ulong PredictedSizeBytes,
         double PredictionConfidence,
         ulong PredictionRank);
+
+    private sealed record TwinPredictionLookupResult(
+        PredictionDuckRow? Row,
+        string Mode,
+        string Detail,
+        bool ExplicitContextSearched,
+        bool SparsePureSearched);
+
+    private sealed record HistoricalTwinLookup(
+        BenchmarkSnapshotRecord? ExplicitTwin,
+        bool ExplicitFound,
+        bool SparseFound,
+        string Mode,
+        string Detail);
+
+    private sealed record DuckSmokeRejectedPreview(
+        string Candidate,
+        string Twin,
+        string CandidateName,
+        string TwinName,
+        string Movement,
+        ulong? PredictedSizeSavingsBytes,
+        double? PredictionSpaceGap,
+        string RejectionReason);
 }

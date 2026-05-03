@@ -67,6 +67,13 @@ public class AnomalyProbeObservation : ISQLiteEntity<AnomalyProbeObservation>
     public string InactiveGroupsJson { get; set; } = string.Empty;
     public string ReferenceTensorConfigKey { get; set; } = string.Empty;
     public string ProbeTensorConfigKey { get; set; } = string.Empty;
+    public string ReferenceDisplayName { get; set; } = string.Empty;
+    public string ProbeDisplayName { get; set; } = string.Empty;
+    public string ReferenceInternalName { get; set; } = string.Empty;
+    public string ProbeInternalName { get; set; } = string.Empty;
+    public string SeedClass { get; set; } = string.Empty;
+    public int SeedPriority { get; set; }
+    public string ProbePlanClass { get; set; } = string.Empty;
     public bool IsContextualAnomalyProbe { get; set; }
     public bool OldBf16Isolation { get; set; }
     public bool AllActiveGroupsExplicit { get; set; }
@@ -105,6 +112,12 @@ public class AnomalyProbeObservation : ISQLiteEntity<AnomalyProbeObservation>
         builder.Property(x => x.InactiveGroupsJson).HasColumnType("TEXT");
         builder.Property(x => x.ReferenceTensorConfigKey).HasMaxLength(128);
         builder.Property(x => x.ProbeTensorConfigKey).HasMaxLength(128);
+        builder.Property(x => x.ReferenceDisplayName).HasMaxLength(512);
+        builder.Property(x => x.ProbeDisplayName).HasMaxLength(512);
+        builder.Property(x => x.ReferenceInternalName).HasMaxLength(512);
+        builder.Property(x => x.ProbeInternalName).HasMaxLength(512);
+        builder.Property(x => x.SeedClass).HasMaxLength(64);
+        builder.Property(x => x.ProbePlanClass).HasMaxLength(64);
         builder.HasIndex(x => x.ReferenceTensorConfigKey);
         builder.HasIndex(x => x.ProbeTensorConfigKey);
         builder.Property(x => x.RuleDirection).HasMaxLength(64);
@@ -141,6 +154,10 @@ public class AnomalyInteractionRule : ISQLiteEntity<AnomalyInteractionRule>
     public string CandidateEffectiveGroupsJson { get; set; } = string.Empty;
     public string InactiveGroupsJson { get; set; } = string.Empty;
     public string FullTensorConfigKey { get; set; } = string.Empty;
+    public string ReferenceDisplayName { get; set; } = string.Empty;
+    public string CandidateDisplayName { get; set; } = string.Empty;
+    public string ReferenceInternalName { get; set; } = string.Empty;
+    public string CandidateInternalName { get; set; } = string.Empty;
     public string RuleType { get; set; } = string.Empty;
     public string RuleDirection { get; set; } = string.Empty;
     public string RuleStatus { get; set; } = string.Empty;
@@ -170,6 +187,10 @@ public class AnomalyInteractionRule : ISQLiteEntity<AnomalyInteractionRule>
         builder.Property(x => x.CandidateEffectiveGroupsJson).HasColumnType("TEXT");
         builder.Property(x => x.InactiveGroupsJson).HasColumnType("TEXT");
         builder.Property(x => x.FullTensorConfigKey).HasMaxLength(128);
+        builder.Property(x => x.ReferenceDisplayName).HasMaxLength(512);
+        builder.Property(x => x.CandidateDisplayName).HasMaxLength(512);
+        builder.Property(x => x.ReferenceInternalName).HasMaxLength(512);
+        builder.Property(x => x.CandidateInternalName).HasMaxLength(512);
         builder.HasIndex(x => x.FullTensorConfigKey);
         builder.Property(x => x.RuleType).HasMaxLength(64);
         builder.Property(x => x.RuleDirection).HasMaxLength(64);
@@ -179,7 +200,7 @@ public class AnomalyInteractionRule : ISQLiteEntity<AnomalyInteractionRule>
         builder.Property(x => x.Status).HasMaxLength(64);
         builder.Property(x => x.MetadataJson).HasColumnType("TEXT");
         builder.HasIndex(x => new { x.ArchitectureFamilyId, x.TensorGroupProfileId, x.AiModelHashId, x.ImatrixDefinitionId, x.BenchmarkCategory, x.RuleDirection, x.RuleStatus });
-        builder.HasIndex(x => new { x.ArchitectureFamilyId, x.TensorGroupProfileId, x.AiModelHashId, x.ImatrixDefinitionId, x.BenchmarkCategory, x.ReferenceQuantId, x.GroupSetHash, x.RuleDirection }).IsUnique();
+        builder.HasIndex(x => new { x.ArchitectureFamilyId, x.TensorGroupProfileId, x.AiModelHashId, x.ImatrixDefinitionId, x.BenchmarkCategory, x.ReferenceQuantId, x.ReferenceContextKey, x.GroupSetHash, x.RuleDirection }).IsUnique();
         builder.HasOne(x => x.ArchitectureFamily).WithMany().HasForeignKey(x => x.ArchitectureFamilyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.TensorGroupProfile).WithMany().HasForeignKey(x => x.TensorGroupProfileId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.AiModelHash).WithMany().HasForeignKey(x => x.AiModelHashId).OnDelete(DeleteBehavior.Cascade);
