@@ -26,6 +26,7 @@ public sealed class CombinationSurvivalPipelineService
     private readonly CloneConfigManifestGenerationService _cloneConfigManifestService;
     private readonly FinalArtifactNamingService _namingService;
     private readonly IsolationDiagnosticsManifestService _isolationDiagnosticsManifestService;
+    private readonly AnomalyWorkflowService _anomalyWorkflowService;
 
     public CombinationSurvivalPipelineService(QuantizationService quantizationService)
     {
@@ -48,6 +49,7 @@ public sealed class CombinationSurvivalPipelineService
         _cloneConfigManifestService = new CloneConfigManifestGenerationService(_quantizationService);
         _namingService = new FinalArtifactNamingService();
         _isolationDiagnosticsManifestService = new IsolationDiagnosticsManifestService();
+        _anomalyWorkflowService = new AnomalyWorkflowService(_combinationStore, _benchmarkRepository, _quantizationService);
     }
 
     public async Task<CombinationSurvivalExecutionResult> RunAsync(
@@ -73,6 +75,12 @@ public sealed class CombinationSurvivalPipelineService
 
         var materialization = await _materializationService.MaterializeAsync(ct);
         AnsiConsole.MarkupLine($"[green]DuckDB predicted rows:[/] [cyan]{materialization.PredictedRows:N0}[/] / [cyan]{materialization.TotalRows:N0}[/] (ranked: {materialization.RankedRows:N0})");
+
+        var anomalyResult = await _anomalyWorkflowService.RunAsync(pureBaselines, ct);
+        if (anomalyResult.AdjustmentSummary.MatchedRowCount > 0)
+        {
+            AnsiConsole.MarkupLine($"[green]Anomaly-adjusted prediction rows:[/] [cyan]{anomalyResult.AdjustmentSummary.MatchedRowCount:N0}[/] matched by [cyan]{anomalyResult.AdjustmentSummary.AppliedRuleCount:N0}[/] scoped rules. Final selector will use adjusted prediction ranks.");
+        }
 
         var selection = await _selectionEngine.RunAsync(
             pureBaselines,

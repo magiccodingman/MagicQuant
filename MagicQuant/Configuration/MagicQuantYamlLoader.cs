@@ -145,6 +145,23 @@ public static class MagicQuantYamlLoader
         config.CandidateSelection.NearBaselineMaxSizeGrowthPercent = Math.Max(0d, config.CandidateSelection.NearBaselineMaxSizeGrowthPercent);
         config.CandidateSelection.MinimumKldImprovementEpsilon = Math.Max(0d, config.CandidateSelection.MinimumKldImprovementEpsilon);
 
+        config.AnomalyDetection ??= new RuntimeAnomalyDetectionConfig();
+        config.AnomalyDetection.MaxAnomalyRefinementRounds = Math.Clamp(config.AnomalyDetection.MaxAnomalyRefinementRounds, 0, 1);
+        config.AnomalyDetection.MinActualGainVsTwinKld = Math.Max(0d, config.AnomalyDetection.MinActualGainVsTwinKld);
+        config.AnomalyDetection.MinPredictedSizeSavingsVsTwinPercent = Math.Max(0d, config.AnomalyDetection.MinPredictedSizeSavingsVsTwinPercent);
+        config.AnomalyDetection.MaxProbeGroupCount = Math.Clamp(config.AnomalyDetection.MaxProbeGroupCount, 1, 9);
+        config.AnomalyDetection.MaxProbesPerSeed = Math.Max(1, config.AnomalyDetection.MaxProbesPerSeed);
+        config.AnomalyDetection.MaxTotalProbesPerRun = Math.Max(0, config.AnomalyDetection.MaxTotalProbesPerRun);
+        config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld = Math.Max(0d, config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld);
+        config.AnomalyDetection.MaxRelativePredictionPenaltyVsTwin = Math.Clamp(config.AnomalyDetection.MaxRelativePredictionPenaltyVsTwin, 0d, 1d);
+        config.AnomalyDetection.PredictionSpaceViolationMargin = Math.Max(0d, config.AnomalyDetection.PredictionSpaceViolationMargin);
+        config.AnomalyDetection.AnomalyAdjustmentShrinkFactor = Math.Clamp(config.AnomalyDetection.AnomalyAdjustmentShrinkFactor, 0d, 1d);
+        config.AnomalyDetection.MinRuleConfidenceToApply = Math.Clamp(config.AnomalyDetection.MinRuleConfidenceToApply, 0d, 1d);
+        config.AnomalyDetection.MaxNegativeAdjustmentKld = Math.Max(0d, config.AnomalyDetection.MaxNegativeAdjustmentKld);
+        config.AnomalyDetection.MaxPositiveAdjustmentKld = Math.Max(0d, config.AnomalyDetection.MaxPositiveAdjustmentKld);
+        config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld = Math.Clamp(config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld, 0d, 1d);
+        config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone = Math.Max(1, config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone);
+
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
     }

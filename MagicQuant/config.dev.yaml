@@ -177,6 +177,60 @@ candidate_selection:
   # Q8 is treated as the highest-fidelity practical anchor unless this is enabled.
   allow_eight_bit_anchor_replacements: true
 
+anomaly_detection:
+  enabled: true
+
+  # One anomaly refinement pass after smoke/probe/rule generation.
+  max_anomaly_refinement_rounds: 1
+
+  # Minimum actual KLD gain versus higher-bit counterfactual twin to confirm anomaly.
+  min_actual_gain_vs_twin_kld: 0.00025
+
+  # Minimum predicted size savings versus higher-bit twin/reference to probe.
+  min_predicted_size_savings_vs_twin_percent: 1.0
+
+  # Max changed groups in a candidate that can seed contextual probes.
+  max_probe_group_count: 4
+
+  # Max probes generated per anomaly seed.
+  max_probes_per_seed: 16
+
+  # Max anomaly probes in one run.
+  max_total_probes_per_run: 32
+
+  # Strong smoke if a monotone downgrade candidate is this close to or better than its twin in prediction space.
+  max_prediction_space_gap_vs_twin_kld: 0.00050
+
+  # Optional relative cap for prediction-space gap normalized by local anchor gap.
+  max_relative_prediction_penalty_vs_twin: 0.35
+
+  # Minimum margin used when forcing confirmed anomalies below their higher-bit twin in prediction space.
+  prediction_space_violation_margin: 0.00005
+
+  # Shrink applied to prediction-space adjustment after a rule is confirmed.
+  anomaly_adjustment_shrink_factor: 0.70
+
+  # Minimum confidence required before applying a confirmed anomaly rule.
+  min_rule_confidence_to_apply: 0.50
+
+  # Absolute cap on total negative anomaly adjustment in prediction-space KLD units.
+  max_negative_adjustment_kld: 0.002
+
+  # Absolute cap on positive harmful interaction adjustment in prediction-space KLD units.
+  max_positive_adjustment_kld: 0.002
+
+  # Fractional cap relative to BaseRankSafeKld.
+  max_adjustment_fraction_of_base_kld: 0.75
+
+  # Number of top smoke candidates to consider per reference quant zone.
+  max_smoke_candidates_per_reference_zone: 12
+
+  # Store suppression-only results so false smoke is not repeatedly probed.
+  persist_suppression_results: true
+
+  # Emit detailed anomaly logs.
+  verbose_anomaly_logging: true
+
 output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
   output_dir:

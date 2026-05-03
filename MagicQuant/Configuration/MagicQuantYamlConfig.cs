@@ -17,6 +17,7 @@ public sealed class MagicQuantYamlConfig
     public RuntimeOutputConfig Output { get; set; } = new();
     public RuntimeSurvivalConfig Survival { get; set; } = new();
     public RuntimeCandidateSelectionConfig CandidateSelection { get; set; } = new();
+    public RuntimeAnomalyDetectionConfig AnomalyDetection { get; set; } = new();
     public RuntimeHardwareConfig Hardware { get; set; } = new();
 
     public List<string> SensitivityProbeGroups { get; set; } =
@@ -245,6 +246,29 @@ public sealed class RuntimeCandidateSelectionConfig
     /// Q8 remains the highest-fidelity practical anchor unless this is explicitly enabled.
     /// </summary>
     public bool AllowEightBitAnchorReplacements { get; set; } = false;
+}
+
+
+public sealed class RuntimeAnomalyDetectionConfig
+{
+    public bool Enabled { get; set; } = true;
+    public int MaxAnomalyRefinementRounds { get; set; } = 1;
+    public double MinActualGainVsTwinKld { get; set; } = 0.00025d;
+    public double MinPredictedSizeSavingsVsTwinPercent { get; set; } = 1.0d;
+    public int MaxProbeGroupCount { get; set; } = 4;
+    public int MaxProbesPerSeed { get; set; } = 16;
+    public int MaxTotalProbesPerRun { get; set; } = 32;
+    public double MaxPredictionSpaceGapVsTwinKld { get; set; } = 0.00050d;
+    public double MaxRelativePredictionPenaltyVsTwin { get; set; } = 0.35d;
+    public double PredictionSpaceViolationMargin { get; set; } = 0.00005d;
+    public double AnomalyAdjustmentShrinkFactor { get; set; } = 0.70d;
+    public double MinRuleConfidenceToApply { get; set; } = 0.50d;
+    public double MaxNegativeAdjustmentKld { get; set; } = 0.002d;
+    public double MaxPositiveAdjustmentKld { get; set; } = 0.002d;
+    public double MaxAdjustmentFractionOfBaseKld { get; set; } = 0.75d;
+    public int MaxSmokeCandidatesPerReferenceZone { get; set; } = 12;
+    public bool PersistSuppressionResults { get; set; } = true;
+    public bool VerboseAnomalyLogging { get; set; } = true;
 }
 
 public sealed class RuntimeLearningConfig

@@ -243,6 +243,10 @@ private static string? NormalizeFileNullable(string? value) => string.IsNullOrWh
     public DbSet<ImatrixDefinition> ImatrixDefinitions { get; set; }
     public DbSet<ArchitectureFamily> ArchitectureFamilies { get; set; }
     public DbSet<ArchitectureFamilyModelHash> ArchitectureFamilyModelHashes { get; set; }
+    public DbSet<AnomalyProbeSession> AnomalyProbeSessions { get; set; }
+    public DbSet<AnomalyProbeObservation> AnomalyProbeObservations { get; set; }
+    public DbSet<AnomalyInteractionRule> AnomalyInteractionRules { get; set; }
+    public DbSet<AnomalyInteractionRuleGroupState> AnomalyInteractionRuleGroupStates { get; set; }
 
 
     // --------------------------------------------------------
@@ -284,6 +288,9 @@ private static string? NormalizeFileNullable(string? value) => string.IsNullOrWh
                 BenchmarkRun x => (EntityName: nameof(BenchmarkRun), x.AiModelHashId, x.ImatrixDefinitionId),
                 QuantizationRun x => (EntityName: nameof(QuantizationRun), x.AiModelHashId, x.ImatrixDefinitionId),
                 ExecutionPlanProbeCache x => (EntityName: nameof(ExecutionPlanProbeCache), x.AiModelHashId, x.ImatrixDefinitionId),
+                AnomalyProbeSession x => (EntityName: nameof(AnomalyProbeSession), x.AiModelHashId, x.ImatrixDefinitionId),
+                AnomalyProbeObservation x => (EntityName: nameof(AnomalyProbeObservation), x.AiModelHashId, x.ImatrixDefinitionId),
+                AnomalyInteractionRule x => (EntityName: nameof(AnomalyInteractionRule), x.AiModelHashId, x.ImatrixDefinitionId),
                 _ => default
             })
             .Where(x => !string.IsNullOrWhiteSpace(x.EntityName) && x.ImatrixDefinitionId.HasValue)

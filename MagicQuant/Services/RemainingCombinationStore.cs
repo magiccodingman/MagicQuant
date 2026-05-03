@@ -154,12 +154,13 @@ FROM {TableName};";
         string sql = $@"
 SELECT COUNT(*)
 FROM {TableName}
-WHERE PredictedKld IS NOT NULL
+WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
   AND PredictedSizeBytes IS NOT NULL
   AND PredictionRank IS NOT NULL
+  AND {CombinationDuckDbSchema.ActiveCandidatePredicateSql}
   AND {CombinationDuckDbSchema.HybridPredicateSql}
   AND PredictedSizeBytes <= ?
-  AND PredictedKld + ? < ?;";
+  AND {CombinationDuckDbSchema.EffectivePredictedKldSql} + ? < ?;";
 
         return await ExecuteCountAsync(
             sql,
@@ -175,9 +176,10 @@ WHERE PredictedKld IS NOT NULL
         string sql = $@"
 SELECT COUNT(*)
 FROM {TableName}
-WHERE PredictedKld IS NOT NULL
+WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
   AND PredictedSizeBytes IS NOT NULL
   AND PredictionRank IS NOT NULL
+  AND {CombinationDuckDbSchema.ActiveCandidatePredicateSql}
   AND {CombinationDuckDbSchema.HybridPredicateSql}
   AND PredictedSizeBytes BETWEEN ? AND ?;";
 
@@ -193,15 +195,16 @@ WHERE PredictedKld IS NOT NULL
     {
         string sql = $@"
 WITH scored AS (
-    SELECT PredictedKld,
+    SELECT {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
            PredictedSizeBytes,
            (CAST(? AS DOUBLE)
              + ((CAST(PredictedSizeBytes AS DOUBLE) - CAST(? AS DOUBLE)) / GREATEST(CAST(? AS DOUBLE), 1.0))
              * (CAST(? AS DOUBLE) - CAST(? AS DOUBLE))) AS LinearExpectedKld
     FROM {TableName}
-    WHERE PredictedKld IS NOT NULL
+    WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
       AND PredictedSizeBytes IS NOT NULL
       AND PredictionRank IS NOT NULL
+      AND {CombinationDuckDbSchema.ActiveCandidatePredicateSql}
       AND {CombinationDuckDbSchema.HybridPredicateSql}
       AND PredictedSizeBytes BETWEEN ? AND ?
 )
@@ -236,17 +239,18 @@ WHERE LinearExpectedKld - PredictedKld > ?;";
     {
         string sql = $@"
 SELECT {CombinationDuckDbSchema.SlotColumnList},
-       PredictedKld,
+       {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
        PredictedSizeBytes,
        PredictionConfidence,
        PredictionRank
 FROM {TableName}
-WHERE PredictedKld IS NOT NULL
+WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
   AND PredictedSizeBytes IS NOT NULL
   AND PredictionRank IS NOT NULL
+  AND {CombinationDuckDbSchema.ActiveCandidatePredicateSql}
   AND {CombinationDuckDbSchema.HybridPredicateSql}
   AND PredictedSizeBytes <= ?
-  AND PredictedKld + ? < ?
+  AND {CombinationDuckDbSchema.EffectivePredictedKldSql} + ? < ?
 ORDER BY PredictedSizeBytes ASC,
          PredictedKld ASC,
          PredictionRank ASC,
@@ -272,7 +276,7 @@ LIMIT ?;";
         string sql = $@"
 WITH scored AS (
     SELECT {CombinationDuckDbSchema.SlotColumnList},
-           PredictedKld,
+           {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
            PredictedSizeBytes,
            PredictionConfidence,
            PredictionRank,
@@ -280,9 +284,10 @@ WITH scored AS (
              + ((CAST(PredictedSizeBytes AS DOUBLE) - CAST(? AS DOUBLE)) / GREATEST(CAST(? AS DOUBLE), 1.0))
              * (CAST(? AS DOUBLE) - CAST(? AS DOUBLE))) AS LinearExpectedKld
     FROM {TableName}
-    WHERE PredictedKld IS NOT NULL
+    WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
       AND PredictedSizeBytes IS NOT NULL
       AND PredictionRank IS NOT NULL
+      AND {CombinationDuckDbSchema.ActiveCandidatePredicateSql}
       AND {CombinationDuckDbSchema.HybridPredicateSql}
       AND PredictedSizeBytes BETWEEN ? AND ?
 ),

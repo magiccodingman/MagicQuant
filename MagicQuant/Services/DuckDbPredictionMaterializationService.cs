@@ -54,7 +54,11 @@ UPDATE {CombinationDuckDbSchema.TableName}
 SET PredictedKld = NULL,
     PredictedSizeBytes = NULL,
     PredictionConfidence = NULL,
-    PredictionRank = NULL;", ct);
+    PredictionRank = NULL,
+    BaseRankSafeKld = NULL,
+    AnomalyAdjustmentKld = 0.0,
+    FinalPredictedKld = NULL,
+    IsProtectedAnchor = FALSE;", ct);
 
         await BuildLookupTablesAsync(c, model, ct);
         await PrintLookupDiagnosticsAsync(c, model, ct);
@@ -484,7 +488,11 @@ UPDATE {CombinationDuckDbSchema.TableName} t
 SET PredictedKld = r.PredictedKld,
     PredictedSizeBytes = r.PredictedSizeBytes,
     PredictionConfidence = r.PredictionConfidence,
-    PredictionRank = r.PredictionRank
+    PredictionRank = r.PredictionRank,
+    BaseRankSafeKld = r.PredictedKld,
+    AnomalyAdjustmentKld = 0.0,
+    FinalPredictedKld = r.PredictedKld,
+    IsProtectedAnchor = FALSE
 FROM temp_ranked_prediction_with_rank r
 WHERE {CombinationDuckDbSchema.BuildSlotEqualityPredicate("t", "r")};", ct);
     }

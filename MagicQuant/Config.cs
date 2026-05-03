@@ -68,6 +68,9 @@ public static class Config
     public static bool SelectionAllowEightBitAnchorReplacements =>
         Current.CandidateSelection.AllowEightBitAnchorReplacements;
 
+    public static RuntimeAnomalyDetectionConfig AnomalyDetection => Current.AnomalyDetection;
+    public static bool AnomalyDetectionEnabled => Current.AnomalyDetection.Enabled;
+
     public static string? OutputDirectory => Current.Output.OutputDir;
     public static string OutputNamePrefix => string.IsNullOrWhiteSpace(Current.Output.OutputNamePrefix)
         ? "Model"

@@ -6,7 +6,9 @@ internal static class CombinationDuckDbSchema
 {
     public const string TableName = "tensor_configs";
     public const string SlotColumnList = "BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter";
-    public const string PredictionColumnList = "PredictedKld, PredictedSizeBytes, PredictionConfidence, PredictionRank";
+    public const string PredictionColumnList = "PredictedKld, PredictedSizeBytes, PredictionConfidence, PredictionRank, BaseRankSafeKld, AnomalyAdjustmentKld, FinalPredictedKld, IsProtectedAnchor";
+    public const string ActiveCandidatePredicateSql = "COALESCE(IsProtectedAnchor, FALSE) = FALSE";
+    public const string EffectivePredictedKldSql = "COALESCE(FinalPredictedKld, PredictedKld)";
     public const string HybridPredicateSql = "(Embeddings <> 0 OR LmHead <> 0 OR AttnQ <> 0 OR AttnKV <> 0 OR AttnOutput <> 0 OR FfnUpGate <> 0 OR FfnDown <> 0 OR MoeExperts <> 0 OR MoeRouter <> 0)";
 
     public static readonly string[] SlotColumns =
@@ -26,7 +28,8 @@ internal static class CombinationDuckDbSchema
     public static readonly string[] ExpectedColumnTypes =
     [
         "utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint",
-        "double","ubigint","double","ubigint"
+        "double","ubigint","double","ubigint",
+        "double","double","double","boolean"
     ];
 
     public static string CreateTableSql => $@"
@@ -48,7 +51,18 @@ CREATE TABLE {TableName} (
     PredictedKld DOUBLE,
     PredictedSizeBytes UBIGINT,
     PredictionConfidence DOUBLE,
-    PredictionRank UBIGINT
+    PredictionRank UBIGINT,
+
+    -- Normal PAVA output before scoped anomaly exceptions.
+    BaseRankSafeKld DOUBLE,
+
+    -- Scoped post-PAVA anomaly/rule adjustment. This is prediction-space only.
+    AnomalyAdjustmentKld DOUBLE DEFAULT 0.0,
+    FinalPredictedKld DOUBLE,
+
+    -- Protected/reference anchors may be stored for twin lookup/logging, but must
+    -- never become active search carriers. Normal generator rows default false.
+    IsProtectedAnchor BOOLEAN DEFAULT FALSE
 );";
 
     public static string BuildSlotEqualityPredicate(string leftAlias, string rightAlias)
