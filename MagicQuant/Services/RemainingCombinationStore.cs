@@ -12,15 +12,16 @@ public sealed class RemainingCombinationStore
     private const string DbFileNamePrefix = "MagicQuant_Combinations";
     private const string TableName = CombinationDuckDbSchema.TableName;
 
-    private static string ConnectionString => $"Data Source={Path.Combine(GetDuckDbDirectory(), BuildContextAwareDuckDbFileName())}";
+    private static string ConnectionString => $"Data Source={GetDatabaseFilePathInternal()}";
 
-    public string GetDatabaseFilePath() => Path.Combine(GetDuckDbDirectory(), BuildContextAwareDuckDbFileName());
+    public string GetDatabaseFilePath() => GetDatabaseFilePathInternal();
 
     public async Task<long> CountAsync(CancellationToken ct = default)
     {
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
+        await EnsureTensorConfigsTableExistsAsync(connection, ct);
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = $"SELECT COUNT(*) FROM {TableName};";
@@ -61,6 +62,7 @@ ORDER BY {CombinationDuckDbSchema.SlotColumnList};";
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
+        await EnsureTensorConfigsTableExistsAsync(connection, ct);
 
         string sql = $@"SELECT {CombinationDuckDbSchema.SlotColumnList} FROM {TableName}";
         if (!string.IsNullOrWhiteSpace(whereSql))
@@ -110,6 +112,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
         using var connection = new DuckDBConnection(ConnectionString);
         await connection.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(connection, ct);
+        await EnsureTensorConfigsTableExistsAsync(connection, ct);
 
         using var cmd = connection.CreateCommand();
         cmd.CommandText = $@"
@@ -228,6 +231,7 @@ LIMIT ?;";
         using var c = new DuckDBConnection(ConnectionString);
         await c.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(c, ct);
+        await EnsureTensorConfigsTableExistsAsync(c, ct);
 
         using var cmd = c.CreateCommand();
         cmd.CommandText = sql;
@@ -283,6 +287,7 @@ LIMIT ?;";
         using var c = new DuckDBConnection(ConnectionString);
         await c.OpenAsync(ct);
         await ConfigureFastLoadSessionAsync(c, ct);
+        await EnsureTensorConfigsTableExistsAsync(c, ct);
 
         using var cmd = c.CreateCommand();
         cmd.CommandText = sql;
@@ -377,11 +382,36 @@ LIMIT ?;";
             "Neither Cache.ModelMagicQuantDirectory nor Cache.MagicQuantDirectory is set.");
     }
 
+    private static string GetDatabaseFilePathInternal()
+    {
+        return Path.Combine(GetDuckDbDirectory(), BuildContextAwareDuckDbFileName());
+    }
+
     private static string BuildContextAwareDuckDbFileName()
     {
+        // IMPORTANT: this must stay byte-for-byte compatible with QuantDatabaseService
+        // unless both services are changed together. The previous patch made only the
+        // prediction reader profile-aware, which opened a brand-new empty DuckDB file
+        // after stage-1 had populated the original file.
         string model = string.IsNullOrWhiteSpace(Cache.CurrentModelId) ? "unknown-model" : Cache.CurrentModelId;
         string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixIdentityHash ?? "imatrix-unknown") : "no-imatrix";
         string hp = RuntimeSearchSpace.AllowHighPrecisionHybrids ? "hp-on" : "hp-off";
         return $"{DbFileNamePrefix}_{model}_{imatrix}_{hp}.duckdb";
+    }
+
+    private static async Task EnsureTensorConfigsTableExistsAsync(DuckDBConnection connection, CancellationToken ct)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?;";
+        cmd.Parameters.Add(new DuckDBParameter { Value = TableName });
+
+        long matches = Convert.ToInt64(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        if (matches > 0)
+            return;
+
+        throw new InvalidOperationException(
+            $"DuckDB search-space table '{TableName}' does not exist in '{GetDatabaseFilePathInternal()}'. " +
+            "This almost always means the generator and prediction reader are using different DuckDB filenames, " +
+            "or prediction started before QuantDatabaseService initialized/rebuilt the search-space table.");
     }
 }

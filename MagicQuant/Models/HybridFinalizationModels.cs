@@ -142,8 +142,25 @@ public sealed class BenchmarkSnapshotRecord
     public string DisplayName { get; init; } = string.Empty;
     public string ProviderName { get; init; } = string.Empty;
     public string BaselineFamily { get; init; } = string.Empty;
+    /// <summary>
+    /// True only for MagicQuant-discovered mixed tensor configurations.
+    /// Exact/base-only blankets and uniform external rebuilt baselines are not hybrids.
+    /// </summary>
     public bool IsHybrid { get; init; }
+
     public bool IsExternalPureBaseline { get; init; }
+
+    /// <summary>
+    /// True when MagicQuant rebuilt/materialized an external provider baseline for equal-footing
+    /// benchmarking/export, but did not invent a mixed MagicQuant hybrid recipe.
+    /// </summary>
+    public bool IsExternalRebuiltBaseline { get; init; }
+
+    /// <summary>
+    /// True when the tensor config contains materialized tensor-group overrides, even if those
+    /// overrides are only exact/native anchors or a uniform external baseline rebuild.
+    /// </summary>
+    public bool IsMaterializedTensorMapped { get; init; }
     public ulong SizeBytes { get; init; }
     public double Kld { get; init; }
     public double Ppl { get; init; }

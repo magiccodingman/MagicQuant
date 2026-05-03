@@ -130,9 +130,8 @@ public sealed class FinalSurvivorSelectionCliService
         if (snapshot.IsHybrid)
             return "MagicQuant";
 
-        if (string.Equals(name.ProviderToken, "MQ", StringComparison.OrdinalIgnoreCase))
-            return "MagicQuant";
-
+        // MQ-* in the planned artifact name can mean "rebuilt by MagicQuant".
+        // It must not overwrite the semantic upstream provider for rebuilt Unsloth/custom baselines.
         return HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false);
     }
 

@@ -74,7 +74,7 @@ public sealed class HybridBenchmarkRepository
             return null;
 
         var quant = (HybridQuant)config;
-        var baseQuant = quant.BaseQuant;
+        var sourceBaseline = ResolveSourceBaselineForProvider(quant);
 
         return new BenchmarkSnapshotRecord
         {
@@ -82,14 +82,16 @@ public sealed class HybridBenchmarkRepository
             Quant = quant,
             DisplayName = BuildDisplayName(quant),
             ProviderName = ResolveProviderName(quant, exportNaming: false),
-            BaselineFamily = baseQuant.Names[0],
-            IsHybrid = quant.Tensors.Count > 0,
-            IsExternalPureBaseline = quant.Tensors.Count == 0 && baseQuant.IsExternalRepositoryBaseline,
+            BaselineFamily = ResolveBaselineFamily(quant),
+            IsHybrid = IsTrueMagicQuantHybrid(quant),
+            IsExternalPureBaseline = quant.Tensors.Count == 0 && sourceBaseline.IsExternalRepositoryBaseline,
+            IsExternalRebuiltBaseline = IsExternalRebuiltBaseline(quant),
+            IsMaterializedTensorMapped = quant.Tensors.Count > 0,
             SizeBytes = chosen.SizeBytes,
             Kld = general.Kld,
             Ppl = general.Ppl,
             OutputModelPath = await FindLatestSuccessfulOutputPathAsync(config, ct),
-            ExternalRepositoryUrl = BuildExternalRepositoryUrl(baseQuant)
+            ExternalRepositoryUrl = BuildExternalRepositoryUrl(sourceBaseline)
         };
     }
 
@@ -307,7 +309,7 @@ public sealed class HybridBenchmarkRepository
                 moeRouter: combo.MoeRouter);
 
             var quant = (HybridQuant)config;
-            var baseQuant = quant.BaseQuant;
+            var sourceBaseline = ResolveSourceBaselineForProvider(quant);
 
             result.Add(new BenchmarkSnapshotRecord
             {
@@ -315,14 +317,16 @@ public sealed class HybridBenchmarkRepository
                 Quant = quant,
                 DisplayName = BuildDisplayName(quant),
                 ProviderName = ResolveProviderName(quant, exportNaming: false),
-                BaselineFamily = baseQuant.Names[0],
-                IsHybrid = quant.Tensors.Count > 0,
-                IsExternalPureBaseline = quant.Tensors.Count == 0 && baseQuant.IsExternalRepositoryBaseline,
+                BaselineFamily = ResolveBaselineFamily(quant),
+                IsHybrid = IsTrueMagicQuantHybrid(quant),
+                IsExternalPureBaseline = quant.Tensors.Count == 0 && sourceBaseline.IsExternalRepositoryBaseline,
+                IsExternalRebuiltBaseline = IsExternalRebuiltBaseline(quant),
+                IsMaterializedTensorMapped = quant.Tensors.Count > 0,
                 SizeBytes = benchmark.SizeBytes,
                 Kld = metric.Kld,
                 Ppl = metric.Ppl,
                 OutputModelPath = await FindLatestSuccessfulOutputPathAsync(config, ct),
-                ExternalRepositoryUrl = BuildExternalRepositoryUrl(baseQuant)
+                ExternalRepositoryUrl = BuildExternalRepositoryUrl(sourceBaseline)
             });
         }
 
@@ -336,10 +340,10 @@ public sealed class HybridBenchmarkRepository
 
     public static string ResolveProviderName(HybridQuant quant, bool exportNaming)
     {
-        if (exportNaming && quant.Tensors.Count > 0)
-            return "MQ";
+        if (IsTrueMagicQuantHybrid(quant))
+            return exportNaming ? "MQ" : "MagicQuant";
 
-        var baseline = quant.BaseQuant;
+        var baseline = ResolveSourceBaselineForProvider(quant);
         if (baseline.IsExternalRepositoryBaseline)
             return string.IsNullOrWhiteSpace(baseline.ShortSourceName)
                 ? "External"
@@ -348,6 +352,103 @@ public sealed class HybridBenchmarkRepository
         return string.IsNullOrWhiteSpace(baseline.ShortSourceName)
             ? "llama.cpp"
             : baseline.ShortSourceName!;
+    }
+
+    public static string ResolveBaselineFamily(HybridQuant quant)
+    {
+        if (IsTrueMagicQuantHybrid(quant))
+            return quant.BaseQuant.Names[0];
+
+        return ResolveSourceBaselineForProvider(quant).Names[0];
+    }
+
+    public static BaselineQuants ResolveSourceBaselineForProvider(HybridQuant quant)
+    {
+        if (TryResolveUniformExternalLearnedBaseline(quant, out var externalBaseline))
+            return externalBaseline;
+
+        return quant.BaseQuant;
+    }
+
+    public static bool IsExternalRebuiltBaseline(HybridQuant quant)
+    {
+        if (IsTrueMagicQuantHybrid(quant))
+            return false;
+
+        if (quant.BaseQuant.IsExternalRepositoryBaseline)
+            return quant.Tensors.Count > 0;
+
+        return TryResolveUniformExternalLearnedBaseline(quant, out _);
+    }
+
+    public static bool IsTrueMagicQuantHybrid(HybridQuant quant)
+    {
+        if (quant.Tensors.Count == 0)
+            return false;
+
+        var activeTensors = GetActiveTensors(quant).ToList();
+        if (activeTensors.Count == 0)
+            return false;
+
+        if (activeTensors.All(x => x.OverrideMode == HybridTensorOverrideMode.ExactTensorScheme))
+            return false;
+
+        if (TryResolveUniformExternalLearnedBaseline(quant, out _))
+            return false;
+
+        return true;
+    }
+
+    private static bool TryResolveUniformExternalLearnedBaseline(HybridQuant quant, out BaselineQuants externalBaseline)
+    {
+        externalBaseline = default!;
+
+        var activeGroups = GetActiveGroups().ToList();
+        if (activeGroups.Count == 0)
+            return false;
+
+        var activeTensors = GetActiveTensors(quant).ToList();
+        if (activeTensors.Count != activeGroups.Count)
+            return false;
+
+        if (activeTensors.Any(x => x.OverrideMode != HybridTensorOverrideMode.LearnedBaselineCandidate || x.CandidateBaseline == null))
+            return false;
+
+        var candidates = activeTensors
+            .Select(x => x.CandidateBaseline!)
+            .ToList();
+
+        if (candidates.Any(x => !x.IsExternalRepositoryBaseline))
+            return false;
+
+        var first = candidates[0];
+        bool allSame = candidates.All(x =>
+            x.UniqueId == first.UniqueId ||
+            string.Equals(x.CanonicalKey, first.CanonicalKey, StringComparison.OrdinalIgnoreCase));
+
+        if (!allSame)
+            return false;
+
+        externalBaseline = first;
+        return true;
+    }
+
+    private static IEnumerable<HybridTensor> GetActiveTensors(HybridQuant quant)
+    {
+        var activeGroupIds = GetActiveGroups()
+            .Select(x => x.UniqueId)
+            .ToHashSet();
+
+        return quant.Tensors
+            .Where(x => x?.TGroup != null && activeGroupIds.Contains(x.TGroup.UniqueId));
+    }
+
+    private static IReadOnlyList<TensorGroup> GetActiveGroups()
+    {
+        return TReg.All
+            .Where(x => !Cache.UnusedTensorGroups.Any(u => u.UniqueId == x.UniqueId))
+            .OrderBy(x => x.UniqueId)
+            .ToList();
     }
 
     public static string BuildDisplayName(HybridQuant quant)

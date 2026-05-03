@@ -190,6 +190,24 @@ public sealed class RankSafeKldPredictionService
                      .OrderBy(x => x.UniqueId))
         {
             byte normalizedBaselineId = NormalizeBaselineIdForIsolation(baseline.UniqueId);
+
+            if (!baseOnlyByBaselineId.ContainsKey(baseline.UniqueId))
+            {
+                var directBaseOnlyQuant = HybridQuant.CreateExactBlanket(
+                    baseQuant: baseline,
+                    groups: activeGroups,
+                    exactScheme: nativeExactScheme);
+
+                var directBaseOnlySnapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)directBaseOnlyQuant, ct);
+                if (directBaseOnlySnapshot != null)
+                {
+                    baseOnlyByBaselineId[baseline.UniqueId] = directBaseOnlySnapshot;
+                    if (!baseOnlyByBaselineId.ContainsKey(normalizedBaselineId))
+                        baseOnlyByBaselineId[normalizedBaselineId] = directBaseOnlySnapshot;
+                    continue;
+                }
+            }
+
             if (baseOnlyByBaselineId.ContainsKey(normalizedBaselineId))
                 continue;
 

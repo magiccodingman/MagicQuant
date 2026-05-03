@@ -68,9 +68,7 @@ public sealed class HybridArtifactExportService
             bool isHybrid = snap.IsHybrid;
             bool exportLocally = isHybrid || !snap.IsExternalPureBaseline || Config.ExportExternalLearnedBaselines;
             var name = ResolvePlannedOrBuildName(row, snap, namingContext, reservedFileNames);
-            string provider = !string.IsNullOrWhiteSpace(row.PlannedProviderName)
-                ? row.PlannedProviderName
-                : ResolveReadmeProviderName(snap, isHybrid, name);
+            string provider = ResolveReadmeProviderName(snap, name);
 
             if (!exportLocally)
             {
@@ -200,14 +198,13 @@ public sealed class HybridArtifactExportService
         return _namingService.BuildName(snapshot, namingContext, reservedFileNames);
     }
 
-    private static string ResolveReadmeProviderName(BenchmarkSnapshotRecord snapshot, bool isHybrid, FinalArtifactName name)
+    private static string ResolveReadmeProviderName(BenchmarkSnapshotRecord snapshot, FinalArtifactName name)
     {
-        if (isHybrid)
+        if (snapshot.IsHybrid)
             return "MagicQuant";
 
-        if (string.Equals(name.ProviderToken, "MQ", StringComparison.OrdinalIgnoreCase))
-            return "MagicQuant";
-
+        // The artifact filename may contain MQ-* when MagicQuant rebuilt an external
+        // baseline for equal-footing export. The provider remains the upstream source.
         return HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false);
     }
 

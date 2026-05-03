@@ -37,22 +37,22 @@ public sealed class FinalArtifactNamingService
             int ordinal = context.NextHybridOrdinal(quantFamily);
             tag = $"{providerToken}-{SanitizeToken(quantFamily)}_{ordinal}";
         }
-        else if (snapshot.Quant.BaseQuant.IsExternalRepositoryBaseline)
+        else if (HybridBenchmarkRepository.ResolveSourceBaselineForProvider(snapshot.Quant).IsExternalRepositoryBaseline)
         {
-            string externalProviderToken = ResolveExternalProviderToken(snapshot.Quant.BaseQuant);
-            string externalFamily = NormalizeExternalDisplayName(snapshot.Quant.BaseQuant.Names[0], externalProviderToken);
+            var sourceBaseline = HybridBenchmarkRepository.ResolveSourceBaselineForProvider(snapshot.Quant);
+            string externalProviderToken = ResolveExternalProviderToken(sourceBaseline);
+            string externalFamily = NormalizeExternalDisplayName(sourceBaseline.Names[0], externalProviderToken);
 
-            if (Config.ExportExternalLearnedBaselines)
+            providerToken = externalProviderToken;
+            if (Config.ExportExternalLearnedBaselines || snapshot.IsExternalRebuiltBaseline || snapshot.IsMaterializedTensorMapped)
             {
                 // This is a MagicQuant rebuilt/re-uploaded copy of an external learned baseline.
-                // Keep the external source tag, but mark the artifact as MQ-owned.
-                providerToken = "MQ";
+                // The artifact name gets an MQ prefix, but the provider remains the upstream source.
                 quantFamily = $"MQ-{SanitizeToken(externalFamily)}";
                 tag = quantFamily;
             }
             else
             {
-                providerToken = externalProviderToken;
                 quantFamily = SanitizeToken(externalFamily);
                 tag = quantFamily;
             }
@@ -86,11 +86,12 @@ public sealed class FinalArtifactNamingService
         if (snapshot.IsHybrid)
             return $"{prefix}-MQ-{SanitizeToken(ResolveHybridRangeFamily(snapshot, context))}";
 
-        if (snapshot.Quant.BaseQuant.IsExternalRepositoryBaseline)
+        var sourceBaseline = HybridBenchmarkRepository.ResolveSourceBaselineForProvider(snapshot.Quant);
+        if (sourceBaseline.IsExternalRepositoryBaseline)
         {
-            string providerToken = ResolveExternalProviderToken(snapshot.Quant.BaseQuant);
-            string family = SanitizeToken(NormalizeExternalDisplayName(snapshot.Quant.BaseQuant.Names[0], providerToken));
-            return Config.ExportExternalLearnedBaselines
+            string providerToken = ResolveExternalProviderToken(sourceBaseline);
+            string family = SanitizeToken(NormalizeExternalDisplayName(sourceBaseline.Names[0], providerToken));
+            return Config.ExportExternalLearnedBaselines || snapshot.IsExternalRebuiltBaseline || snapshot.IsMaterializedTensorMapped
                 ? $"{prefix}-MQ-{family}"
                 : $"{prefix}-{family}";
         }
@@ -409,6 +410,9 @@ public sealed class FinalArtifactNamingService
         string sanitizedFamily = SanitizeToken(resolvedFamily ?? string.Empty);
         if (string.IsNullOrWhiteSpace(sanitizedFamily))
             return string.Empty;
+
+        if (sanitizedFamily.StartsWith("MQ-", StringComparison.OrdinalIgnoreCase))
+            return sanitizedFamily;
 
         if (snapshot?.IsHybrid == true)
         {
