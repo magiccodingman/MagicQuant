@@ -146,7 +146,7 @@ prediction:
 candidate_selection:
   # Phase 2: a hybrid can replace the smaller/higher-damage anchor when it fits
   # inside this size premium and beats the real linear KLD improvement line.
-  near_baseline_max_size_growth_percent: 1.0
+  near_baseline_max_size_growth_percent: 1.5
 
   # Phase 3: interior windows between adjacent final anchors.
   # [0.35, 0.35] means test the first 35% of the size span, then the next 35%.
