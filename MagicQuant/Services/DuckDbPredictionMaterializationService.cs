@@ -146,6 +146,8 @@ CREATE TEMP TABLE temp_group_size_delta (
             .OrderBy(x => x.Group.UniqueId)
             .ToList();
 
+        var warnedMissingQ8IsolationGroups = new HashSet<byte>();
+
         using var tx = c.BeginTransaction();
 
         foreach (var baseline in activeBaselines)
@@ -181,6 +183,10 @@ CREATE TEMP TABLE temp_group_size_delta (
                         else
                         {
                             kldPredictable = false;
+                            if (normalizedBaselineId == BaselineQuants.Q8_0.UniqueId && warnedMissingQ8IsolationGroups.Add(slot.Group.UniqueId))
+                            {
+                                AnsiConsole.MarkupLine($"[yellow]Missing KLD isolation snapshot for group '{Markup.Escape(slot.Group.Name)}' and baseline Q8_0 while building DuckDB prediction lookup. Q8_0 is quantized damage, not native truth; matching rows will stay unpredicted instead of receiving zero KLD.[/]");
+                            }
                         }
                     }
 
@@ -751,8 +757,10 @@ ORDER BY BaseQuant;";
 
     private static bool IsZeroDamageAlias(byte baselineId)
     {
-        return baselineId == BaselineQuants.Q8_0.UniqueId ||
-               BaselineQuants.IsNativeExactAlias(baselineId);
+        // Only native exact aliases are zero-reference states. Q8_0 is intentionally
+        // excluded: it has measured isolation KLD and must be scored like every other
+        // quant baseline in prediction space.
+        return BaselineQuants.IsNativeExactAlias(baselineId);
     }
 
     private static double GetBitRange(byte baselineId)

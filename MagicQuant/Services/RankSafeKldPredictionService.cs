@@ -176,7 +176,7 @@ public sealed class RankSafeKldPredictionService
         var q8BaseOnly = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)q8BaseOnlyQuant, ct);
         if (q8BaseOnly == null)
         {
-            notes.Add("Q8 native-exact base-only anchor was missing. Size fallback will use pure Q8; KLD exact/Q8 contributions remain zero.");
+            notes.Add("Q8 native-exact base-only anchor was missing. Size fallback will use pure Q8; Q8_0 group KLD still requires measured Q8_0 isolation snapshots and will not be treated as zero damage.");
             q8BaseOnly = pureQ8;
         }
 
@@ -246,6 +246,23 @@ public sealed class RankSafeKldPredictionService
                 if (snapshot != null)
                     isolationByGroupAndBaseline[(group.UniqueId, normalizedBaselineId)] = snapshot;
             }
+        }
+
+        var missingQ8IsolationGroups = activeGroups
+            .Where(group => !isolationByGroupAndBaseline.ContainsKey((group.UniqueId, BaselineQuants.Q8_0.UniqueId)))
+            .Select(group => group.Name)
+            .ToList();
+
+        if (missingQ8IsolationGroups.Count > 0)
+        {
+            foreach (var groupName in missingQ8IsolationGroups)
+            {
+                notes.Add($"Missing KLD isolation snapshot for group '{groupName}' and baseline Q8_0. Q8_0 is a quantized state, not native truth; prediction will not silently fall back to zero for this group.");
+            }
+        }
+        else
+        {
+            notes.Add($"Q8_0 isolation snapshots loaded for {activeGroups.Count:N0} active tensor groups. Q8_0 will contribute measured prediction-space KLD, not zero/native damage.");
         }
 
         return new RankSafePredictionModel(
@@ -483,7 +500,7 @@ public sealed class RankSafeKldPredictionService
 
             if (!context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, normalized), out var isolation))
             {
-                notes.Add($"Missing KLD isolation snapshot for group '{group.Name}' and baseline id '{normalized}'.");
+                notes.Add(BuildMissingIsolationNote(group, normalized));
                 canPredict = false;
                 continue;
             }
@@ -640,10 +657,37 @@ public sealed class RankSafeKldPredictionService
         return builtIn?.UniqueId ?? baselineId;
     }
 
-    private static bool IsZeroDamageAlias(byte baselineId)
+    private static bool IsZeroDamageAlias(byte baselineId) => IsNativeExactZeroReferenceAlias(baselineId);
+
+    private static bool IsNativeExactZeroReferenceAlias(byte baselineId)
     {
-        return baselineId == BaselineQuants.Q8_0.UniqueId ||
-               BaselineQuants.IsNativeExactAlias(baselineId);
+        // MagicQuant's zero-damage reference is native exact precision (BF16/F16/F32),
+        // not Q8_0. Q8_0 is a real quantized state with measured per-group isolation
+        // KLD and must flow through the same lookup path as Q6_K/Q5_K/Q4/etc.
+        return BaselineQuants.IsNativeExactAlias(baselineId);
+    }
+
+    private static string BuildMissingIsolationNote(TensorGroup group, byte normalizedBaselineId)
+    {
+        var baselineName = FormatBaselineForNote(normalizedBaselineId);
+        if (normalizedBaselineId == BaselineQuants.Q8_0.UniqueId)
+        {
+            return $"Missing KLD isolation snapshot for group '{group.Name}' and baseline Q8_0. Q8_0 is quantized damage, not native truth; this row is marked incomplete instead of silently receiving zero KLD.";
+        }
+
+        return $"Missing KLD isolation snapshot for group '{group.Name}' and baseline {baselineName} (id '{normalizedBaselineId}').";
+    }
+
+    private static string FormatBaselineForNote(byte baselineId)
+    {
+        try
+        {
+            return BaselineQuants.FromId(baselineId).Names[0];
+        }
+        catch
+        {
+            return $"id {baselineId}";
+        }
     }
 
     private static void PrintPredictionDiagnostics(IReadOnlyCollection<RankSafePredictionRow> rows, RankSafePredictionFit fit)

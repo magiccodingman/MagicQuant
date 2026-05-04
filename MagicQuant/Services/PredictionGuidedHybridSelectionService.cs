@@ -1356,6 +1356,16 @@ public sealed class PredictionGuidedHybridSelectionService
         }
 
         AnsiConsole.Write(table);
+
+        var q8Anchor = predictedAnchors.FirstOrDefault(x =>
+            x.RuntimeBaselineId == BaselineQuants.Q8_0.UniqueId ||
+            string.Equals(NormalizeAnchorKey(x.BaselineCanonicalKey), NormalizeAnchorKey(BaselineQuants.Q8_0.CanonicalKey), StringComparison.Ordinal) ||
+            string.Equals(x.DisplayName, BaselineQuants.Q8_0.Names[0], StringComparison.OrdinalIgnoreCase));
+
+        if (q8Anchor != null && Math.Abs(q8Anchor.PredictedKld) <= 1e-12d)
+        {
+            AnsiConsole.MarkupLine("[yellow]WARNING:[/] Q8_0 virtual prediction anchor has zero predicted KLD. This usually means Q8_0 isolation rows were skipped or missing. Q8_0 must not be treated as native/exact truth in prediction space.");
+        }
     }
 
     private static BenchmarkSnapshotRecord? FindMatchingRealAnchor(

@@ -208,13 +208,13 @@ anomaly_detection:
   prediction_space_violation_margin: 0.00005
 
   # Shrink applied to prediction-space adjustment after a rule is confirmed.
-  anomaly_adjustment_shrink_factor: 0.50
+  anomaly_adjustment_shrink_factor: 1.00
 
   # Minimum confidence required before applying a confirmed anomaly rule.
   min_rule_confidence_to_apply: 0.50
 
   # Absolute cap on total negative anomaly adjustment in prediction-space KLD units.
-  max_negative_adjustment_kld: 0.00075
+  max_negative_adjustment_kld: 0.00400
 
   # Absolute cap on positive harmful interaction adjustment in prediction-space KLD units.
   max_positive_adjustment_kld: 0.00075
