@@ -69,7 +69,9 @@ public static class Config
         Current.CandidateSelection.AllowEightBitAnchorReplacements;
 
     public static RuntimeAnomalyDetectionConfig AnomalyDetection => Current.AnomalyDetection;
+    public static RuntimeSynergyDetectionConfig SynergyDetection => Current.SynergyDetection;
     public static bool AnomalyDetectionEnabled => Current.AnomalyDetection.Enabled;
+    public static bool SynergyDetectionEnabled => Current.SynergyDetection.Enabled;
 
     public static string? OutputDirectory => Current.Output.OutputDir;
     public static string OutputNamePrefix => string.IsNullOrWhiteSpace(Current.Output.OutputNamePrefix)

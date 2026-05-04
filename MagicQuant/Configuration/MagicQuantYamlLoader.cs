@@ -162,6 +162,31 @@ public static class MagicQuantYamlLoader
         config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld = Math.Clamp(config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld, 0d, 1d);
         config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone = Math.Max(1, config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone);
 
+        config.SynergyDetection ??= new RuntimeSynergyDetectionConfig();
+        config.SynergyDetection.MaxRefinementRounds = Math.Clamp(config.SynergyDetection.MaxRefinementRounds, 0, 1);
+        config.SynergyDetection.ExactContextConfidenceMultiplier = Math.Clamp(config.SynergyDetection.ExactContextConfidenceMultiplier, 0d, 1d);
+        config.SynergyDetection.SameSelectedGroupsConfidenceMultiplier = Math.Clamp(config.SynergyDetection.SameSelectedGroupsConfidenceMultiplier, 0d, 1d);
+        config.SynergyDetection.EquivalentQuantFamilyConfidenceMultiplier = Math.Clamp(config.SynergyDetection.EquivalentQuantFamilyConfidenceMultiplier, 0d, 1d);
+        config.SynergyDetection.GroupFamilySuspicionConfidenceMultiplier = Math.Clamp(config.SynergyDetection.GroupFamilySuspicionConfidenceMultiplier, 0d, 1d);
+        config.SynergyDetection.MinConfidenceToApplyAdjustment = Math.Clamp(config.SynergyDetection.MinConfidenceToApplyAdjustment, 0d, 1d);
+        config.SynergyDetection.MinConfidenceToScheduleTransferProbe = Math.Clamp(config.SynergyDetection.MinConfidenceToScheduleTransferProbe, 0d, 1d);
+        config.SynergyDetection.MaxNegativeAdjustmentKld = Math.Max(0d, config.SynergyDetection.MaxNegativeAdjustmentKld);
+        config.SynergyDetection.MaxNegativeAdjustmentFractionOfBaseKld = Math.Clamp(config.SynergyDetection.MaxNegativeAdjustmentFractionOfBaseKld, 0d, 1d);
+        config.SynergyDetection.MaxTransferProbesPerTemplate = Math.Max(0, config.SynergyDetection.MaxTransferProbesPerTemplate);
+        config.SynergyDetection.MaxTotalTransferProbesPerRun = Math.Max(0, config.SynergyDetection.MaxTotalTransferProbesPerRun);
+        config.SynergyDetection.MinSmokeScore = Math.Clamp(config.SynergyDetection.MinSmokeScore, 0d, 1d);
+        config.SynergyDetection.MaxSmokeGapKld = Math.Max(0d, config.SynergyDetection.MaxSmokeGapKld);
+        config.SynergyDetection.TopRejectedSmokePreview = Math.Max(1, config.SynergyDetection.TopRejectedSmokePreview);
+        config.SynergyDetection.TransferProbeContextStrata ??= new RuntimeSynergyTransferProbeContextStrataConfig();
+        config.SynergyDetection.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, config.SynergyDetection.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6);
+        config.SynergyDetection.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(config.SynergyDetection.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6, config.SynergyDetection.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6);
+
+        // Compatibility bridge: old anomaly_detection remains the operational section;
+        // synergy_detection controls transfer/generalization behavior. If the new section
+        // is disabled, anomaly/synergy pass can still run exact-context probes, but no
+        // transfer probes or transferable adjustments are scheduled.
+        config.AnomalyDetection.MinRuleConfidenceToApply = Math.Min(config.AnomalyDetection.MinRuleConfidenceToApply, config.SynergyDetection.MinConfidenceToApplyAdjustment);
+
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
     }

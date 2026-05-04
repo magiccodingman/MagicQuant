@@ -322,6 +322,43 @@ anomaly_detection:
       - Q5_K
       - UD-Q5_K_XL
 
+synergy_detection:
+  enabled: true
+
+  # One transfer/generalization refinement pass after exact-context synergy templates are confirmed.
+  max_refinement_rounds: 1
+
+  # Confidence multipliers for transferring a confirmed counterfactual synergy template.
+  exact_context_confidence_multiplier: 1.00
+  same_selected_groups_confidence_multiplier: 0.55
+  equivalent_quant_family_confidence_multiplier: 0.30
+  group_family_suspicion_confidence_multiplier: 0.15
+
+  # Minimum confidence gates for applying transfer adjustments or scheduling transfer probes.
+  min_confidence_to_apply_adjustment: 0.35
+  min_confidence_to_schedule_transfer_probe: 0.25
+
+  # Transfer adjustments are prediction-space/rank-relative, not raw real-KLD deltas.
+  max_negative_adjustment_kld: 0.002
+  max_negative_adjustment_fraction_of_base_kld: 0.75
+
+  # Tiny stratified sniff pass around confirmed Q8-dome synergy templates.
+  transfer_probe_enabled: true
+  max_transfer_probes_per_template: 6
+  max_total_transfer_probes_per_run: 24
+
+  transfer_probe_context_strata:
+    high_fidelity_max_non_reference_groups_below_q6: 1
+    mid_fidelity_max_non_reference_groups_below_q6: 3
+    low_fidelity_enabled: false
+
+  # Smoke scoring augments the old prediction-space gap cliff.
+  min_smoke_score: 0.55
+  max_smoke_gap_kld: 0.004
+  top_rejected_smoke_preview: 25
+
+  verbose_synergy_logging: true
+
 output:
   # Optional explicit output directory.
   # If blank, MagicQuant will default to:

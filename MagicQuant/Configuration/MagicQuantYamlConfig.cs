@@ -18,6 +18,7 @@ public sealed class MagicQuantYamlConfig
     public RuntimeSurvivalConfig Survival { get; set; } = new();
     public RuntimeCandidateSelectionConfig CandidateSelection { get; set; } = new();
     public RuntimeAnomalyDetectionConfig AnomalyDetection { get; set; } = new();
+    public RuntimeSynergyDetectionConfig SynergyDetection { get; set; } = new();
     public RuntimeHardwareConfig Hardware { get; set; } = new();
 
     public List<string> SensitivityProbeGroups { get; set; } =
@@ -279,6 +280,36 @@ public sealed class RuntimeConfirmedAnomalyExpansionConfig
     public int MaxTotalExpansionProbes { get; set; } = 12;
     public List<string> AllowedReferenceQuants { get; set; } = ["Q8_0"];
     public List<string> AllowedCandidateQuants { get; set; } = ["Q6_K", "UD-Q6_K_XL", "Q5_K", "UD-Q5_K_XL"];
+}
+
+
+public sealed class RuntimeSynergyDetectionConfig
+{
+    public bool Enabled { get; set; } = true;
+    public int MaxRefinementRounds { get; set; } = 1;
+    public double ExactContextConfidenceMultiplier { get; set; } = 1.00d;
+    public double SameSelectedGroupsConfidenceMultiplier { get; set; } = 0.55d;
+    public double EquivalentQuantFamilyConfidenceMultiplier { get; set; } = 0.30d;
+    public double GroupFamilySuspicionConfidenceMultiplier { get; set; } = 0.15d;
+    public double MinConfidenceToApplyAdjustment { get; set; } = 0.35d;
+    public double MinConfidenceToScheduleTransferProbe { get; set; } = 0.25d;
+    public double MaxNegativeAdjustmentKld { get; set; } = 0.002d;
+    public double MaxNegativeAdjustmentFractionOfBaseKld { get; set; } = 0.75d;
+    public bool TransferProbeEnabled { get; set; } = true;
+    public int MaxTransferProbesPerTemplate { get; set; } = 6;
+    public int MaxTotalTransferProbesPerRun { get; set; } = 24;
+    public RuntimeSynergyTransferProbeContextStrataConfig TransferProbeContextStrata { get; set; } = new();
+    public bool VerboseSynergyLogging { get; set; } = true;
+    public double MinSmokeScore { get; set; } = 0.55d;
+    public double MaxSmokeGapKld { get; set; } = 0.004d;
+    public int TopRejectedSmokePreview { get; set; } = 25;
+}
+
+public sealed class RuntimeSynergyTransferProbeContextStrataConfig
+{
+    public int HighFidelityMaxNonReferenceGroupsBelowQ6 { get; set; } = 1;
+    public int MidFidelityMaxNonReferenceGroupsBelowQ6 { get; set; } = 3;
+    public bool LowFidelityEnabled { get; set; } = false;
 }
 
 public sealed class RuntimeLearningConfig

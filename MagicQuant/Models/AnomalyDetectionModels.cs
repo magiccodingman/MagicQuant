@@ -43,7 +43,9 @@ public enum AnomalySeedClass
     PredictionSpaceSmoke = 3,
     ExploratorySingle = 4,
     ExploratoryPair = 5,
-    ConfirmedAnomalyNeighborhoodProbe = 6
+    ConfirmedAnomalyNeighborhoodProbe = 6,
+    SynergyTransferProbe = 7,
+    CounterfactualSynergyTemplate = 8
 }
 
 public enum AnomalyProbeClassification
@@ -84,6 +86,15 @@ public sealed class AnomalyMovementAnalysis
     public int NetBitDelta { get; init; }
 }
 
+public enum SynergyTemplateMatchTier
+{
+    None = 0,
+    ExactContext = 1,
+    SameSelectedGroups = 2,
+    EquivalentQuantFamily = 3,
+    GroupFamilySuspicion = 4
+}
+
 public sealed class AnomalySmokeCandidate
 {
     public string Source { get; init; } = string.Empty;
@@ -102,6 +113,8 @@ public sealed class AnomalySmokeCandidate
     public string TwinLookupMode { get; init; } = string.Empty;
     public string RejectionReason { get; init; } = string.Empty;
     public bool MatchedConfirmedAnomalyPattern { get; init; }
+    public bool WouldMatchConfirmedTemplate { get; init; }
+    public SynergyTemplateMatchTier SynergyMatchTier { get; init; } = SynergyTemplateMatchTier.None;
     public bool TwinFoundInLookupDictionary { get; init; }
     public AnomalySeedClass SeedClass { get; init; } = AnomalySeedClass.PredictionSpaceSmoke;
     public double PredictionSpaceGapVsTwin { get; init; }
@@ -109,6 +122,7 @@ public sealed class AnomalySmokeCandidate
     public ulong? TwinPredictionRank { get; init; }
     public double SmokeScore { get; init; }
     public string SmokeStrength { get; init; } = string.Empty;
+    public bool IsTransferProbeSeed { get; init; }
     public bool HasActualTwin { get; init; }
     public double? CandidateActualKld { get; init; }
     public double? TwinActualKld { get; init; }
@@ -147,6 +161,11 @@ public sealed class AnomalyAdjustmentSummary
 {
     public int AppliedRuleCount { get; init; }
     public long MatchedRowCount { get; init; }
+    public long ExactContextMatches { get; init; }
+    public long SameSelectedGroupMatches { get; init; }
+    public long EquivalentQuantFamilyMatches { get; init; }
+    public long SuppressedMatches { get; init; }
+    public long HarmfulMatches { get; init; }
     public string DuckDbPath { get; init; } = string.Empty;
     public IReadOnlyList<object> RuleMatches { get; init; } = Array.Empty<object>();
 }
@@ -176,6 +195,8 @@ public sealed class AnomalySmokeScanDiagnostics
     public long MixedTradeIgnored { get; set; }
     public long SizeSavingsBelowThreshold { get; set; }
     public long PredictionSpaceGapTooLarge { get; set; }
+    public long BelowMinSmokeScore { get; set; }
+    public long CatastrophicGapRejected { get; set; }
     public long QueuedSmokeCandidates { get; set; }
     public long LoadPredictedRowsMs { get; set; }
     public long BuildLookupDictionaryMs { get; set; }
@@ -193,4 +214,7 @@ public sealed class ProbePlanningDiagnostics
     public int SkippedBudget { get; set; }
     public int ProbesQueued { get; set; }
     public int ExpansionProbesQueued { get; set; }
+    public int TransferProbesQueued { get; set; }
+    public int SkippedTransferStrata { get; set; }
+    public int SkippedMissingVirtualTwin { get; set; }
 }
