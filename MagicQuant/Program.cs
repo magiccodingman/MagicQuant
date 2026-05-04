@@ -33,7 +33,7 @@ if (args.Length == 0)
         args =
         [
             "evolution",
-            "--architecture-family", @"""Qwen3.6-27B"""
+            "--architecture-family", @"""Qwen3-4B"""
             ,"--reuse-existing-final-artifacts"
         ];
     }
