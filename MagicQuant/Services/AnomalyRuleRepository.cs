@@ -193,10 +193,6 @@ public sealed class AnomalyRuleRepository
                     CandidateEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig), JsonOptions),
                     InactiveGroupsJson = JsonSerializer.Serialize(_movement.BuildInactiveGroupList(), JsonOptions),
                     FullTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig),
-                    ReferenceDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig),
-                    CandidateDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig),
-                    ReferenceInternalName = TensorConfigIdentity.ToKey(first.Plan.ReferenceConfig),
-                    CandidateInternalName = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig),
                     RuleDirection = direction,
                     GroupSetHash = groupSetHash,
                     CreatedUtc = DateTime.UtcNow
@@ -225,38 +221,24 @@ public sealed class AnomalyRuleRepository
             rule.CandidateEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig), JsonOptions);
             rule.InactiveGroupsJson = JsonSerializer.Serialize(_movement.BuildInactiveGroupList(), JsonOptions);
             rule.FullTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig);
-            rule.ReferenceDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig);
-            rule.CandidateDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig);
-            rule.ReferenceInternalName = TensorConfigIdentity.ToKey(first.Plan.ReferenceConfig);
-            rule.CandidateInternalName = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig);
             rule.UpdatedUtc = DateTime.UtcNow;
             rule.MetadataJson = JsonSerializer.Serialize(new
             {
-                source = "counterfactual-synergy-template",
-                terminology = "SynergyTemplate/CounterfactualSynergy. Existing Anomaly* entity names are retained for compatibility.",
+                source = "counterfactual-twin-probe",
                 isContextualAnomalyProbe = true,
                 oldBf16Isolation = false,
                 allActiveGroupsExplicit = true,
-                templateType = ResolveRuleType(rows),
-                generalizationPolicy = "ExactStrong_TransferWeak",
-                selectedGroupStates = probeGroups.ToDictionary(x => x.Group.Name, x => BaselineQuants.FromId(x.CandidateQuantId).Names[0]),
-                raisedCounterfactualStates = probeGroups.ToDictionary(x => x.Group.Name, x => BaselineQuants.FromId(x.ReferenceQuantId).Names[0]),
-                discoveryContext = _movement.BuildEffectiveGroupVector(first.Plan.ReferenceConfig),
-                candidateContext = _movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig),
                 referenceEffectiveGroups = _movement.BuildEffectiveGroupVector(first.Plan.ReferenceConfig),
                 candidateEffectiveGroups = _movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig),
                 inactiveGroups = _movement.BuildInactiveGroupList(),
-                referenceTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ReferenceConfig),
-                candidateTensorConfigKey = TensorConfigIdentity.ToKey(first.Plan.ProbeConfig),
-                referenceDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ReferenceConfig),
-                candidateDisplayName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)first.Plan.ProbeConfig),
                 first.Plan.ProbeType,
                 first.Plan.HypothesisLabel,
                 actualCandidateKld = first.ProbeSnapshot?.Kld,
                 actualTwinKld = first.ReferenceSnapshot?.Kld,
                 actualGainOrHarm = first.ActualGainVsTwin,
-                sizeSavingsBytes = ComputeSizeSavings(first.ReferenceSnapshot, first.ProbeSnapshot),
-                adjustmentReason = "prediction-space-virtual-twin-rank-movement",
+                adjustmentReason = first.ReferenceSnapshot != null && first.ProbeSnapshot != null
+                    ? "measured-actual-counterfactual-effect"
+                    : "prediction-space-gap-fallback",
                 groups = probeGroups.Select(ToGroupLog).ToList()
             }, JsonOptions);
 
@@ -417,9 +399,11 @@ public sealed class AnomalyRuleRepository
         {
             "single" => "SingleGroupInversion",
             "pair" => "PairSynergy",
+            "composition" => rows.Any(x => x.RuleDirection == AnomalyRuleDirection.Harmful) ? "HarmfulInterferenceComposition" : "CounterfactualSynergyComposition",
+            "confirmed-neighborhood" => rows.Any(x => x.Classification == AnomalyProbeClassification.ContaminatingPassenger) ? "ContaminatingPassenger" : "ConfirmedAnomalyNeighborhood",
             "full" => rows.Any(x => x.Plan.ProbeGroups.Count >= 3) ? "HigherOrderSynergy" : "PairSynergy",
             "leave-one-out" => "HigherOrderSynergy",
-            _ => "ContextOnly"
+            _ => rows.Any(x => x.Classification == AnomalyProbeClassification.ContaminatingPassenger) ? "ContaminatingPassenger" : "ContextOnly"
         };
     }
 
@@ -436,10 +420,12 @@ public sealed class AnomalyRuleRepository
     private static double ComputePredictionAdjustment(AnomalyProbeResult result, double confidence)
     {
         var cfg = Config.AnomalyDetection;
+        var synergy = Config.SynergyDetection;
 
-        // Store a conservative fallback only. Runtime application now uses virtual same-context
-        // twins and computes row-local prediction-space movement. Actual KLD is preserved in
-        // metadata/evidence, but is not pasted directly into predicted KLD.
+        // Prediction KLD is rank-relative. Even when real probes confirm a beneficial
+        // counterfactual effect, the adjustment is sized by how far the candidate must
+        // move in prediction space to sit below its virtual/same-context twin. Actual
+        // KLD affects confidence/classification, not raw numeric subtraction.
         double baseGap = result.Plan.Seed.PredictionSpaceGapVsTwin;
         double required = result.RuleDirection switch
         {
@@ -448,9 +434,20 @@ public sealed class AnomalyRuleRepository
             _ => 0d
         };
 
-        double adjusted = required * confidence * cfg.AnomalyAdjustmentShrinkFactor;
+        double multiplier = result.Plan.SeedClass switch
+        {
+            AnomalySeedClass.SynergyCompositionProbe => synergy.SameSelectedGroupsConfidenceMultiplier,
+            AnomalySeedClass.SynergyTransferProbe => synergy.SameSelectedGroupsConfidenceMultiplier,
+            AnomalySeedClass.ConfirmedAnomalyNeighborhoodProbe => synergy.SameSelectedGroupsConfidenceMultiplier,
+            _ => synergy.ExactContextConfidenceMultiplier
+        };
+
+        if (result.Classification == AnomalyProbeClassification.ContaminatingPassenger)
+            multiplier *= synergy.ContaminationPenaltyConfidenceMultiplier;
+
+        double adjusted = required * confidence * cfg.AnomalyAdjustmentShrinkFactor * multiplier;
         if (adjusted < 0d)
-            return Math.Max(adjusted, -Config.SynergyDetection.MaxNegativeAdjustmentKld);
+            return Math.Max(adjusted, -Math.Min(cfg.MaxNegativeAdjustmentKld, synergy.MaxNegativeAdjustmentKld));
 
         return Math.Min(adjusted, cfg.MaxPositiveAdjustmentKld);
     }

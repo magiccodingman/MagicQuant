@@ -303,6 +303,16 @@ public sealed class RuntimeSynergyDetectionConfig
     public double MinSmokeScore { get; set; } = 0.55d;
     public double MaxSmokeGapKld { get; set; } = 0.004d;
     public int TopRejectedSmokePreview { get; set; } = 25;
+    public bool CompositionProbeEnabled { get; set; } = true;
+    public int MaxTemplateCompositionGroupCount { get; set; } = 4;
+    public int MaxCompositionProbesPerRun { get; set; } = 8;
+    public int MaxTemplatesToCompose { get; set; } = 4;
+    public double MinTemplateConfidenceForComposition { get; set; } = 0.50d;
+    public double MinCombinedExpectedSizeSavingsPercent { get; set; } = 1.0d;
+    public bool ContaminatingPassengerDetectionEnabled { get; set; } = true;
+    public double MinFailureMarginForContaminationKld { get; set; } = 0.00050d;
+    public double ContaminationPenaltyConfidenceMultiplier { get; set; } = 0.45d;
+    public bool SuppressRepeatedContaminatedAttempts { get; set; } = true;
 }
 
 public sealed class RuntimeSynergyTransferProbeContextStrataConfig

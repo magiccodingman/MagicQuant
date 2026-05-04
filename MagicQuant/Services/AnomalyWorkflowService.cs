@@ -54,7 +54,7 @@ public sealed class AnomalyWorkflowService
             return new AnomalyRunResult();
         }
 
-        AnsiConsole.Write(new Rule("[yellow]Counterfactual Synergy Smoke / Probe Pass[/]") { Justification = Justify.Left });
+        AnsiConsole.Write(new Rule("[yellow]Counterfactual Anomaly Smoke / Probe Pass[/]") { Justification = Justify.Left });
 
         var session = await _rules.StartSessionAsync("prediction-guided-selection", ct);
         try
@@ -85,6 +85,7 @@ public sealed class AnomalyWorkflowService
             await WriteJsonAsync("magicquant-synergy-smoke-scan.json", new
             {
                 generatedAtUtc = DateTime.UtcNow,
+                terminology = "CounterfactualSynergy smoke. Anomaly names are retained as backward-compatible aliases.",
                 historicalCount = historical.Count,
                 duckPredictionSpaceCount = duck.Count,
                 selectedSmokeCount = smoke.Count,
@@ -105,31 +106,27 @@ public sealed class AnomalyWorkflowService
                 results = results.Concat(expansionResults).ToList();
             }
 
-            var transferProbes = await PlanConfirmedSynergyTransferProbesAsync(results, planningDiagnostics, ct);
-            if (transferProbes.Count > 0)
+            var compositionDiagnostics = new List<SynergyCompositionProbeRecord>();
+            var compositionProbes = await PlanSynergyCompositionProbesAsync(results, planningDiagnostics, compositionDiagnostics, ct);
+            if (compositionProbes.Count > 0)
             {
-                probes = probes.Concat(transferProbes).ToList();
-                var transferResults = await ValidateProbesAsync(transferProbes, ct);
-                results = results.Concat(transferResults).ToList();
+                probes = probes.Concat(compositionProbes).ToList();
+                var compositionResults = await ValidateProbesAsync(compositionProbes, ct);
+                results = results.Concat(compositionResults).ToList();
+                compositionDiagnostics = BuildCompositionDiagnostics(compositionProbes, compositionResults);
             }
+
+            await WriteJsonAsync("magicquant-synergy-composition-probes.json", new
+            {
+                generatedAtUtc = DateTime.UtcNow,
+                compositionProbes = compositionDiagnostics
+            }, ct);
 
             await WriteJsonAsync("magicquant-anomaly-probes.json", new
             {
                 generatedAtUtc = DateTime.UtcNow,
                 planningDiagnostics,
                 probes = probes.Select(ToProbeLog).ToList()
-            }, ct);
-            await WriteJsonAsync("magicquant-synergy-probes.json", new
-            {
-                generatedAtUtc = DateTime.UtcNow,
-                planningDiagnostics,
-                probes = probes.Select(ToProbeLog).ToList()
-            }, ct);
-            await WriteJsonAsync("magicquant-synergy-transfer-probes.json", new
-            {
-                generatedAtUtc = DateTime.UtcNow,
-                planningDiagnostics,
-                probes = transferProbes.Select(ToProbeLog).ToList()
             }, ct);
 
             await _rules.PersistProbeResultsAsync(session.Id, results, ct);
@@ -148,9 +145,16 @@ public sealed class AnomalyWorkflowService
             await WriteJsonAsync("magicquant-synergy-templates.json", new
             {
                 generatedAtUtc = DateTime.UtcNow,
-                upserted = upsertedRules.Select(ToSynergyTemplateLog).ToList(),
-                applicable = applicableRules.Select(ToSynergyTemplateLog).ToList()
+                templates = applicableRules.Select(ToSynergyTemplateLog).ToList()
             }, ct);
+            await WriteJsonAsync("magicquant-synergy-probes.json", results.Select(ToResultLog).ToList(), ct);
+            await WriteJsonAsync("magicquant-synergy-transfer-probes.json", results
+                .Where(x => x.Plan.SeedClass == AnomalySeedClass.SynergyTransferProbe || x.Plan.SeedClass == AnomalySeedClass.ConfirmedAnomalyNeighborhoodProbe)
+                .Select(ToResultLog).ToList(), ct);
+
+            var wingSummary = BuildSynergyWingSummary(smoke, results, adjustment);
+            WriteSynergyWingConsoleSummary(wingSummary);
+            await WriteJsonAsync("magicquant-synergy-wing-summary.json", wingSummary, ct);
 
             await WriteJsonAsync("magicquant-anomaly-adjusted-predictions-summary.json", adjustment, ct);
             await WriteJsonAsync("magicquant-synergy-adjusted-predictions-summary.json", adjustment, ct);
@@ -162,21 +166,7 @@ public sealed class AnomalyWorkflowService
                 results = results.Select(ToResultLog).ToList(),
                 rules = applicableRules.Select(ToRuleLog).ToList(),
                 bestConfirmedAnomaly = bestAnomaly,
-                adjustment,
-                synergyTerminology = "Anomaly entity names are retained for compatibility; confirmed beneficial rules are treated as transferable counterfactual synergy templates."
-            }, ct);
-            await WriteFinalManifestAsync("magicquant.synergy.json", new
-            {
-                generatedAtUtc = DateTime.UtcNow,
-                modeEnabled = Config.AnomalyDetection.Enabled && Config.SynergyDetection.Enabled,
-                confirmedBeneficialTemplates = applicableRules.Count(x => x.RuleDirection == AnomalyRuleDirection.Beneficial.ToString()),
-                harmfulInteractions = applicableRules.Count(x => x.RuleDirection == AnomalyRuleDirection.Harmful.ToString()),
-                suppressionOnlyObservations = results.Count(x => x.RuleDirection == AnomalyRuleDirection.SuppressionOnly),
-                bestConfirmedSynergy = bestAnomaly,
-                transferProbesQueued = planningDiagnostics.TransferProbesQueued,
-                templates = applicableRules.Select(ToSynergyTemplateLog).ToList(),
-                adjustment,
-                note = "Q8 remains the discovery dome/control context. Confirmed counterfactual wins are persisted as transferable synergy templates and applied through virtual same-context twins with confidence shrinkage. Physical validation remains final truth."
+                adjustment
             }, ct);
             await WriteFinalManifestAsync("magicquant.prediction-audit.json", new
             {
@@ -363,7 +353,6 @@ public sealed class AnomalyWorkflowService
         var rejected = new List<RejectedSmokePreview>();
         var closestGapFailures = new List<RejectedSmokePreview>();
         var existingKeys = await _rules.LoadExistingRuleSuppressionKeysAsync(ct);
-        var confirmedTemplates = await _rules.LoadApplicableRulesAsync(ct);
 
         int skippedIsolation = 0;
         int skippedSparse = 0;
@@ -374,8 +363,6 @@ public sealed class AnomalyWorkflowService
         int skippedNoTwin = 0;
         int skippedSavings = 0;
         int skippedGap = 0;
-        int belowMinSmokeScore = 0;
-        int catastrophicGapRejected = 0;
         int contextualScanned = 0;
         int twinLookupCount = 0;
         int dictionaryTwinHits = 0;
@@ -441,8 +428,6 @@ public sealed class AnomalyWorkflowService
 
             var movement = _movement.Analyze(twin, row.Config);
             bool matchedConfirmedPattern = existingKeys.Contains(_rules.BuildRuleSuppressionKey(twin, movement.ChangedGroups));
-            var matchedTemplateTier = ResolveConfirmedTemplateMatchTier(row.Config, confirmedTemplates, out var wouldMatchConfirmedTemplate);
-            matchedConfirmedPattern = matchedConfirmedPattern || wouldMatchConfirmedTemplate;
 
             if (movement.Classification == AnomalyMovementClassification.MixedTrade)
             {
@@ -498,28 +483,18 @@ public sealed class AnomalyWorkflowService
             }
 
             double gap = row.BaseRankSafeKld - twinRow.BaseRankSafeKld;
-            if (gap > Config.SynergyDetection.MaxSmokeGapKld)
-            {
-                catastrophicGapRejected++;
-                var preview = AddRejectedPreview(rejected, row.Config, twin, movement, row, twinRow, savingsBytes, gap, "PredictionSpaceGapCatastrophic", matchedConfirmedPattern, true);
-                closestGapFailures.Add(preview);
-                continue;
-            }
-
-            if (gap > Config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld)
+            double score = ComputeSmokeScore(gap, savingsPercent, movement.DowngradeCount, row.PredictionRank, twinRow.PredictionRank);
+            bool gapCatastrophic = gap > Math.Max(Config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld, Config.SynergyDetection.MaxSmokeGapKld);
+            bool scoreTooLow = score < Config.SynergyDetection.MinSmokeScore && !matchedConfirmedPattern;
+            if (gapCatastrophic || scoreTooLow)
             {
                 skippedGap++;
-                var preview = AddRejectedPreview(rejected, row.Config, twin, movement, row, twinRow, savingsBytes, gap, "PredictionSpaceGapTooLargeButSmokeScored", matchedConfirmedPattern, true);
+                string reason = gapCatastrophic ? "PredictionSpaceGapTooLarge" : "BelowMinSmokeScore";
+                var preview = AddRejectedPreview(rejected, row.Config, twin, movement, row, twinRow, savingsBytes, gap, reason, matchedConfirmedPattern, true);
                 closestGapFailures.Add(preview);
-            }
-
-            double score = ComputeSmokeScore(gap, savingsPercent, movement.DowngradeCount, row.PredictionRank, twinRow.PredictionRank, matchedConfirmedPattern, matchedTemplateTier);
-            if (score < Config.SynergyDetection.MinSmokeScore)
-            {
-                belowMinSmokeScore++;
-                AddRejectedPreview(rejected, row.Config, twin, movement, row, twinRow, savingsBytes, gap, "BelowMinSmokeScore", matchedConfirmedPattern, true, score);
                 continue;
             }
+
 
             result.Add(new AnomalySmokeCandidate
             {
@@ -542,8 +517,6 @@ public sealed class AnomalyWorkflowService
                 SmokeStrength = gap <= 0d ? "Strong" : "Close",
                 SeedClass = AnomalySeedClass.PredictionSpaceSmoke,
                 MatchedConfirmedAnomalyPattern = matchedConfirmedPattern,
-                WouldMatchConfirmedTemplate = wouldMatchConfirmedTemplate,
-                SynergyMatchTier = matchedTemplateTier,
                 Message = "Prediction-space contextual monotone downgrade candidate is close enough to its higher-bit quantized twin to justify probes. Twin lookup was dictionary-only from the preloaded DuckDB row set."
             });
         }
@@ -566,15 +539,13 @@ public sealed class AnomalyWorkflowService
             MixedTradeIgnored = skippedMixed,
             SizeSavingsBelowThreshold = skippedSavings,
             PredictionSpaceGapTooLarge = skippedGap,
-            BelowMinSmokeScore = belowMinSmokeScore,
-            CatastrophicGapRejected = catastrophicGapRejected,
             QueuedSmokeCandidates = result.Count,
             LoadPredictedRowsMs = loadClock.ElapsedMilliseconds,
             BuildLookupDictionaryMs = lookupClock.ElapsedMilliseconds,
             ScanRowsMs = scanClock.ElapsedMilliseconds,
             RejectedPreview = rejected
                 .OrderBy(x => x.SortOrder)
-                .Take(Config.SynergyDetection.TopRejectedSmokePreview)
+                .Take(25)
                 .Select(x => x.ToLog())
                 .ToList(),
             ClosestGapFailures = closestGapFailures
@@ -587,7 +558,7 @@ public sealed class AnomalyWorkflowService
 
         _lastDuckSmokeDiagnostics = diagnostics;
 
-        AnsiConsole.MarkupLine("[yellow]DuckDB synergy smoke scan:[/]");
+        AnsiConsole.MarkupLine("[yellow]DuckDB contextual smoke scan:[/]");
         AnsiConsole.MarkupLine($"[grey]  predicted rows scanned=[/] [cyan]{rows.Count:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  load predicted rows ms=[/] [cyan]{diagnostics.LoadPredictedRowsMs:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  build lookup dictionary ms=[/] [cyan]{diagnostics.BuildLookupDictionaryMs:N0}[/]");
@@ -604,14 +575,18 @@ public sealed class AnomalyWorkflowService
         AnsiConsole.MarkupLine($"[grey]  movement not monotone downgrade=[/] [cyan]{skippedMovement:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  mixed trade ignored=[/] [cyan]{skippedMixed:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  size savings below threshold=[/] [cyan]{skippedSavings:N0}[/]");
-        AnsiConsole.MarkupLine($"[grey]  prediction-space gap too large but smoke-scored=[/] [cyan]{skippedGap:N0}[/]");
-        AnsiConsole.MarkupLine($"[grey]  catastrophic gap rejected=[/] [cyan]{catastrophicGapRejected:N0}[/]");
-        AnsiConsole.MarkupLine($"[grey]  below min smoke score=[/] [cyan]{belowMinSmokeScore:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]  prediction-space gap too large=[/] [cyan]{skippedGap:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  queued smoke candidates=[/] [cyan]{result.Count:N0}[/]");
+        AnsiConsole.MarkupLine("[yellow]DuckDB synergy smoke timings:[/]");
+        AnsiConsole.MarkupLine($"[grey]  predicted row scan ms=[/] [cyan]{diagnostics.LoadPredictedRowsMs:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]  virtual twin construction ms=[/] [cyan]0[/] [grey](computed inline while scanning)[/]");
+        AnsiConsole.MarkupLine($"[grey]  twin lookup ms=[/] [cyan]{diagnostics.ScanRowsMs:N0}[/] [grey](dictionary-only in normal operation)[/]");
+        AnsiConsole.MarkupLine($"[grey]  scoring ms=[/] [cyan]{diagnostics.ScanRowsMs:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]  diagnostic formatting ms=[/] [cyan]deferred[/]");
 
         if (result.Count == 0 && rows.Count > 0)
         {
-            AnsiConsole.MarkupLine("[yellow]DuckDB synergy smoke scan produced zero candidates.[/] Top rejected-smoke previews and closest gap failures were written to magicquant-anomaly-smoke-scan-duckdb-diagnostics.json.");
+            AnsiConsole.MarkupLine("[yellow]DuckDB contextual smoke scan produced zero candidates.[/] Top rejected-smoke previews and closest gap failures were written to magicquant-anomaly-smoke-scan-duckdb-diagnostics.json.");
             foreach (var preview in closestGapFailures.OrderBy(x => x.PredictionSpaceGap ?? double.MaxValue).Take(10))
             {
                 AnsiConsole.MarkupLine($"[grey]  rejected monotone gap:[/] candidate={Markup.Escape(preview.CandidateName)} twin={Markup.Escape(preview.TwinName)} gap={FmtNullable(preview.PredictionSpaceGap)} savings={FmtNullable(preview.PredictedSizeSavingsBytes)} reason={Markup.Escape(preview.RejectionReason)} matchedRule={preview.MatchedConfirmedAnomalyPattern}");
@@ -622,7 +597,6 @@ public sealed class AnomalyWorkflowService
         {
             generatedAtUtc = DateTime.UtcNow,
             diagnostics,
-            synergyTerminology = "DuckDB smoke uses counterfactual synergy scoring. Prediction-space gap is no longer the only cliff gate; catastrophic gaps are still rejected.",
             queued = result.Select(ToSmokeLog).ToList()
         }, ct);
 
@@ -873,191 +847,204 @@ public sealed class AnomalyWorkflowService
 
 
 
-    private async Task<List<AnomalyProbePlan>> PlanConfirmedSynergyTransferProbesAsync(
-        IReadOnlyList<AnomalyProbeResult> currentResults,
+    private async Task<List<AnomalyProbePlan>> PlanSynergyCompositionProbesAsync(
+        IReadOnlyList<AnomalyProbeResult> results,
         ProbePlanningDiagnostics diagnostics,
+        List<SynergyCompositionProbeRecord> previewRecords,
         CancellationToken ct)
     {
         var cfg = Config.SynergyDetection;
-        if (!cfg.Enabled || !cfg.TransferProbeEnabled || cfg.MaxTotalTransferProbesPerRun <= 0)
-            return new List<AnomalyProbePlan>();
+        var plans = new List<AnomalyProbePlan>();
+        if (!cfg.Enabled || !cfg.CompositionProbeEnabled || cfg.MaxCompositionProbesPerRun <= 0)
+            return plans;
 
-        var beneficialTemplates = currentResults
+        var templates = results
             .Where(x => x.RuleDirection == AnomalyRuleDirection.Beneficial)
-            .Where(x => x.ReferenceSnapshot != null && x.ProbeSnapshot != null)
-            .Where(x => EstimateTemplateConfidence(x) >= cfg.MinConfidenceToScheduleTransferProbe)
-            .OrderByDescending(x => x.ActualGainVsTwin)
+            .Where(x => x.Accepted && x.ReferenceSnapshot != null && x.ProbeSnapshot != null)
+            .Where(x => x.Plan.ProbeGroups.Count > 0)
+            .Select(x => new
+            {
+                Result = x,
+                Confidence = Math.Clamp(Math.Abs(x.ActualGainVsTwin) / Math.Max(Config.AnomalyDetection.MinActualGainVsTwinKld, 1e-9), 0d, 1d),
+                Key = string.Join(",", x.Plan.ProbeGroups.OrderBy(g => g.Group.UniqueId).Select(g => $"{g.Group.UniqueId}:{g.CandidateQuantId}"))
+            })
+            .Where(x => x.Confidence >= cfg.MinTemplateConfidenceForComposition)
+            .GroupBy(x => x.Key, StringComparer.Ordinal)
+            .Select(g => g.OrderByDescending(x => x.Result.ActualGainVsTwin).First())
+            .OrderByDescending(x => x.Result.ActualGainVsTwin)
+            .Take(cfg.MaxTemplatesToCompose)
             .ToList();
 
-        if (beneficialTemplates.Count == 0)
-            return new List<AnomalyProbePlan>();
-
-        var rows = await LoadPredictionRowsAsync(DuckSmokeScanLimit, ct);
-        var lookup = new Dictionary<string, PredictionDuckRow>(StringComparer.Ordinal);
-        var candidates = new Dictionary<string, PredictionDuckRow>(StringComparer.Ordinal);
-        foreach (var row in rows)
-        {
-            if (!_movement.TryNormalizeSparseDuckRowToActivatedContext(row.Config, out var activated, out _, out _))
-                continue;
-
-            var normalized = row with { Config = activated };
-            AddOrPreferBetterPredictionRow(lookup, normalized);
-            if (TensorConfigIdentity.ToKey(activated) != TensorConfigIdentity.ToKey(_movement.BuildBaseContextTwin(activated)))
-                AddOrPreferBetterPredictionRow(candidates, normalized);
-        }
-
-        var existingRuleKeys = await _rules.LoadExistingRuleSuppressionKeysAsync(ct);
+        int considered = templates.Count;
+        int candidates = 0;
+        int reused = 0;
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        var plans = new List<AnomalyProbePlan>();
+        var existingRuleKeys = await _rules.LoadExistingRuleSuppressionKeysAsync(ct);
 
-        foreach (var template in beneficialTemplates)
+        for (int i = 0; i < templates.Count; i++)
         {
-            if (plans.Count >= cfg.MaxTotalTransferProbesPerRun)
-                break;
-
-            var selectedGroups = template.Plan.ProbeGroups
-                .Where(x => x.Movement == QuantMovementKind.Downgrade)
-                .OrderBy(x => x.Group.UniqueId)
-                .ToList();
-
-            if (selectedGroups.Count == 0)
-                continue;
-
-            int perTemplate = 0;
-            var scored = new List<(PredictionDuckRow Candidate, PredictionDuckRow Twin, TensorConfig VirtualTwin, AnomalyMovementAnalysis Movement, double Gap, ulong SavingsBytes, double Score, string Stratum)>();
-            foreach (var row in candidates.Values)
+            for (int j = i + 1; j < templates.Count; j++)
             {
-                if (perTemplate >= cfg.MaxTransferProbesPerTemplate || plans.Count + scored.Count >= cfg.MaxTotalTransferProbesPerRun)
+                if (plans.Count >= cfg.MaxCompositionProbesPerRun)
                     break;
 
-                if (TensorConfigIdentity.ToKey(row.Config) == TensorConfigIdentity.ToKey(template.Plan.ProbeConfig))
+                var a = templates[i].Result;
+                var b = templates[j].Result;
+                if (a.Plan.ReferenceConfig.BaseQuant != b.Plan.ReferenceConfig.BaseQuant)
                     continue;
 
-                if (row.Config.BaseQuant != template.Plan.ReferenceConfig.BaseQuant)
+                var merged = a.Plan.ProbeGroups
+                    .Concat(b.Plan.ProbeGroups)
+                    .GroupBy(g => g.Group.UniqueId)
+                    .Select(g => g.OrderBy(x => x.CandidateQuantId).First())
+                    .OrderBy(g => g.Group.UniqueId)
+                    .ToList();
+
+                if (merged.Count <= Math.Max(a.Plan.ProbeGroups.Count, b.Plan.ProbeGroups.Count))
+                    continue;
+                if (merged.Count > cfg.MaxTemplateCompositionGroupCount)
                     continue;
 
-                bool containsSelected = selectedGroups.All(g => _movement.EffectiveQuantId(row.Config, g.Group) == g.CandidateQuantId);
-                if (!containsSelected)
-                    continue;
+                candidates++;
+                var reference = _movement.CreateActivatedContextBlanket(a.Plan.ReferenceConfig.BaseQuant);
+                var probe = reference;
+                foreach (var group in merged)
+                    probe = _movement.WithStoredSlot(probe, group.Group, group.CandidateStoredSlot);
 
-                string stratum = ResolveTransferStratum(row.Config, selectedGroups, template.Plan.ReferenceConfig.BaseQuant);
-                if (stratum == "disabled-low-fidelity")
-                {
-                    diagnostics.SkippedTransferStrata++;
-                    continue;
-                }
-
-                var virtualTwin = row.Config;
-                foreach (var group in selectedGroups)
-                    virtualTwin = _movement.WithStoredSlot(virtualTwin, group.Group, group.ReferenceStoredSlot);
-
-                if (ShouldSkipInvalidContextualAnomalyConfig(virtualTwin, "synergy-transfer-virtual-twin", out _) ||
-                    ShouldSkipInvalidContextualAnomalyConfig(row.Config, "synergy-transfer-candidate", out _))
-                {
-                    diagnostics.SkippedInvalidMovement++;
-                    continue;
-                }
-
-                string virtualTwinKey = TensorConfigIdentity.ToKey(virtualTwin);
-                if (!lookup.TryGetValue(virtualTwinKey, out var twinRow))
-                {
-                    diagnostics.SkippedMissingVirtualTwin++;
-                    continue;
-                }
-
-                var movement = _movement.Analyze(virtualTwin, row.Config);
-                if (movement.Classification != AnomalyMovementClassification.MonotoneDowngrade)
+                if (ShouldSkipInvalidContextualAnomalyConfig(probe, "synergy-composition", out var skipReason))
                 {
                     diagnostics.SkippedInvalidMovement++;
+                    previewRecords.Add(BuildCompositionPreview(a, b, reference, probe, "SkippedInvalidContextualProbe", skipReason));
                     continue;
                 }
 
-                if (existingRuleKeys.Contains(_rules.BuildRuleSuppressionKey(virtualTwin, selectedGroups)))
+                if (existingRuleKeys.Contains(_rules.BuildRuleSuppressionKey(reference, merged)))
                 {
                     diagnostics.SkippedExistingRuleOrSuppression++;
+                    reused++;
+                    previewRecords.Add(BuildCompositionPreview(a, b, reference, probe, "ExistingRuleOrSuppression", "A matching composition rule/suppression already exists."));
                     continue;
                 }
 
-                string seenKey = TensorConfigIdentity.ToKey(virtualTwin) + "=>" + TensorConfigIdentity.ToKey(row.Config);
-                if (!seen.Add(seenKey))
+                string key = TensorConfigIdentity.ToKey(reference) + "=>" + TensorConfigIdentity.ToKey(probe);
+                if (!seen.Add(key))
                 {
                     diagnostics.SkippedDuplicate++;
+                    reused++;
                     continue;
                 }
 
-                if (twinRow.PredictedSizeBytes <= row.PredictedSizeBytes)
-                    continue;
-
-                ulong savings = twinRow.PredictedSizeBytes - row.PredictedSizeBytes;
-                double savingsPercent = savings * 100d / Math.Max(1d, twinRow.PredictedSizeBytes);
-                double gap = row.BaseRankSafeKld - twinRow.BaseRankSafeKld;
-                if (gap > cfg.MaxSmokeGapKld)
-                    continue;
-
-                double score = ComputeSmokeScore(gap, savingsPercent, movement.DowngradeCount, row.PredictionRank, twinRow.PredictionRank, true, SynergyTemplateMatchTier.SameSelectedGroups);
-                scored.Add((row, twinRow, virtualTwin, movement, gap, savings, score, stratum));
-            }
-
-            foreach (var item in scored
-                         .OrderByDescending(x => x.Score)
-                         .ThenBy(x => x.Candidate.BaseRankSafeKld)
-                         .ThenBy(x => x.Candidate.PredictedSizeBytes)
-                         .Take(cfg.MaxTransferProbesPerTemplate))
-            {
-                if (plans.Count >= cfg.MaxTotalTransferProbesPerRun)
-                    break;
-
+                var movement = _movement.Analyze(reference, probe);
                 var seed = new AnomalySmokeCandidate
                 {
-                    Source = "synergy-transfer-smoke",
-                    CandidateConfig = item.Candidate.Config,
-                    TwinConfig = item.VirtualTwin,
-                    Movement = item.Movement,
-                    CandidatePredictedKld = item.Candidate.BaseRankSafeKld,
-                    TwinPredictedKld = item.Twin.BaseRankSafeKld,
-                    CandidatePredictedSizeBytes = item.Candidate.PredictedSizeBytes,
-                    TwinPredictedSizeBytes = item.Twin.PredictedSizeBytes,
-                    PredictedSizeSavingsBytes = item.SavingsBytes,
-                    PlannedProbeWillMeasureSize = true,
-                    TwinLookupMode = "virtual-same-context-twin-from-preloaded-duckdb-lookup",
-                    TwinFoundInLookupDictionary = true,
-                    PredictionSpaceGapVsTwin = item.Gap,
-                    CandidatePredictionRank = item.Candidate.PredictionRank,
-                    TwinPredictionRank = item.Twin.PredictionRank,
-                    SmokeScore = item.Score,
-                    SmokeStrength = "SynergyTransferProbe",
-                    SeedClass = AnomalySeedClass.SynergyTransferProbe,
+                    Source = "counterfactual-synergy-composition",
+                    CandidateConfig = probe,
+                    TwinConfig = reference,
+                    Movement = movement,
+                    SmokeScore = 950_000d + Math.Max(0d, a.ActualGainVsTwin) + Math.Max(0d, b.ActualGainVsTwin),
+                    SmokeStrength = "CompositionProbe",
+                    SeedClass = AnomalySeedClass.SynergyCompositionProbe,
                     MatchedConfirmedAnomalyPattern = true,
-                    WouldMatchConfirmedTemplate = true,
-                    SynergyMatchTier = SynergyTemplateMatchTier.SameSelectedGroups,
-                    IsTransferProbeSeed = true,
-                    Message = $"Transfer probe from confirmed counterfactual synergy template. stratum={item.Stratum}."
+                    PlannedProbeWillMeasureSize = true,
+                    Message = "Tiny composition probe: tests whether two confirmed synergy templates cooperate, add, overlap redundantly, or interfere."
                 };
 
                 plans.Add(new AnomalyProbePlan
                 {
                     Seed = seed,
-                    ReferenceConfig = item.VirtualTwin,
-                    ProbeConfig = item.Candidate.Config,
-                    ProbeGroups = selectedGroups,
-                    ProbeType = "synergy-transfer",
-                    HypothesisLabel = _movement.DescribeGroups(selectedGroups),
-                    SeedClass = AnomalySeedClass.SynergyTransferProbe,
-                    ProbePriorityClass = AnomalySeedClass.SynergyTransferProbe
+                    ReferenceConfig = reference,
+                    ProbeConfig = probe,
+                    ProbeGroups = merged,
+                    ProbeType = "composition",
+                    HypothesisLabel = _movement.DescribeGroups(merged),
+                    SeedClass = AnomalySeedClass.SynergyCompositionProbe,
+                    ProbePriorityClass = AnomalySeedClass.SynergyCompositionProbe
                 });
-
-                perTemplate++;
-                diagnostics.TransferProbesQueued++;
                 diagnostics.ProbesQueued++;
+                diagnostics.CompositionProbesQueued++;
+                previewRecords.Add(BuildCompositionPreview(a, b, reference, probe, "Queued", "Composition probe queued for real benchmark validation."));
             }
         }
 
-        if (plans.Count > 0)
+        AnsiConsole.MarkupLine($"[yellow]Synergy composition probes:[/] source templates considered=[cyan]{considered:N0}[/] composition candidates=[cyan]{candidates:N0}[/] queued=[cyan]{plans.Count:N0}[/] reused/skipped existing=[cyan]{reused:N0}[/]");
+        return plans;
+    }
+
+    private SynergyCompositionProbeRecord BuildCompositionPreview(
+        AnomalyProbeResult a,
+        AnomalyProbeResult b,
+        TensorConfig reference,
+        TensorConfig probe,
+        string classification,
+        string note)
+    {
+        var movement = _movement.Analyze(reference, probe);
+        return new SynergyCompositionProbeRecord
         {
-            AnsiConsole.MarkupLine($"[yellow]Confirmed synergy transfer probes:[/] queued={plans.Count:N0} maxTotal={cfg.MaxTotalTransferProbesPerRun:N0}");
+            CompositionId = TensorConfigIdentity.ToKey(reference) + "=>" + TensorConfigIdentity.ToKey(probe),
+            SourceTemplateIds = new[]
+            {
+                TensorConfigIdentity.ToKey(a.Plan.ProbeConfig),
+                TensorConfigIdentity.ToKey(b.Plan.ProbeConfig)
+            },
+            SourceTemplateLabels = new[] { a.Plan.HypothesisLabel, b.Plan.HypothesisLabel },
+            CandidateEffectiveGroups = _movement.BuildEffectiveGroupVector(probe),
+            TwinEffectiveGroups = _movement.BuildEffectiveGroupVector(reference),
+            CombinedGroupCount = movement.DowngradeCount,
+            Classification = classification,
+            ActualCandidateKld = null,
+            ActualTwinKld = null,
+            ActualGainVsTwin = null,
+            PredictedCandidateKld = null,
+            PredictedTwinKld = null,
+            PredictionSpaceGap = null,
+            Notes = new[] { note }
+        };
+    }
+
+    private List<SynergyCompositionProbeRecord> BuildCompositionDiagnostics(
+        IReadOnlyList<AnomalyProbePlan> compositionPlans,
+        IReadOnlyList<AnomalyProbeResult> compositionResults)
+    {
+        var records = new List<SynergyCompositionProbeRecord>();
+        foreach (var result in compositionResults.Where(x => x.Plan.SeedClass == AnomalySeedClass.SynergyCompositionProbe))
+        {
+            string classification = result.Classification switch
+            {
+                AnomalyProbeClassification.HarmfulInteraction => "HarmfulInterference",
+                AnomalyProbeClassification.ContaminatingPassenger => "HarmfulInterference",
+                AnomalyProbeClassification.NormalGravity => "RedundantComposition",
+                AnomalyProbeClassification.SuppressionOnly => "CompositionRejected",
+                _ when result.RuleDirection == AnomalyRuleDirection.Beneficial && result.ActualGainVsTwin >= Config.AnomalyDetection.MinActualGainVsTwinKld * 2d => "SuperSynergy",
+                _ when result.RuleDirection == AnomalyRuleDirection.Beneficial => "AdditiveComposition",
+                _ => "CompositionRejected"
+            };
+
+            records.Add(new SynergyCompositionProbeRecord
+            {
+                CompositionId = TensorConfigIdentity.ToKey(result.Plan.ReferenceConfig) + "=>" + TensorConfigIdentity.ToKey(result.Plan.ProbeConfig),
+                SourceTemplateIds = result.Plan.ProbeGroups.Select(g => $"{g.Group.UniqueId}:{g.ReferenceQuantId}->{g.CandidateQuantId}").ToList(),
+                SourceTemplateLabels = new[] { result.Plan.HypothesisLabel },
+                CandidateEffectiveGroups = _movement.BuildEffectiveGroupVector(result.Plan.ProbeConfig),
+                TwinEffectiveGroups = _movement.BuildEffectiveGroupVector(result.Plan.ReferenceConfig),
+                CombinedGroupCount = result.Plan.ProbeGroups.Count,
+                Classification = classification,
+                ActualCandidateKld = result.ProbeSnapshot?.Kld,
+                ActualTwinKld = result.ReferenceSnapshot?.Kld,
+                ActualGainVsTwin = result.ActualGainVsTwin,
+                PredictedCandidateKld = result.Plan.Seed.CandidatePredictedKld,
+                PredictedTwinKld = result.Plan.Seed.TwinPredictedKld,
+                PredictionSpaceGap = result.Plan.Seed.PredictionSpaceGapVsTwin,
+                Notes = new[] { result.Message }
+            });
         }
 
-        return plans;
+        int super = records.Count(x => x.Classification == "SuperSynergy");
+        int additive = records.Count(x => x.Classification == "AdditiveComposition");
+        int harmful = records.Count(x => x.Classification == "HarmfulInterference");
+        int rejected = records.Count(x => x.Classification == "CompositionRejected" || x.Classification == "RedundantComposition");
+        AnsiConsole.MarkupLine($"[yellow]Synergy composition probes:[/] confirmed super-synergy=[cyan]{super:N0}[/] additive=[cyan]{additive:N0}[/] harmful/interference=[cyan]{harmful:N0}[/] rejected/redundant=[cyan]{rejected:N0}[/]");
+        return records;
     }
 
     private async Task<List<AnomalyProbeResult>> ValidateProbesAsync(IReadOnlyList<AnomalyProbePlan> probes, CancellationToken ct)
@@ -1171,28 +1158,45 @@ public sealed class AnomalyWorkflowService
                 {
                     "single" => AnomalyProbeClassification.SingleGroupInversion,
                     "pair" => AnomalyProbeClassification.PairSynergy,
+                    "composition" when gain >= Config.AnomalyDetection.MinActualGainVsTwinKld * 2d => AnomalyProbeClassification.SuperSynergy,
+                    "composition" => AnomalyProbeClassification.AdditiveComposition,
                     "full" when plan.ProbeGroups.Count >= 3 => AnomalyProbeClassification.HigherOrderSynergy,
                     _ => AnomalyProbeClassification.CounterfactualMdaViolation
                 },
                 RuleDirection = AnomalyRuleDirection.Beneficial,
                 Accepted = true,
                 ActualGainVsTwin = gain,
-                Message = "Lower-fidelity monotone probe beat its higher-fidelity same-context twin."
+                Message = plan.ProbeType == "composition"
+                    ? "Composed counterfactual synergy template beat its higher-fidelity same-context twin."
+                    : "Lower-fidelity monotone probe beat its higher-fidelity same-context twin."
             };
         }
 
-        if (probe.Kld - reference.Kld >= Config.AnomalyDetection.MinActualGainVsTwinKld)
+        double harmfulMargin = Math.Max(Config.AnomalyDetection.MinActualGainVsTwinKld, Config.SynergyDetection.MinFailureMarginForContaminationKld);
+        if (probe.Kld - reference.Kld >= harmfulMargin)
         {
+            bool contaminatingPassenger = Config.SynergyDetection.ContaminatingPassengerDetectionEnabled &&
+                                         (plan.SeedClass == AnomalySeedClass.ConfirmedAnomalyNeighborhoodProbe ||
+                                          plan.SeedClass == AnomalySeedClass.SynergyTransferProbe ||
+                                          plan.SeedClass == AnomalySeedClass.SynergyCompositionProbe) &&
+                                         plan.ProbeGroups.Count > 1;
+
             return new AnomalyProbeResult
             {
                 Plan = plan,
                 ReferenceSnapshot = reference,
                 ProbeSnapshot = probe,
-                Classification = AnomalyProbeClassification.HarmfulInteraction,
+                Classification = contaminatingPassenger
+                    ? AnomalyProbeClassification.ContaminatingPassenger
+                    : plan.ProbeType == "composition"
+                        ? AnomalyProbeClassification.HarmfulInterference
+                        : AnomalyProbeClassification.HarmfulInteraction,
                 RuleDirection = AnomalyRuleDirection.Harmful,
                 Accepted = true,
                 ActualGainVsTwin = gain,
-                Message = "Probe was meaningfully worse than its higher-fidelity twin; persisted as harmful interaction."
+                Message = contaminatingPassenger
+                    ? "Probe was meaningfully worse than its twin; persisted as scoped contaminating-passenger negative evidence."
+                    : "Probe was meaningfully worse than its higher-fidelity twin; persisted as harmful interaction."
             };
         }
 
@@ -1477,8 +1481,7 @@ LIMIT 1;";
         double? predictionSpaceGap,
         string rejectionReason,
         bool matchedConfirmedAnomalyPattern,
-        bool twinFoundInLookup,
-        double? smokeScore = null)
+        bool twinFoundInLookup)
     {
         var preview = new RejectedSmokePreview(
             previews.Count,
@@ -1491,8 +1494,7 @@ LIMIT 1;";
             predictionSpaceGap,
             rejectionReason,
             matchedConfirmedAnomalyPattern,
-            twinFoundInLookup,
-            smokeScore);
+            twinFoundInLookup);
 
         if (previews.Count < 500 || rejectionReason.Contains("PredictionSpaceGap", StringComparison.OrdinalIgnoreCase) || matchedConfirmedAnomalyPattern)
             previews.Add(preview);
@@ -1727,160 +1729,17 @@ LIMIT 1;";
         return "leave-one-out";
     }
 
-    private static double ComputeSmokeScore(
-        double gap,
-        double savingsPercent,
-        int changedGroupCount,
-        ulong? candidateRank,
-        ulong? twinRank,
-        bool matchedConfirmedTemplate,
-        SynergyTemplateMatchTier matchTier)
+    private static double ComputeSmokeScore(double gap, double savingsPercent, int changedGroupCount, ulong? candidateRank, ulong? twinRank)
     {
-        double maxGap = Math.Max(Config.SynergyDetection.MaxSmokeGapKld, 1e-9d);
-        double closenessScore = Math.Clamp(1d - (Math.Max(0d, gap) / maxGap), 0d, 1d);
-        double savingsScore = Math.Clamp(savingsPercent / Math.Max(Config.AnomalyDetection.MinPredictedSizeSavingsVsTwinPercent * 4d, 1e-9d), 0d, 1d);
-        double noveltyScore = changedGroupCount switch
-        {
-            <= 1 => 0.85d,
-            2 => 1.00d,
-            3 => 0.80d,
-            _ => 0.65d
-        };
-
-        double rankScore = 0.50d;
+        double maxGap = Math.Max(Config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld, Config.SynergyDetection.MaxSmokeGapKld);
+        double closenessScore = maxGap <= 0d ? 0d : Math.Clamp((maxGap - Math.Max(0d, gap)) / maxGap, 0d, 1d);
+        double savingsScore = Math.Clamp(savingsPercent / Math.Max(Config.AnomalyDetection.MinPredictedSizeSavingsVsTwinPercent, 0.01d), 0d, 2d) / 2d;
+        double groupPenalty = 1d / Math.Max(1, changedGroupCount);
+        double rankBonus = 0d;
         if (candidateRank.HasValue && twinRank.HasValue)
-        {
-            double delta = Math.Clamp((double)twinRank.Value - candidateRank.Value, -50_000d, 50_000d);
-            rankScore = Math.Clamp(0.50d + (delta / 100_000d), 0d, 1d);
-        }
+            rankBonus = Math.Clamp((double)twinRank.Value - candidateRank.Value, -10_000d, 10_000d) / 20_000d;
 
-        double templateScore = matchTier switch
-        {
-            SynergyTemplateMatchTier.ExactContext => 1.00d,
-            SynergyTemplateMatchTier.SameSelectedGroups => 0.75d,
-            SynergyTemplateMatchTier.EquivalentQuantFamily => 0.55d,
-            SynergyTemplateMatchTier.GroupFamilySuspicion => 0.35d,
-            _ => matchedConfirmedTemplate ? 0.50d : 0.00d
-        };
-
-        double frontierScore = gap <= Config.AnomalyDetection.MaxPredictionSpaceGapVsTwinKld ? 1.00d : 0.55d;
-
-        return Math.Clamp(
-            (savingsScore * 0.25d) +
-            (closenessScore * 0.30d) +
-            (templateScore * 0.20d) +
-            (noveltyScore * 0.10d) +
-            (rankScore * 0.10d) +
-            (frontierScore * 0.05d),
-            0d,
-            1d);
-    }
-
-    private SynergyTemplateMatchTier ResolveConfirmedTemplateMatchTier(
-        TensorConfig candidate,
-        IReadOnlyCollection<AnomalyInteractionRule> confirmedTemplates,
-        out bool matched)
-    {
-        matched = false;
-        foreach (var rule in confirmedTemplates)
-        {
-            if (rule.RuleDirection != AnomalyRuleDirection.Beneficial.ToString())
-                continue;
-
-            if (rule.ReferenceQuantId != candidate.BaseQuant)
-                continue;
-
-            bool exact = !string.IsNullOrWhiteSpace(rule.FullTensorConfigKey) &&
-                         string.Equals(rule.FullTensorConfigKey, TensorConfigIdentity.ToKey(candidate), StringComparison.Ordinal);
-            if (exact)
-            {
-                matched = true;
-                return SynergyTemplateMatchTier.ExactContext;
-            }
-
-            bool selectedMatch = rule.GroupStates.All(state =>
-            {
-                var group = _movement.ActiveGroups.FirstOrDefault(g => g.UniqueId == state.TensorGroupId);
-                return group != null && _movement.EffectiveQuantId(candidate, group) == state.CandidateQuantId;
-            });
-
-            if (selectedMatch)
-            {
-                matched = true;
-                return SynergyTemplateMatchTier.SameSelectedGroups;
-            }
-
-            bool equivalent = rule.GroupStates.All(state =>
-            {
-                var group = _movement.ActiveGroups.FirstOrDefault(g => g.UniqueId == state.TensorGroupId);
-                return group != null && QuantTier(_movement.EffectiveQuantId(candidate, group)) == QuantTier(state.CandidateQuantId);
-            });
-
-            if (equivalent)
-            {
-                matched = true;
-                return SynergyTemplateMatchTier.EquivalentQuantFamily;
-            }
-        }
-
-        return SynergyTemplateMatchTier.None;
-    }
-
-    private string ResolveTransferStratum(
-        TensorConfig candidate,
-        IReadOnlyCollection<AnomalyChangedGroup> selectedGroups,
-        byte referenceQuantId)
-    {
-        var selectedIds = selectedGroups.Select(x => x.Group.UniqueId).ToHashSet();
-        int belowQ6 = 0;
-        foreach (var group in _movement.ActiveGroups)
-        {
-            if (selectedIds.Contains(group.UniqueId))
-                continue;
-
-            byte q = _movement.EffectiveQuantId(candidate, group);
-            if (QuantTier(q) < 60)
-                belowQ6++;
-        }
-
-        var strata = Config.SynergyDetection.TransferProbeContextStrata;
-        if (belowQ6 <= strata.HighFidelityMaxNonReferenceGroupsBelowQ6)
-            return "high-fidelity-transfer";
-
-        if (belowQ6 <= strata.MidFidelityMaxNonReferenceGroupsBelowQ6)
-            return "mid-fidelity-transfer";
-
-        return strata.LowFidelityEnabled ? "low-fidelity-transfer" : "disabled-low-fidelity";
-    }
-
-    private static double EstimateTemplateConfidence(AnomalyProbeResult result)
-    {
-        double gainRatio = Math.Clamp(result.ActualGainVsTwin / Math.Max(Config.AnomalyDetection.MinActualGainVsTwinKld * 2d, 1e-9d), 0d, 1d);
-        double classificationBonus = result.Classification switch
-        {
-            AnomalyProbeClassification.SingleGroupInversion => 0.20d,
-            AnomalyProbeClassification.PairSynergy => 0.25d,
-            AnomalyProbeClassification.HigherOrderSynergy => 0.15d,
-            _ => 0.10d
-        };
-
-        return Math.Clamp(gainRatio * 0.75d + classificationBonus, 0d, 1d);
-    }
-
-    private static int QuantTier(byte quantId)
-    {
-        if (BaselineQuants.IsNativeExactAlias(quantId))
-            return 160;
-
-        var baseline = BaselineQuants.FromId(quantId);
-        string name = baseline.Names[0].ToUpperInvariant();
-        if (name.Contains("Q8") || baseline.BitRange >= 8) return 80;
-        if (name.Contains("Q6") || baseline.BitRange == 6) return 60;
-        if (name.Contains("Q5") || baseline.BitRange == 5) return 50;
-        if (name.Contains("Q4") || name.Contains("IQ4") || baseline.BitRange == 4) return 40;
-        if (name.Contains("Q3") || name.Contains("IQ3") || baseline.BitRange == 3) return 30;
-        if (name.Contains("Q2") || name.Contains("IQ2") || baseline.BitRange == 2) return 20;
-        return baseline.BitRange > 0 ? baseline.BitRange * 10 : -1;
+        return Math.Clamp((closenessScore * 0.55d) + (savingsScore * 0.30d) + (groupPenalty * 0.10d) + rankBonus, 0d, 1d);
     }
 
     private static void WriteSmokeConsoleSummary(int historicalCount, int duckCount, IReadOnlyList<AnomalySmokeCandidate> selected)
@@ -1889,7 +1748,7 @@ LIMIT 1;";
         int existingTwins = selected.Count(x => x.HasActualTwin);
         int missingTwins = selected.Count - existingTwins;
 
-        AnsiConsole.MarkupLine("[yellow]Synergy smoke scan:[/]");
+        AnsiConsole.MarkupLine("[yellow]Anomaly smoke scan:[/]");
         AnsiConsole.MarkupLine($"[grey]  historical benchmarks scanned smoke=[/] [cyan]{historicalCount:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  DuckDB prediction-space smoke=[/] [cyan]{duckCount:N0}[/]");
         AnsiConsole.MarkupLine($"[grey]  monotone downgrade smoke candidates=[/] [cyan]{monotone:N0}[/]");
@@ -1902,7 +1761,7 @@ LIMIT 1;";
         if (result.RuleDirection == AnomalyRuleDirection.Beneficial && result.ProbeSnapshot != null && result.ReferenceSnapshot != null)
         {
             AnsiConsole.MarkupLine(
-                $"[green]Counterfactual synergy confirmed:[/] candidate={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(result.ProbeSnapshot.Quant))} " +
+                $"[green]Counterfactual MDA violation confirmed:[/] candidate={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(result.ProbeSnapshot.Quant))} " +
                 $"twin={Markup.Escape(HybridBenchmarkRepository.BuildDisplayName(result.ReferenceSnapshot.Quant))} " +
                 $"actual candidate KLD={result.ProbeSnapshot.Kld:0.000000} actual twin KLD={result.ReferenceSnapshot.Kld:0.000000} " +
                 $"gain={result.ActualGainVsTwin:0.000000} classification={result.Classification}");
@@ -1968,6 +1827,143 @@ LIMIT 1;";
     }
 
 
+
+
+    private IReadOnlyList<SynergyWingSummary> BuildSynergyWingSummary(
+        IReadOnlyList<AnomalySmokeCandidate> smoke,
+        IReadOnlyList<AnomalyProbeResult> results,
+        AnomalyAdjustmentSummary adjustment)
+    {
+        var zones = new Dictionary<string, SynergyWingSummary>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Q8→Q6"] = new SynergyWingSummary { Zone = "Q8→Q6" },
+            ["Q6→Q5/Q4"] = new SynergyWingSummary { Zone = "Q6→Q5/Q4" },
+            ["Q5→IQ4/IQ3"] = new SynergyWingSummary { Zone = "Q5→IQ4/IQ3" },
+            ["Other"] = new SynergyWingSummary { Zone = "Other" }
+        };
+
+        foreach (var item in smoke)
+            zones[ResolveWingZone(item.TwinConfig.BaseQuant, item.Movement.ChangedGroups.Select(x => x.CandidateQuantId))].SmokeCount++;
+
+        foreach (var result in results)
+        {
+            var zone = zones[ResolveWingZone(result.Plan.ReferenceConfig.BaseQuant, result.Plan.ProbeGroups.Select(x => x.CandidateQuantId))];
+            if (result.RuleDirection == AnomalyRuleDirection.Beneficial)
+            {
+                zone.ConfirmedBeneficialTemplates++;
+                zone.ValidationSuccessCount++;
+            }
+            else if (result.RuleDirection == AnomalyRuleDirection.Harmful)
+            {
+                zone.HarmfulTemplates++;
+                zone.ValidationFailureCount++;
+            }
+            else
+            {
+                zone.SuppressionOnlyTemplates++;
+                zone.ValidationFailureCount++;
+            }
+        }
+
+        foreach (var match in adjustment.RuleMatches)
+        {
+            string text = JsonSerializer.Serialize(match);
+            var zone = text.Contains("Q6_", StringComparison.OrdinalIgnoreCase) && text.Contains("Q8_0", StringComparison.OrdinalIgnoreCase)
+                ? zones["Q8→Q6"]
+                : text.Contains("Q5", StringComparison.OrdinalIgnoreCase) || text.Contains("Q4", StringComparison.OrdinalIgnoreCase)
+                    ? zones["Q6→Q5/Q4"]
+                    : zones["Other"];
+
+            if (text.Contains("Harmful", StringComparison.OrdinalIgnoreCase) || text.Contains("Contaminating", StringComparison.OrdinalIgnoreCase))
+                zone.CandidateRowsDemoted++;
+            else
+                zone.CandidateRowsAdjustedPositively++;
+        }
+
+        foreach (var zone in zones.Values)
+        {
+            if (zone.ConfirmedBeneficialTemplates == 0 && (zone.HarmfulTemplates > 0 || zone.SuppressionOnlyTemplates > 0))
+                zone.Explanation = "No nonlinear wing survived because harmful/suppression evidence dominated or no adjusted candidate beat the frontier line.";
+            else if (zone.ConfirmedBeneficialTemplates == 0 && zone.SmokeCount == 0)
+                zone.Explanation = "No contextual synergy smoke was strong enough to probe in this fidelity zone.";
+            else if (zone.ConfirmedBeneficialTemplates > 0)
+                zone.Explanation = "Confirmed beneficial counterfactual synergy evidence exists in this fidelity zone.";
+            else
+                zone.Explanation = "Smoke existed but did not produce confirmed beneficial evidence.";
+        }
+
+        return zones.Values.ToList();
+    }
+
+    private static string ResolveWingZone(byte referenceQuantId, IEnumerable<byte> candidateQuantIds)
+    {
+        string reference = SafeName(referenceQuantId);
+        var candidates = candidateQuantIds.Select(SafeName).ToList();
+        if (reference.StartsWith("Q8", StringComparison.OrdinalIgnoreCase) && candidates.Any(x => x.Contains("Q6", StringComparison.OrdinalIgnoreCase)))
+            return "Q8→Q6";
+        if (reference.Contains("Q6", StringComparison.OrdinalIgnoreCase) && candidates.Any(x => x.Contains("Q5", StringComparison.OrdinalIgnoreCase) || x.Contains("Q4", StringComparison.OrdinalIgnoreCase) || x.Contains("IQ4", StringComparison.OrdinalIgnoreCase)))
+            return "Q6→Q5/Q4";
+        if ((reference.Contains("Q5", StringComparison.OrdinalIgnoreCase) || reference.Contains("Q4", StringComparison.OrdinalIgnoreCase)) && candidates.Any(x => x.Contains("IQ4", StringComparison.OrdinalIgnoreCase) || x.Contains("IQ3", StringComparison.OrdinalIgnoreCase) || x.Contains("Q3", StringComparison.OrdinalIgnoreCase)))
+            return "Q5→IQ4/IQ3";
+        return "Other";
+    }
+
+    private static void WriteSynergyWingConsoleSummary(IReadOnlyList<SynergyWingSummary> summaries)
+    {
+        AnsiConsole.MarkupLine("[yellow]Synergy wing summary:[/]");
+        foreach (var zone in summaries)
+        {
+            AnsiConsole.MarkupLine($"[grey]  {Markup.Escape(zone.Zone)}:[/] beneficial=[cyan]{zone.ConfirmedBeneficialTemplates:N0}[/], harmful=[cyan]{zone.HarmfulTemplates:N0}[/], suppressed=[cyan]{zone.SuppressionOnlyTemplates:N0}[/], adjusted=[cyan]{zone.CandidateRowsAdjustedPositively:N0}[/], demoted=[cyan]{zone.CandidateRowsDemoted:N0}[/]");
+        }
+    }
+
+    private object ToSynergyTemplateLog(AnomalyInteractionRule x)
+    {
+        Dictionary<string, string> selected = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, string> raised = new(StringComparer.OrdinalIgnoreCase);
+        foreach (var state in x.GroupStates.OrderBy(g => g.SortOrder))
+        {
+            string groupName = ResolveGroupName(state.TensorGroupId);
+            selected[groupName] = SafeName(state.CandidateQuantId);
+            raised[groupName] = SafeName(state.ReferenceQuantId);
+        }
+
+        return new
+        {
+            templateType = x.RuleType,
+            referenceQuant = SafeName(x.ReferenceQuantId),
+            selectedGroupStates = selected,
+            raisedCounterfactualStates = raised,
+            discoveryContext = TryDeserializeDictionary(x.ReferenceEffectiveGroupsJson),
+            candidateContext = TryDeserializeDictionary(x.CandidateEffectiveGroupsJson),
+            actualGainKld = x.BestActualGainVsTwin,
+            sizeSavingsBytes = x.MetadataJson?.Contains("sizeSavingsBytes", StringComparison.OrdinalIgnoreCase) == true ? (object?)"see metadataJson" : null,
+            x.Confidence,
+            generalizationPolicy = "ExactStrong_TransferWeak",
+            metadataJson = x.MetadataJson
+        };
+    }
+
+    private static Dictionary<string, string> TryDeserializeDictionary(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private static string ResolveGroupName(byte groupId)
+    {
+        var group = TReg.All.FirstOrDefault(x => x.UniqueId == groupId);
+        return group?.Name ?? $"group:{groupId}";
+    }
+
     private object ToSmokeLog(AnomalySmokeCandidate x)
     {
         return new
@@ -2008,15 +2004,12 @@ LIMIT 1;";
             x.TwinLookupMode,
             x.RejectionReason,
             x.MatchedConfirmedAnomalyPattern,
-            wouldMatchConfirmedTemplate = x.WouldMatchConfirmedTemplate,
-            synergyMatchTier = x.SynergyMatchTier.ToString(),
             x.TwinFoundInLookupDictionary,
             seedClass = x.SeedClass.ToString(),
             x.CandidatePredictionRank,
             x.TwinPredictionRank,
             x.SmokeScore,
             x.SmokeStrength,
-            x.IsTransferProbeSeed,
             x.HasActualTwin,
             x.CandidateActualKld,
             x.TwinActualKld,
@@ -2038,7 +2031,6 @@ LIMIT 1;";
             referenceName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)x.ReferenceConfig),
             probeName = HybridBenchmarkRepository.BuildDisplayName((HybridQuant)x.ProbeConfig),
             referenceEffectiveGroups = _movement.BuildEffectiveGroupVector(x.ReferenceConfig),
-            virtualTwinEffectiveGroups = _movement.BuildEffectiveGroupVector(x.ReferenceConfig),
             candidateEffectiveGroups = _movement.BuildEffectiveGroupVector(x.ProbeConfig),
             inactiveGroups = _movement.BuildInactiveGroupList(),
             movementClassification = movement.Classification.ToString(),
@@ -2075,42 +2067,6 @@ LIMIT 1;";
             x.FailureCode,
             x.Message
         };
-    }
-
-    private static object ToSynergyTemplateLog(AnomalyInteractionRule x)
-    {
-        return new
-        {
-            templateType = x.RuleType,
-            referenceQuant = SafeName(x.ReferenceQuantId),
-            selectedGroupStates = x.GroupStates.OrderBy(g => g.SortOrder).ToDictionary(g => g.TensorGroupId.ToString(), g => SafeName(g.CandidateQuantId)),
-            raisedCounterfactualStates = x.GroupStates.OrderBy(g => g.SortOrder).ToDictionary(g => g.TensorGroupId.ToString(), g => SafeName(g.ReferenceQuantId)),
-            discoveryContext = TryDeserializeJson(x.ReferenceEffectiveGroupsJson),
-            candidateContext = TryDeserializeJson(x.CandidateEffectiveGroupsJson),
-            actualGainKld = x.BestActualGainVsTwin,
-            confidence = x.Confidence,
-            generalizationPolicy = "ExactStrong_TransferWeak",
-            ruleDirection = x.RuleDirection,
-            ruleStatus = x.RuleStatus,
-            fullTensorConfigKey = x.FullTensorConfigKey,
-            referenceContextKey = x.ReferenceContextKey,
-            metadata = TryDeserializeJson(x.MetadataJson)
-        };
-    }
-
-    private static object? TryDeserializeJson(string json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<object>(json);
-        }
-        catch
-        {
-            return json;
-        }
     }
 
     private static object ToRuleLog(AnomalyInteractionRule x)
@@ -2194,8 +2150,7 @@ LIMIT 1;";
             double? predictionSpaceGap,
             string rejectionReason,
             bool matchedConfirmedAnomalyPattern,
-            bool twinFoundInLookup,
-            double? smokeScore)
+            bool twinFoundInLookup)
         {
             SortOrder = sortOrder;
             Candidate = candidate;
@@ -2208,7 +2163,6 @@ LIMIT 1;";
             RejectionReason = rejectionReason;
             MatchedConfirmedAnomalyPattern = matchedConfirmedAnomalyPattern;
             TwinFoundInLookup = twinFoundInLookup;
-            SmokeScore = smokeScore;
         }
 
         public int SortOrder { get; }
@@ -2222,7 +2176,6 @@ LIMIT 1;";
         public string RejectionReason { get; }
         public bool MatchedConfirmedAnomalyPattern { get; }
         public bool TwinFoundInLookup { get; }
-        public double? SmokeScore { get; }
         public string CandidateName => HybridBenchmarkRepository.BuildDisplayName((HybridQuant)Candidate);
         public string TwinName => HybridBenchmarkRepository.BuildDisplayName((HybridQuant)Twin);
 
@@ -2233,6 +2186,10 @@ LIMIT 1;";
             candidateName = CandidateName,
             twinName = TwinName,
             movement = Movement?.Classification.ToString() ?? "Unknown",
+            changedGroups = Movement?.ChangedGroups.Select(g => $"{g.Group.ShortCode}={AnomalyWorkflowService.SafeName(g.CandidateQuantId)}").ToList() ?? new List<string>(),
+            smokeScore = Movement == null || CandidateRow == null || TwinRow == null || !PredictionSpaceGap.HasValue || !PredictedSizeSavingsBytes.HasValue
+                ? (double?)null
+                : AnomalyWorkflowService.ComputeSmokeScore(PredictionSpaceGap.Value, PredictedSizeSavingsBytes.Value * 100d / Math.Max(1d, TwinRow.PredictedSizeBytes), Movement.DowngradeCount, CandidateRow.PredictionRank, TwinRow.PredictionRank),
             predictedCandidateKld = CandidateRow?.BaseRankSafeKld,
             predictedTwinKld = TwinRow?.BaseRankSafeKld,
             predictionSpaceGap = PredictionSpaceGap,
@@ -2240,9 +2197,7 @@ LIMIT 1;";
             predictedTwinSizeBytes = TwinRow?.PredictedSizeBytes,
             predictedSizeSavingsBytes = PredictedSizeSavingsBytes,
             rejectionReason = RejectionReason,
-            smokeScore = SmokeScore,
             matchedConfirmedAnomalyPattern = MatchedConfirmedAnomalyPattern,
-            wouldMatchConfirmedTemplate = MatchedConfirmedAnomalyPattern,
             twinExistedInLookupDictionary = TwinFoundInLookup
         };
     }

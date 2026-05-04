@@ -28,7 +28,9 @@ public sealed class FinalSurvivorSelectionCliService
                     Enabled = true,
                     Snapshot = snapshot,
                     PlannedFileName = name.FileName,
-                    PlannedDisplayName = name.DisplayName,
+                    // Show the same normalized public short label used by README/manifest tables.
+                    // The full GGUF filename remains PlannedFileName.
+                    PlannedDisplayName = string.IsNullOrWhiteSpace(name.ShortDisplayName) ? name.DisplayName : name.ShortDisplayName,
                     PlannedProviderName = ResolveProviderName(snapshot, name),
                     PlannedQuantFamily = name.QuantFamilyOrBaseline
                 };

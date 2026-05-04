@@ -29,6 +29,7 @@
     </ItemGroup>
 
     <ItemGroup>
+      <Folder Include="Configs\" />
       <Folder Include="DuckDB\" />
     </ItemGroup>
 

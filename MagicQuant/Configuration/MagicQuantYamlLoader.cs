@@ -146,6 +146,8 @@ public static class MagicQuantYamlLoader
         config.CandidateSelection.MinimumKldImprovementEpsilon = Math.Max(0d, config.CandidateSelection.MinimumKldImprovementEpsilon);
 
         config.AnomalyDetection ??= new RuntimeAnomalyDetectionConfig();
+        config.SynergyDetection ??= new RuntimeSynergyDetectionConfig();
+        NormalizeSynergyDetection(config);
         config.AnomalyDetection.MaxAnomalyRefinementRounds = Math.Clamp(config.AnomalyDetection.MaxAnomalyRefinementRounds, 0, 1);
         config.AnomalyDetection.MinActualGainVsTwinKld = Math.Max(0d, config.AnomalyDetection.MinActualGainVsTwinKld);
         config.AnomalyDetection.MinPredictedSizeSavingsVsTwinPercent = Math.Max(0d, config.AnomalyDetection.MinPredictedSizeSavingsVsTwinPercent);
@@ -162,33 +164,38 @@ public static class MagicQuantYamlLoader
         config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld = Math.Clamp(config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld, 0d, 1d);
         config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone = Math.Max(1, config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone);
 
-        config.SynergyDetection ??= new RuntimeSynergyDetectionConfig();
-        config.SynergyDetection.MaxRefinementRounds = Math.Clamp(config.SynergyDetection.MaxRefinementRounds, 0, 1);
-        config.SynergyDetection.ExactContextConfidenceMultiplier = Math.Clamp(config.SynergyDetection.ExactContextConfidenceMultiplier, 0d, 1d);
-        config.SynergyDetection.SameSelectedGroupsConfidenceMultiplier = Math.Clamp(config.SynergyDetection.SameSelectedGroupsConfidenceMultiplier, 0d, 1d);
-        config.SynergyDetection.EquivalentQuantFamilyConfidenceMultiplier = Math.Clamp(config.SynergyDetection.EquivalentQuantFamilyConfidenceMultiplier, 0d, 1d);
-        config.SynergyDetection.GroupFamilySuspicionConfidenceMultiplier = Math.Clamp(config.SynergyDetection.GroupFamilySuspicionConfidenceMultiplier, 0d, 1d);
-        config.SynergyDetection.MinConfidenceToApplyAdjustment = Math.Clamp(config.SynergyDetection.MinConfidenceToApplyAdjustment, 0d, 1d);
-        config.SynergyDetection.MinConfidenceToScheduleTransferProbe = Math.Clamp(config.SynergyDetection.MinConfidenceToScheduleTransferProbe, 0d, 1d);
-        config.SynergyDetection.MaxNegativeAdjustmentKld = Math.Max(0d, config.SynergyDetection.MaxNegativeAdjustmentKld);
-        config.SynergyDetection.MaxNegativeAdjustmentFractionOfBaseKld = Math.Clamp(config.SynergyDetection.MaxNegativeAdjustmentFractionOfBaseKld, 0d, 1d);
-        config.SynergyDetection.MaxTransferProbesPerTemplate = Math.Max(0, config.SynergyDetection.MaxTransferProbesPerTemplate);
-        config.SynergyDetection.MaxTotalTransferProbesPerRun = Math.Max(0, config.SynergyDetection.MaxTotalTransferProbesPerRun);
-        config.SynergyDetection.MinSmokeScore = Math.Clamp(config.SynergyDetection.MinSmokeScore, 0d, 1d);
-        config.SynergyDetection.MaxSmokeGapKld = Math.Max(0d, config.SynergyDetection.MaxSmokeGapKld);
-        config.SynergyDetection.TopRejectedSmokePreview = Math.Max(1, config.SynergyDetection.TopRejectedSmokePreview);
-        config.SynergyDetection.TransferProbeContextStrata ??= new RuntimeSynergyTransferProbeContextStrataConfig();
-        config.SynergyDetection.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, config.SynergyDetection.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6);
-        config.SynergyDetection.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(config.SynergyDetection.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6, config.SynergyDetection.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6);
-
-        // Compatibility bridge: old anomaly_detection remains the operational section;
-        // synergy_detection controls transfer/generalization behavior. If the new section
-        // is disabled, anomaly/synergy pass can still run exact-context probes, but no
-        // transfer probes or transferable adjustments are scheduled.
-        config.AnomalyDetection.MinRuleConfidenceToApply = Math.Min(config.AnomalyDetection.MinRuleConfidenceToApply, config.SynergyDetection.MinConfidenceToApplyAdjustment);
-
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
+    }
+
+
+    private static void NormalizeSynergyDetection(MagicQuantYamlConfig config)
+    {
+        var s = config.SynergyDetection;
+        s.MaxRefinementRounds = Math.Clamp(s.MaxRefinementRounds, 0, 1);
+        s.ExactContextConfidenceMultiplier = Math.Clamp(s.ExactContextConfidenceMultiplier, 0d, 1d);
+        s.SameSelectedGroupsConfidenceMultiplier = Math.Clamp(s.SameSelectedGroupsConfidenceMultiplier, 0d, 1d);
+        s.EquivalentQuantFamilyConfidenceMultiplier = Math.Clamp(s.EquivalentQuantFamilyConfidenceMultiplier, 0d, 1d);
+        s.GroupFamilySuspicionConfidenceMultiplier = Math.Clamp(s.GroupFamilySuspicionConfidenceMultiplier, 0d, 1d);
+        s.MinConfidenceToApplyAdjustment = Math.Clamp(s.MinConfidenceToApplyAdjustment, 0d, 1d);
+        s.MinConfidenceToScheduleTransferProbe = Math.Clamp(s.MinConfidenceToScheduleTransferProbe, 0d, 1d);
+        s.MaxNegativeAdjustmentKld = Math.Max(0d, s.MaxNegativeAdjustmentKld);
+        s.MaxNegativeAdjustmentFractionOfBaseKld = Math.Clamp(s.MaxNegativeAdjustmentFractionOfBaseKld, 0d, 1d);
+        s.MaxTransferProbesPerTemplate = Math.Max(0, s.MaxTransferProbesPerTemplate);
+        s.MaxTotalTransferProbesPerRun = Math.Max(0, s.MaxTotalTransferProbesPerRun);
+        s.TransferProbeContextStrata ??= new RuntimeSynergyTransferProbeContextStrataConfig();
+        s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6);
+        s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6);
+        s.MinSmokeScore = Math.Clamp(s.MinSmokeScore, 0d, 1d);
+        s.MaxSmokeGapKld = Math.Max(0d, s.MaxSmokeGapKld);
+        s.TopRejectedSmokePreview = Math.Max(1, s.TopRejectedSmokePreview);
+        s.MaxTemplateCompositionGroupCount = Math.Clamp(s.MaxTemplateCompositionGroupCount, 1, 9);
+        s.MaxCompositionProbesPerRun = Math.Max(0, s.MaxCompositionProbesPerRun);
+        s.MaxTemplatesToCompose = Math.Max(0, s.MaxTemplatesToCompose);
+        s.MinTemplateConfidenceForComposition = Math.Clamp(s.MinTemplateConfidenceForComposition, 0d, 1d);
+        s.MinCombinedExpectedSizeSavingsPercent = Math.Max(0d, s.MinCombinedExpectedSizeSavingsPercent);
+        s.MinFailureMarginForContaminationKld = Math.Max(0d, s.MinFailureMarginForContaminationKld);
+        s.ContaminationPenaltyConfidenceMultiplier = Math.Clamp(s.ContaminationPenaltyConfidenceMultiplier, 0d, 1d);
     }
 
     private static void ApplyStandardBaselineFilters(RuntimeBaselineConfig baselineConfig)

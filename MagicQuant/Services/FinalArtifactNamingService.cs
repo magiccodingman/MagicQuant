@@ -44,18 +44,11 @@ public sealed class FinalArtifactNamingService
             string externalFamily = NormalizeExternalDisplayName(sourceBaseline.Names[0], externalProviderToken);
 
             providerToken = externalProviderToken;
-            if (Config.ExportExternalLearnedBaselines || snapshot.IsExternalRebuiltBaseline || snapshot.IsMaterializedTensorMapped)
-            {
-                // This is a MagicQuant rebuilt/re-uploaded copy of an external learned baseline.
-                // The artifact name gets an MQ prefix, but the provider remains the upstream source.
-                quantFamily = $"MQ-{SanitizeToken(externalFamily)}";
-                tag = quantFamily;
-            }
-            else
-            {
-                quantFamily = SanitizeToken(externalFamily);
-                tag = quantFamily;
-            }
+            // Rebuilt/materialized external baselines are still external baselines.
+            // MagicQuant may rebuild/benchmark/export the file, but the public name must
+            // not imply MagicQuant invented the quant recipe (no MQ-UD-* labels).
+            quantFamily = SanitizeToken(externalFamily);
+            tag = quantFamily;
         }
         else
         {
@@ -91,9 +84,7 @@ public sealed class FinalArtifactNamingService
         {
             string providerToken = ResolveExternalProviderToken(sourceBaseline);
             string family = SanitizeToken(NormalizeExternalDisplayName(sourceBaseline.Names[0], providerToken));
-            return Config.ExportExternalLearnedBaselines || snapshot.IsExternalRebuiltBaseline || snapshot.IsMaterializedTensorMapped
-                ? $"{prefix}-MQ-{family}"
-                : $"{prefix}-{family}";
+            return $"{prefix}-{family}";
         }
 
         return $"{prefix}-LM-{SanitizeToken(snapshot.Quant.BaseQuant.Names[0])}";
@@ -329,10 +320,14 @@ public sealed class FinalArtifactNamingService
         if (!value.StartsWith(providerToken + "_", StringComparison.OrdinalIgnoreCase) &&
             !value.StartsWith(providerToken + "-", StringComparison.OrdinalIgnoreCase))
         {
-            value = $"{providerToken}_{value}";
+            value = $"{providerToken}-{value}";
         }
 
-        return SanitizeToken(value);
+        value = SanitizeToken(value);
+        if (value.StartsWith(providerToken + "_", StringComparison.OrdinalIgnoreCase))
+            value = providerToken + "-" + value[(providerToken.Length + 1)..];
+
+        return value;
     }
 
     private static string MakeUniqueFileName(string desiredFileName, ISet<string>? reservedFileNames)
@@ -412,7 +407,13 @@ public sealed class FinalArtifactNamingService
             return string.Empty;
 
         if (sanitizedFamily.StartsWith("MQ-", StringComparison.OrdinalIgnoreCase))
+        {
+            if (snapshot?.IsExternalRebuiltBaseline == true || snapshot?.IsExternalPureBaseline == true ||
+                string.Equals(resolvedProvider, "Unsloth", StringComparison.OrdinalIgnoreCase))
+                return StripMagicQuantExternalPrefix(sanitizedFamily);
+
             return sanitizedFamily;
+        }
 
         if (snapshot?.IsHybrid == true)
         {
@@ -424,13 +425,21 @@ public sealed class FinalArtifactNamingService
         }
 
         if (string.Equals(resolvedProvider, "MagicQuant", StringComparison.OrdinalIgnoreCase))
+        {
+            if (snapshot?.IsExternalRebuiltBaseline == true || snapshot?.IsExternalPureBaseline == true)
+                return StripMagicQuantExternalPrefix(sanitizedFamily);
+
             return sanitizedFamily.StartsWith("MQ-", StringComparison.OrdinalIgnoreCase) ? sanitizedFamily : $"MQ-{sanitizedFamily}";
+        }
 
         if (string.Equals(resolvedProvider, "llama.cpp", StringComparison.OrdinalIgnoreCase))
             return sanitizedFamily.StartsWith("LM-", StringComparison.OrdinalIgnoreCase) ? sanitizedFamily : $"LM-{sanitizedFamily}";
 
         if (string.Equals(resolvedProvider, "Unsloth", StringComparison.OrdinalIgnoreCase))
         {
+            if (sanitizedFamily.StartsWith("UD_", StringComparison.OrdinalIgnoreCase))
+                return "UD-" + sanitizedFamily[3..];
+
             if (sanitizedFamily.StartsWith("UD-", StringComparison.OrdinalIgnoreCase) ||
                 sanitizedFamily.StartsWith("Unsloth", StringComparison.OrdinalIgnoreCase))
                 return sanitizedFamily;
@@ -439,6 +448,15 @@ public sealed class FinalArtifactNamingService
         }
 
         return sanitizedFamily;
+    }
+
+    private static string StripMagicQuantExternalPrefix(string value)
+    {
+        if (value.StartsWith("MQ-UD-", StringComparison.OrdinalIgnoreCase))
+            return value[3..];
+        if (value.StartsWith("MQ-Unsloth", StringComparison.OrdinalIgnoreCase))
+            return value[3..];
+        return value;
     }
 
     private static string ExtractOrdinalFromFileName(string? fileName)
