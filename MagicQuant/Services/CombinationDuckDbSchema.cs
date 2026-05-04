@@ -6,8 +6,9 @@ internal static class CombinationDuckDbSchema
 {
     public const string TableName = "tensor_configs";
     public const string SlotColumnList = "BaseQuant, Embeddings, LmHead, AttnQ, AttnKV, AttnOutput, FfnUpGate, FfnDown, MoeExperts, MoeRouter";
-    public const string PredictionColumnList = "PredictedKld, PredictedSizeBytes, PredictionConfidence, PredictionRank, BaseRankSafeKld, AnomalyAdjustmentKld, FinalPredictedKld, IsProtectedAnchor";
+    public const string PredictionColumnList = "PredictedKld, PredictedSizeBytes, PredictionConfidence, PredictionRank, BaseRankSafeKld, AnomalyAdjustmentKld, FinalPredictedKld, IsProtectedAnchor, IsVirtualPredictionAnchor, AnchorBaselineRuntimeId, AnchorBaselineCanonicalKey, AnchorDisplayName";
     public const string ActiveCandidatePredicateSql = "COALESCE(IsProtectedAnchor, FALSE) = FALSE";
+    public const string VirtualPredictionAnchorPredicateSql = "COALESCE(IsVirtualPredictionAnchor, FALSE) = TRUE";
     public const string EffectivePredictedKldSql = "COALESCE(FinalPredictedKld, PredictedKld)";
     public const string HybridPredicateSql = "(Embeddings <> 0 OR LmHead <> 0 OR AttnQ <> 0 OR AttnKV <> 0 OR AttnOutput <> 0 OR FfnUpGate <> 0 OR FfnDown <> 0 OR MoeExperts <> 0 OR MoeRouter <> 0)";
 
@@ -29,7 +30,8 @@ internal static class CombinationDuckDbSchema
     [
         "utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint","utinyint",
         "double","ubigint","double","ubigint",
-        "double","double","double","boolean"
+        "double","double","double","boolean",
+        "boolean","utinyint","varchar","varchar"
     ];
 
     public static string CreateTableSql => $@"
@@ -60,9 +62,18 @@ CREATE TABLE {TableName} (
     AnomalyAdjustmentKld DOUBLE DEFAULT 0.0,
     FinalPredictedKld DOUBLE,
 
-    -- Protected/reference anchors may be stored for twin lookup/logging, but must
-    -- never become active search carriers. Normal generator rows default false.
-    IsProtectedAnchor BOOLEAN DEFAULT FALSE
+    -- Protected/reference anchors may be stored for lookup/logging, but must
+    -- never become active search candidates. Normal generator rows default false.
+    IsProtectedAnchor BOOLEAN DEFAULT FALSE,
+
+    -- Virtual prediction anchors are not real benchmark rows. They are ordinary
+    -- tensor-config rows shaped like uniform learned-baseline blankets so the
+    -- existing rank-safe prediction materializer can score them in the same
+    -- imaginary space as normal candidates.
+    IsVirtualPredictionAnchor BOOLEAN DEFAULT FALSE,
+    AnchorBaselineRuntimeId UTINYINT,
+    AnchorBaselineCanonicalKey VARCHAR,
+    AnchorDisplayName VARCHAR
 );";
 
     public static string BuildSlotEqualityPredicate(string leftAlias, string rightAlias)

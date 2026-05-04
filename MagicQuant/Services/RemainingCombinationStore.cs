@@ -147,8 +147,133 @@ FROM {TableName};";
         };
     }
 
+    public async Task<IReadOnlyList<PredictedAnchorRow>> GetPredictedAnchorRowsAsync(CancellationToken ct = default)
+    {
+        string sql = $@"
+SELECT {CombinationDuckDbSchema.SlotColumnList},
+       COALESCE(AnchorDisplayName, AnchorBaselineCanonicalKey, '') AS AnchorDisplayName,
+       COALESCE(AnchorBaselineCanonicalKey, '') AS AnchorBaselineCanonicalKey,
+       COALESCE(AnchorBaselineRuntimeId, 0) AS AnchorBaselineRuntimeId,
+       {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
+       PredictedSizeBytes,
+       PredictionConfidence,
+       PredictionRank,
+       COALESCE(IsVirtualPredictionAnchor, FALSE) AS IsVirtualPredictionAnchor
+FROM {TableName}
+WHERE {CombinationDuckDbSchema.VirtualPredictionAnchorPredicateSql}
+  AND COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
+  AND PredictedSizeBytes IS NOT NULL
+  AND PredictionRank IS NOT NULL
+ORDER BY PredictedKld ASC,
+         PredictedSizeBytes ASC,
+         PredictionRank ASC;";
+
+        using var c = new DuckDBConnection(ConnectionString);
+        await c.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(c, ct);
+        await EnsureTensorConfigsTableExistsAsync(c, ct);
+
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = sql;
+
+        var list = new List<PredictedAnchorRow>();
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(MapPredictedAnchorRow(r));
+
+        return list;
+    }
+
+    public async Task<PredictedAnchorRow?> FindPredictedAnchorForRealAnchorAsync(
+        BenchmarkSnapshotRecord realAnchor,
+        IReadOnlyList<PredictedAnchorRow> predictedAnchors,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var sourceBaseline = HybridBenchmarkRepository.ResolveSourceBaselineForProvider(realAnchor.Quant);
+        if (HybridBenchmarkRepository.IsTrueMagicQuantHybrid(realAnchor.Quant))
+            return await QueryPredictedAnchorForConfigAsync(realAnchor, sourceBaseline, ct);
+
+        string canonicalKey = NormalizeAnchorKey(sourceBaseline.CanonicalKey);
+
+        var byCanonical = predictedAnchors
+            .Where(x => !string.IsNullOrWhiteSpace(x.BaselineCanonicalKey))
+            .FirstOrDefault(x => string.Equals(NormalizeAnchorKey(x.BaselineCanonicalKey), canonicalKey, StringComparison.Ordinal));
+
+        if (byCanonical != null)
+            return byCanonical;
+
+        var byRuntimeId = predictedAnchors.FirstOrDefault(x => x.RuntimeBaselineId == sourceBaseline.UniqueId);
+        if (byRuntimeId != null)
+            return byRuntimeId;
+
+        var displayNames = sourceBaseline.Names
+            .Concat([realAnchor.DisplayName, realAnchor.BaselineFamily])
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(NormalizeAnchorKey)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var byDisplay = predictedAnchors.FirstOrDefault(x => displayNames.Contains(NormalizeAnchorKey(x.DisplayName)));
+        if (byDisplay != null)
+            return byDisplay;
+
+        // Accepted MagicQuant hybrids can become real anchors in later phases. They will
+        // not have a virtual baseline-anchor row, but their own tensor config should still
+        // be present and scored in DuckDB. Use that predicted row as the phase-local
+        // prediction-space anchor instead of falling back to real KLD/size.
+        return await QueryPredictedAnchorForConfigAsync(realAnchor, sourceBaseline, ct);
+    }
+
+    private async Task<PredictedAnchorRow?> QueryPredictedAnchorForConfigAsync(
+        BenchmarkSnapshotRecord realAnchor,
+        BaselineQuants sourceBaseline,
+        CancellationToken ct)
+    {
+        string sql = $@"
+SELECT {CombinationDuckDbSchema.SlotColumnList},
+       {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
+       PredictedSizeBytes,
+       PredictionConfidence,
+       PredictionRank,
+       COALESCE(IsVirtualPredictionAnchor, FALSE) AS IsVirtualPredictionAnchor
+FROM {TableName}
+WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
+  AND PredictedSizeBytes IS NOT NULL
+  AND PredictionRank IS NOT NULL
+  AND {BuildSlotPredicateSql(realAnchor.Config)}
+LIMIT 1;";
+
+        using var c = new DuckDBConnection(ConnectionString);
+        await c.OpenAsync(ct);
+        await ConfigureFastLoadSessionAsync(c, ct);
+        await EnsureTensorConfigsTableExistsAsync(c, ct);
+
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = sql;
+
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct))
+            return null;
+
+        var config = ReadTensorConfig(r);
+        return new PredictedAnchorRow
+        {
+            Config = config,
+            ConfigKey = TensorConfigIdentity.ToKey(config),
+            DisplayName = realAnchor.DisplayName,
+            BaselineCanonicalKey = sourceBaseline.CanonicalKey,
+            RuntimeBaselineId = sourceBaseline.UniqueId,
+            PredictedKld = ToDouble(r.GetValue(10)),
+            PredictedSizeBytes = ToUInt64(r.GetValue(11)),
+            PredictionConfidence = ToDouble(r.GetValue(12)),
+            PredictionRank = ToUInt64(r.GetValue(13)),
+            IsVirtualPredictionAnchor = ToBoolean(r.GetValue(14))
+        };
+    }
+
     public async Task<long> CountStrictDominanceCandidatesAsync(
-        BenchmarkSnapshotRecord anchor,
+        PredictedAnchorRow anchor,
         CancellationToken ct = default)
     {
         string sql = $@"
@@ -164,7 +289,7 @@ WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
 
         return await ExecuteCountAsync(
             sql,
-            new object[] { anchor.SizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.Kld },
+            new object[] { anchor.PredictedSizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.PredictedKld },
             ct);
     }
 
@@ -187,8 +312,8 @@ WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
     }
 
     public async Task<long> CountBetterThanLinearCandidatesAsync(
-        BenchmarkSnapshotRecord higherDamageSmaller,
-        BenchmarkSnapshotRecord lowerDamageLarger,
+        PredictedAnchorRow higherDamageSmaller,
+        PredictedAnchorRow lowerDamageLarger,
         ulong minSize,
         ulong maxSize,
         CancellationToken ct = default)
@@ -213,18 +338,18 @@ FROM scored
 WHERE LinearExpectedKld - PredictedKld > ?;";
 
         double denominator = Math.Max(
-            (double)lowerDamageLarger.SizeBytes - higherDamageSmaller.SizeBytes,
+            (double)lowerDamageLarger.PredictedSizeBytes - higherDamageSmaller.PredictedSizeBytes,
             1d);
 
         return await ExecuteCountAsync(
             sql,
             new object[]
             {
-                higherDamageSmaller.Kld,
-                (double)higherDamageSmaller.SizeBytes,
+                higherDamageSmaller.PredictedKld,
+                (double)higherDamageSmaller.PredictedSizeBytes,
                 denominator,
-                lowerDamageLarger.Kld,
-                higherDamageSmaller.Kld,
+                lowerDamageLarger.PredictedKld,
+                higherDamageSmaller.PredictedKld,
                 minSize,
                 maxSize,
                 Config.SelectionMinimumKldImprovementEpsilon
@@ -233,7 +358,7 @@ WHERE LinearExpectedKld - PredictedKld > ?;";
     }
 
     public async Task<IReadOnlyList<RankSafePredictionRow>> QueryStrictDominanceCandidatesAsync(
-        BenchmarkSnapshotRecord anchor,
+        PredictedAnchorRow anchor,
         int limit,
         CancellationToken ct = default)
     {
@@ -260,15 +385,19 @@ LIMIT ?;";
 
         return await QueryPredictedRowsAsync(
             sql,
-            new object[] { anchor.SizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.Kld, limit },
+            new object[] { anchor.PredictedSizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.PredictedKld, limit },
             ct);
     }
 
     public async Task<IReadOnlyList<HybridSelectionCandidate>> QueryBetterThanLinearCandidatesAsync(
         BenchmarkSnapshotRecord higherDamageSmaller,
         BenchmarkSnapshotRecord lowerDamageLarger,
-        ulong minSize,
-        ulong maxSize,
+        PredictedAnchorRow higherDamagePredictionAnchor,
+        PredictedAnchorRow lowerDamagePredictionAnchor,
+        ulong predictionWindowMinSize,
+        ulong predictionWindowMaxSize,
+        ulong realValidationWindowMinSize,
+        ulong realValidationWindowMaxSize,
         HybridSelectionReason reason,
         string windowLabel,
         int limit,
@@ -314,7 +443,7 @@ ORDER BY Gain DESC,
 LIMIT ?;";
 
         double denominator = Math.Max(
-            (double)lowerDamageLarger.SizeBytes - higherDamageSmaller.SizeBytes,
+            (double)lowerDamagePredictionAnchor.PredictedSizeBytes - higherDamagePredictionAnchor.PredictedSizeBytes,
             1d);
 
         using var c = new DuckDBConnection(ConnectionString);
@@ -327,13 +456,13 @@ LIMIT ?;";
 
         foreach (var value in new object[]
                  {
-                     higherDamageSmaller.Kld,
-                     (double)higherDamageSmaller.SizeBytes,
+                     higherDamagePredictionAnchor.PredictedKld,
+                     (double)higherDamagePredictionAnchor.PredictedSizeBytes,
                      denominator,
-                     lowerDamageLarger.Kld,
-                     higherDamageSmaller.Kld,
-                     minSize,
-                     maxSize,
+                     lowerDamagePredictionAnchor.PredictedKld,
+                     higherDamagePredictionAnchor.PredictedKld,
+                     predictionWindowMinSize,
+                     predictionWindowMaxSize,
                      Config.SelectionMinimumKldImprovementEpsilon,
                      limit
                  })
@@ -356,8 +485,12 @@ LIMIT ?;";
                 Reason = reason,
                 HigherDamageAnchor = higherDamageSmaller,
                 LowerDamageAnchor = lowerDamageLarger,
-                WindowMinSizeBytes = minSize,
-                WindowMaxSizeBytes = maxSize,
+                HigherDamagePredictionAnchor = higherDamagePredictionAnchor,
+                LowerDamagePredictionAnchor = lowerDamagePredictionAnchor,
+                PredictionWindowMinSizeBytes = predictionWindowMinSize,
+                PredictionWindowMaxSizeBytes = predictionWindowMaxSize,
+                WindowMinSizeBytes = realValidationWindowMinSize,
+                WindowMaxSizeBytes = realValidationWindowMaxSize,
                 LinearExpectedKld = line,
                 PredictedGainOverLine = gain,
                 WindowLabel = windowLabel,
@@ -389,6 +522,28 @@ LIMIT ?;";
             list.Add(MapPredictedRow(r, anomalyAdjustmentColumnIndex: r.FieldCount > 14 ? 14 : null));
 
         return list;
+    }
+
+    private static PredictedAnchorRow MapPredictedAnchorRow(System.Data.Common.DbDataReader r)
+    {
+        var config = ReadTensorConfig(r);
+        string canonicalKey = Convert.ToString(r.GetValue(11)) ?? string.Empty;
+        byte runtimeBaselineId = ToByte(r.GetValue(12));
+        string displayName = Convert.ToString(r.GetValue(10)) ?? canonicalKey;
+
+        return new PredictedAnchorRow
+        {
+            Config = config,
+            ConfigKey = TensorConfigIdentity.ToKey(config),
+            DisplayName = string.IsNullOrWhiteSpace(displayName) ? canonicalKey : displayName,
+            BaselineCanonicalKey = canonicalKey,
+            RuntimeBaselineId = runtimeBaselineId,
+            PredictedKld = ToDouble(r.GetValue(13)),
+            PredictedSizeBytes = ToUInt64(r.GetValue(14)),
+            PredictionConfidence = ToDouble(r.GetValue(15)),
+            PredictionRank = ToUInt64(r.GetValue(16)),
+            IsVirtualPredictionAnchor = ToBoolean(r.GetValue(17))
+        };
     }
 
     private static RankSafePredictionRow MapPredictedRow(System.Data.Common.DbDataReader r, int? anomalyAdjustmentColumnIndex = null)
@@ -453,6 +608,13 @@ LIMIT ?;";
         return ToInt64(await cmd.ExecuteScalarAsync(ct));
     }
 
+    private static string BuildSlotPredicateSql(TensorConfig config)
+    {
+        return $"BaseQuant = {config.BaseQuant} AND Embeddings = {config.Embeddings} AND LmHead = {config.LmHead} AND AttnQ = {config.AttnQ} AND AttnKV = {config.AttnKV} AND AttnOutput = {config.AttnOutput} AND FfnUpGate = {config.FfnUpGate} AND FfnDown = {config.FfnDown} AND MoeExperts = {config.MoeExperts} AND MoeRouter = {config.MoeRouter}";
+    }
+
+    private static string NormalizeAnchorKey(string? value) => (value ?? string.Empty).Trim().ToLowerInvariant();
+
     private static long ToInt64(object? value)
     {
         if (value is null || value is DBNull)
@@ -495,6 +657,20 @@ LIMIT ?;";
             return (double)big;
 
         return Convert.ToDouble(value);
+    }
+
+    private static bool ToBoolean(object? value)
+    {
+        if (value is null || value is DBNull)
+            return false;
+
+        if (value is bool b)
+            return b;
+
+        if (value is BigInteger big)
+            return big != BigInteger.Zero;
+
+        return Convert.ToBoolean(value);
     }
 
     private static async Task ConfigureFastLoadSessionAsync(DuckDBConnection connection, CancellationToken ct)

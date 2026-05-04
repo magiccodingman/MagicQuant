@@ -57,8 +57,7 @@ SET PredictedKld = NULL,
     PredictionRank = NULL,
     BaseRankSafeKld = NULL,
     AnomalyAdjustmentKld = 0.0,
-    FinalPredictedKld = NULL,
-    IsProtectedAnchor = FALSE;", ct);
+    FinalPredictedKld = NULL;", ct);
 
         await BuildLookupTablesAsync(c, model, ct);
         await PrintLookupDiagnosticsAsync(c, model, ct);
@@ -491,8 +490,7 @@ SET PredictedKld = r.PredictedKld,
     PredictionRank = r.PredictionRank,
     BaseRankSafeKld = r.PredictedKld,
     AnomalyAdjustmentKld = 0.0,
-    FinalPredictedKld = r.PredictedKld,
-    IsProtectedAnchor = FALSE
+    FinalPredictedKld = r.PredictedKld
 FROM temp_ranked_prediction_with_rank r
 WHERE {CombinationDuckDbSchema.BuildSlotEqualityPredicate("t", "r")};", ct);
     }

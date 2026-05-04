@@ -55,6 +55,21 @@ public sealed class RankSafePredictionFit
     public bool UsedFallback { get; init; }
 }
 
+
+public sealed class PredictedAnchorRow
+{
+    public required TensorConfig Config { get; init; }
+    public required string ConfigKey { get; init; }
+    public required string DisplayName { get; init; }
+    public required string BaselineCanonicalKey { get; init; }
+    public byte RuntimeBaselineId { get; init; }
+    public double PredictedKld { get; init; }
+    public ulong PredictedSizeBytes { get; init; }
+    public double PredictionConfidence { get; init; }
+    public ulong PredictionRank { get; init; }
+    public bool IsVirtualPredictionAnchor { get; init; } = true;
+}
+
 public sealed class HybridSelectionAnchor
 {
     public BenchmarkSnapshotRecord Snapshot { get; init; } = default!;
@@ -80,6 +95,10 @@ public sealed class HybridSelectionCandidate
     public double PredictedGainOverLine { get; init; }
     public int AttemptOrder { get; init; }
     public string WindowLabel { get; init; } = string.Empty;
+    public ulong PredictionWindowMinSizeBytes { get; init; }
+    public ulong PredictionWindowMaxSizeBytes { get; init; }
+    public PredictedAnchorRow? HigherDamagePredictionAnchor { get; init; }
+    public PredictedAnchorRow? LowerDamagePredictionAnchor { get; init; }
 
     // Diagnostic-only context captured at selection time. These values do not
     // change acceptance rules; they explain how the candidate was found, how

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Numerics;
 using DuckDB.NET.Data;
 using MagicQuant.Helpers;
+using MagicQuant.Models;
 using MQ.DB;
 using MQ.DB.Data;
 using MQ.DB.Models;
@@ -55,7 +56,7 @@ public class QuantDatabaseService
         using var cmd = connection.CreateCommand();
         cmd.CommandText = $"SELECT COUNT(*) FROM {TableName};";
 
-        return (long)(await cmd.ExecuteScalarAsync(ct) ?? 0L);
+        return ToInt64(await cmd.ExecuteScalarAsync(ct));
     }
 
     public async Task<List<TensorConfig>> GetRemainingTensorConfigsAsync(CancellationToken ct = default)
@@ -151,21 +152,26 @@ public class QuantDatabaseService
         long currentDbCount = tableShapeOk
             ? await GetRowCountAsync(connection, ct)
             : -1;
+        long currentNormalDbCount = tableShapeOk
+            ? await GetNormalRowCountAsync(connection, ct)
+            : -1;
 
         AnsiConsole.MarkupLine(
-            $"[bold]DuckDB Check:[/] Current Rows: [cyan]{currentDbCount:N0}[/] | Expected: [yellow]{expectedTotal:N0}[/]");
+            $"[bold]DuckDB Check:[/] Current Rows: [cyan]{currentDbCount:N0}[/] | Normal Candidate Rows: [cyan]{currentNormalDbCount:N0}[/] | Expected Normal Rows: [yellow]{expectedTotal:N0}[/]");
 
         if (!tableShapeOk)
             AnsiConsole.MarkupLine("[yellow]DuckDB table shape is missing or stale. Rebuild required.[/]");
 
-        if (forceRebuild || !tableShapeOk || currentDbCount != expectedTotal)
+        if (forceRebuild || !tableShapeOk || new BigInteger(currentNormalDbCount) != expectedTotal)
         {
             AnsiConsole.MarkupLine("[bold red]DuckDB empty, mismatch, forced, or stale.[/] Initializing/Rebuilding...");
             await RebuildDatabaseAsync(connection, expectedTotal, ct);
         }
         else
         {
-            AnsiConsole.MarkupLine("[bold green]DuckDB is synchronized and ready.[/]");
+            var virtualAnchorStats = await AppendVirtualPredictionAnchorRowsAsync(connection, ct);
+            AnsiConsole.MarkupLine(
+                $"[bold green]DuckDB is synchronized and ready.[/] [grey]Virtual anchors inserted={virtualAnchorStats.InsertedRows:N0}, marked={virtualAnchorStats.MarkedExistingRows:N0}[/]");
         }
     }
 
@@ -325,7 +331,14 @@ ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
     {
         using var countCmd = connection.CreateCommand();
         countCmd.CommandText = $"SELECT COUNT(*) FROM {TableName}";
-        return (long)(await countCmd.ExecuteScalarAsync(ct) ?? 0L);
+        return ToInt64(await countCmd.ExecuteScalarAsync(ct));
+    }
+
+    private async Task<long> GetNormalRowCountAsync(DuckDBConnection connection, CancellationToken ct)
+    {
+        using var countCmd = connection.CreateCommand();
+        countCmd.CommandText = $"SELECT COUNT(*) FROM {TableName} WHERE COALESCE(IsVirtualPredictionAnchor, FALSE) = FALSE";
+        return ToInt64(await countCmd.ExecuteScalarAsync(ct));
     }
 
     private async Task RebuildDatabaseAsync(
@@ -367,9 +380,12 @@ ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
                 $"[grey]| Rate:[/] {rowsPerSec:N0} rows/sec");
         }
 
+        var virtualAnchorStats = await AppendVirtualPredictionAnchorRowsAsync(connection, ct);
+
         overallSw.Stop();
 
         long finalCount = await GetRowCountAsync(connection, ct);
+        BigInteger expectedIncludingVirtualRows = expectedTotal + new BigInteger(virtualAnchorStats.InsertedRows);
 
         double finalRate = overallSw.Elapsed.TotalSeconds <= 0
             ? 0
@@ -378,11 +394,199 @@ ALTER TABLE tensor_configs_pruned RENAME TO {TableName};";
         AnsiConsole.MarkupLine(
             $"[bold green]DuckDB rebuild complete.[/] " +
             $"[grey]| Inserted tracked:[/] {insertedGrandTotal:N0}  " +
+            $"[grey]| Virtual anchors inserted:[/] {virtualAnchorStats.InsertedRows:N0}  " +
+            $"[grey]| Virtual anchors marked:[/] {virtualAnchorStats.MarkedExistingRows:N0}  " +
             $"[grey]| Final row count:[/] {finalCount:N0}  " +
             $"[grey]| Time:[/] {overallSw.Elapsed.TotalMinutes:N2} min  " +
             $"[grey]| Avg rate:[/] {finalRate:N0} rows/sec");
-        if (new BigInteger(finalCount) != expectedTotal)
-            throw new InvalidOperationException($"Final tensor_configs row count mismatch. actual={finalCount:N0}, expected={expectedTotal:N0}.");
+        if (new BigInteger(finalCount) != expectedIncludingVirtualRows)
+            throw new InvalidOperationException($"Final tensor_configs row count mismatch. actual={finalCount:N0}, expected={expectedIncludingVirtualRows:N0} (normal={expectedTotal:N0}, virtual-inserted={virtualAnchorStats.InsertedRows:N0}).");
+    }
+
+    private static async Task<VirtualAnchorInsertStats> AppendVirtualPredictionAnchorRowsAsync(
+        DuckDBConnection connection,
+        CancellationToken ct)
+    {
+        var activeGroups = GetVirtualPredictionAnchorActiveGroups();
+        if (activeGroups.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Virtual prediction anchors skipped:[/] no active tensor groups were available.");
+            return new VirtualAnchorInsertStats();
+        }
+
+        var carrier = ChooseVirtualPredictionAnchorCarrier();
+        var anchorBaselines = GetVirtualPredictionAnchorBaselines()
+            .Where(x => !BaselineQuants.IsNativeExactAlias(x.UniqueId))
+            .OrderByDescending(x => x.BitRange)
+            .ThenBy(x => x.ExplicitCandidateSortOrder)
+            .ThenBy(x => x.UniqueId)
+            .ToList();
+
+        if (anchorBaselines.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Virtual prediction anchors skipped:[/] no active baseline identities were available.");
+            return new VirtualAnchorInsertStats();
+        }
+
+        int inserted = 0;
+        int markedExisting = 0;
+        var preview = new List<string>();
+
+        foreach (var baseline in anchorBaselines)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var quant = HybridQuant.CreateLearnedCandidateBlanket(
+                baseQuant: carrier,
+                groups: activeGroups,
+                candidateBaseline: baseline);
+
+            var config = (TensorConfig)quant;
+            bool rowAlreadyExisted = await VirtualAnchorRowExistsAsync(connection, config, ct);
+            await UpsertVirtualAnchorRowAsync(connection, config, baseline, ct);
+
+            if (rowAlreadyExisted)
+                markedExisting++;
+            else
+                inserted++;
+
+            if (preview.Count < 12)
+                preview.Add($"{baseline.Names[0]} -> {TensorConfigIdentity.ToKey(config)}");
+        }
+
+        string groupList = string.Join(", ", activeGroups.Select(x => x.Name));
+        AnsiConsole.MarkupLine(
+            $"[green]Virtual prediction anchors staged:[/] inserted=[cyan]{inserted:N0}[/], marked-existing=[cyan]{markedExisting:N0}[/], " +
+            $"carrier=[cyan]{Markup.Escape(carrier.Names[0])}[/], groups=[cyan]{Markup.Escape(groupList)}[/]");
+
+        foreach (var item in preview)
+            AnsiConsole.MarkupLine($"  [grey]- {Markup.Escape(item)}[/]");
+
+        if (anchorBaselines.Count > preview.Count)
+            AnsiConsole.MarkupLine($"  [grey]- ... {anchorBaselines.Count - preview.Count:N0} more virtual anchors[/]");
+
+        return new VirtualAnchorInsertStats
+        {
+            InsertedRows = inserted,
+            MarkedExistingRows = markedExisting
+        };
+    }
+
+    private static IReadOnlyList<TensorGroup> GetVirtualPredictionAnchorActiveGroups()
+    {
+        return TReg.All
+            .Where(x => !Cache.UnusedTensorGroups.Any(u => u.UniqueId == x.UniqueId))
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+    }
+
+    private static IReadOnlyList<BaselineQuants> GetVirtualPredictionAnchorBaselines()
+    {
+        bool hasUsableImatrix = RuntimeSearchSpace.HasUsableImatrix();
+
+        return BaselineQuants.GetLearningBaselines(hasUsableImatrix)
+            .Concat(BaselineQuants.GetGroupCombinationCandidates(hasUsableImatrix, RuntimeSearchSpace.AllowHighPrecisionHybrids))
+            .Concat(BaselineQuants.GetCombinationCarrierBaselines(hasUsableImatrix))
+            .Where(x => !BaselineQuants.IsNativeExactAlias(x.UniqueId))
+            .GroupBy(x => NormalizeAnchorKey(x.CanonicalKey), StringComparer.Ordinal)
+            .Select(g => g.OrderBy(x => x.UniqueId).First())
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+    }
+
+    private static BaselineQuants ChooseVirtualPredictionAnchorCarrier()
+    {
+        var activeCarriers = RuntimeSearchSpace.GetActiveCombinationBaselines()
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+
+        if (activeCarriers.Count == 0)
+            return BaselineQuants.Q8_0;
+
+        if (activeCarriers.Count == 1)
+            return activeCarriers[0];
+
+        var q8 = activeCarriers.FirstOrDefault(x => x.UniqueId == BaselineQuants.Q8_0.UniqueId);
+        if (q8 != null)
+            return q8;
+
+        return activeCarriers
+            .OrderByDescending(x => x.BitRange)
+            .ThenByDescending(x => x.ExplicitCandidateSortOrder)
+            .ThenBy(x => x.UniqueId)
+            .First();
+    }
+
+    private static async Task<bool> VirtualAnchorRowExistsAsync(
+        DuckDBConnection connection,
+        TensorConfig config,
+        CancellationToken ct)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = $"SELECT COUNT(*) FROM {TableName} WHERE {BuildSlotPredicateSql(config)};";
+        var value = await cmd.ExecuteScalarAsync(ct);
+        return ToInt64(value) > 0;
+    }
+
+    private static async Task UpsertVirtualAnchorRowAsync(
+        DuckDBConnection connection,
+        TensorConfig config,
+        BaselineQuants baseline,
+        CancellationToken ct)
+    {
+        if (await VirtualAnchorRowExistsAsync(connection, config, ct))
+        {
+            using var update = connection.CreateCommand();
+            update.CommandText = $@"
+UPDATE {TableName}
+SET IsProtectedAnchor = TRUE,
+    IsVirtualPredictionAnchor = TRUE,
+    AnchorBaselineRuntimeId = {baseline.UniqueId},
+    AnchorBaselineCanonicalKey = {SqlString(baseline.CanonicalKey)},
+    AnchorDisplayName = {SqlString(baseline.Names.FirstOrDefault() ?? baseline.CanonicalKey)}
+WHERE {BuildSlotPredicateSql(config)};";
+            await update.ExecuteNonQueryAsync(ct);
+            return;
+        }
+
+        using var insert = connection.CreateCommand();
+        insert.CommandText = $@"
+INSERT INTO {TableName}
+({CombinationDuckDbSchema.SlotColumnList}, IsProtectedAnchor, IsVirtualPredictionAnchor, AnchorBaselineRuntimeId, AnchorBaselineCanonicalKey, AnchorDisplayName)
+VALUES ({config.BaseQuant}, {config.Embeddings}, {config.LmHead}, {config.AttnQ}, {config.AttnKV}, {config.AttnOutput}, {config.FfnUpGate}, {config.FfnDown}, {config.MoeExperts}, {config.MoeRouter}, TRUE, TRUE, {baseline.UniqueId}, {SqlString(baseline.CanonicalKey)}, {SqlString(baseline.Names.FirstOrDefault() ?? baseline.CanonicalKey)});";
+        await insert.ExecuteNonQueryAsync(ct);
+    }
+
+    private static string BuildSlotPredicateSql(TensorConfig config)
+    {
+        return $"BaseQuant = {config.BaseQuant} AND Embeddings = {config.Embeddings} AND LmHead = {config.LmHead} AND AttnQ = {config.AttnQ} AND AttnKV = {config.AttnKV} AND AttnOutput = {config.AttnOutput} AND FfnUpGate = {config.FfnUpGate} AND FfnDown = {config.FfnDown} AND MoeExperts = {config.MoeExperts} AND MoeRouter = {config.MoeRouter}";
+    }
+
+    private static string SqlString(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "NULL";
+
+        return $"'{value.Replace("'", "''")}'";
+    }
+
+    private static long ToInt64(object? value)
+    {
+        if (value is null || value is DBNull)
+            return 0L;
+
+        if (value is BigInteger big)
+            return (long)big;
+
+        return Convert.ToInt64(value);
+    }
+
+    private static string NormalizeAnchorKey(string? value) => (value ?? string.Empty).Trim().ToLowerInvariant();
+
+    private sealed class VirtualAnchorInsertStats
+    {
+        public int InsertedRows { get; init; }
+        public int MarkedExistingRows { get; init; }
     }
 
     private async Task BulkAppendAsync(

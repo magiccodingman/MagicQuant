@@ -60,13 +60,16 @@ public sealed class PredictionGuidedHybridSelectionService
         AnsiConsole.MarkupLine($"[green]Pure/current anchor survivors after dominance:[/] [cyan]{current.Count:N0}[/]");
         PrintAnchorFrontier(current, "Initial anchor frontier after dominance");
 
-        var strict = await RunStrictDominanceReplacementAsync(current, eliminationRecords, validationFailures, validationAttempts, phaseDiagnostics, ct);
+        var predictedAnchors = await _predictedStore.GetPredictedAnchorRowsAsync(ct);
+        PrintPredictionAnchorFrontier(predictedAnchors, current, "Prediction Anchor Frontier");
+
+        var strict = await RunStrictDominanceReplacementAsync(current, predictedAnchors, eliminationRecords, validationFailures, validationAttempts, phaseDiagnostics, ct);
         current = MergeAndDominanceFilter(current, strict.AcceptedSnapshots, eliminationRecords, "strict predicted hybrid dominance validated by real benchmark");
 
-        var near = await RunNearBaselineReplacementAsync(current, eliminationRecords, validationFailures, validationAttempts, phaseDiagnostics, ct);
+        var near = await RunNearBaselineReplacementAsync(current, predictedAnchors, eliminationRecords, validationFailures, validationAttempts, phaseDiagnostics, ct);
         current = MergeAndDominanceFilter(current, near.AcceptedSnapshots, eliminationRecords, "near-baseline size-premium replacement validated by real benchmark");
 
-        var interior = await RunInteriorSubspaceDiscoveryAsync(current, validationFailures, validationAttempts, phaseDiagnostics, ct);
+        var interior = await RunInteriorSubspaceDiscoveryAsync(current, predictedAnchors, validationFailures, validationAttempts, phaseDiagnostics, ct);
         current = MergeAndDominanceFilter(current, interior.AcceptedSnapshots, eliminationRecords, "interior subspace discovery dominated by real benchmark truth");
 
         var bestConfirmedAnomaly = await LoadBestConfirmedBeneficialAnomalySnapshotAsync(ct);
@@ -110,6 +113,7 @@ public sealed class PredictionGuidedHybridSelectionService
 
     private async Task<PhaseValidationResult> RunStrictDominanceReplacementAsync(
         IReadOnlyList<BenchmarkSnapshotRecord> currentAnchors,
+        IReadOnlyList<PredictedAnchorRow> predictedAnchors,
         List<BaselineEliminationRecord> eliminations,
         List<CandidateValidationResult> validationFailures,
         List<CandidateValidationResult> validationAttempts,
@@ -140,18 +144,40 @@ public sealed class PredictionGuidedHybridSelectionService
                 continue;
             }
 
-            long poolCount = await _predictedStore.CountStrictDominanceCandidatesAsync(anchor, ct);
-            var strictRows = await _predictedStore.QueryStrictDominanceCandidatesAsync(anchor, Config.SelectionMaxFallbackAttemptsPerAnchor, ct);
+            var predictedAnchor = await _predictedStore.FindPredictedAnchorForRealAnchorAsync(anchor, predictedAnchors, ct);
+            if (predictedAnchor == null)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Skipping strict prediction-space discovery:[/] no predicted virtual anchor matched real anchor [cyan]{Markup.Escape(anchor.DisplayName)}[/].");
+                phaseDiagnostics.Add(new SelectionPhaseDiagnostic
+                {
+                    Phase = "StrictDominanceReplacement",
+                    WindowLabel = $"strict <= {anchor.DisplayName}",
+                    HigherDamageSmaller = ToAnchorLog(anchor),
+                    LowerDamageLarger = ToAnchorLog(anchor),
+                    WindowMinSizeBytes = 0,
+                    WindowMaxSizeBytes = anchor.SizeBytes,
+                    CandidateAttemptLimit = Config.SelectionMaxFallbackAttemptsPerAnchor,
+                    Notes = ["Skipped because no predicted virtual anchor row was available. DuckDB preselection intentionally does not fall back to real anchor KLD/size."]
+                });
+                continue;
+            }
+
+            long poolCount = await _predictedStore.CountStrictDominanceCandidatesAsync(predictedAnchor, ct);
+            var strictRows = await _predictedStore.QueryStrictDominanceCandidatesAsync(predictedAnchor, Config.SelectionMaxFallbackAttemptsPerAnchor, ct);
             var candidates = strictRows.Select((x, i) => new HybridSelectionCandidate
             {
                 Prediction = x,
                 Reason = HybridSelectionReason.StrictDominanceReplacement,
                 LowerDamageAnchor = anchor,
                 HigherDamageAnchor = anchor,
+                LowerDamagePredictionAnchor = predictedAnchor,
+                HigherDamagePredictionAnchor = predictedAnchor,
+                PredictionWindowMinSizeBytes = 0,
+                PredictionWindowMaxSizeBytes = predictedAnchor.PredictedSizeBytes,
                 WindowMinSizeBytes = 0,
                 WindowMaxSizeBytes = anchor.SizeBytes,
-                LinearExpectedKld = anchor.Kld,
-                PredictedGainOverLine = anchor.Kld - x.PredictedKld,
+                LinearExpectedKld = predictedAnchor.PredictedKld,
+                PredictedGainOverLine = predictedAnchor.PredictedKld - x.PredictedKld,
                 AttemptOrder = i + 1,
                 WindowLabel = $"strict <= {anchor.DisplayName}",
                 CandidatePoolSize = poolCount,
@@ -162,10 +188,14 @@ public sealed class PredictionGuidedHybridSelectionService
                 CandidateAttemptLimit = Config.SelectionMaxFallbackAttemptsPerAnchor,
                 PhaseWindowIndex = 1,
                 PhaseWindowCount = 1,
-                CandidateSelectionNotes = ["Strict query requires predicted size <= anchor size and predicted KLD + epsilon < anchor KLD."]
+                CandidateSelectionNotes = ["Strict DuckDB query uses predicted virtual anchor size/KLD; real anchor size/KLD is used only for post-build validation."]
             }).ToList();
 
-            var strictNotes = new List<string> { "Strict query requires predicted size <= anchor size and predicted KLD + epsilon < anchor KLD." };
+            var strictNotes = new List<string>
+            {
+                "Strict query uses predicted virtual anchor size/KLD; real benchmark anchor is reserved for post-build validation.",
+                $"Prediction anchor={predictedAnchor.DisplayName}; predictedKld={predictedAnchor.PredictedKld:0.000000}; predictedSizeBytes={predictedAnchor.PredictedSizeBytes:N0}; realKld={anchor.Kld:0.000000}; realSizeBytes={anchor.SizeBytes:N0}."
+            };
             bool anomalyStrictMode = IsQ8Anchor(anchor) || candidates.Any(x => Math.Abs(x.Prediction.AnomalyAdjustmentKld) > 1e-12);
             if (anomalyStrictMode)
                 strictNotes.Add("Q8/anomaly strict mode: validate all fetched candidates up to the configured attempt limit before choosing by actual KLD/size truth.");
@@ -176,6 +206,10 @@ public sealed class PredictionGuidedHybridSelectionService
                 WindowLabel = $"strict <= {anchor.DisplayName}",
                 HigherDamageSmaller = ToAnchorLog(anchor),
                 LowerDamageLarger = ToAnchorLog(anchor),
+                PredictionHigherDamageSmaller = ToPredictionAnchorLog(predictedAnchor),
+                PredictionLowerDamageLarger = ToPredictionAnchorLog(predictedAnchor),
+                PredictionWindowMinSizeBytes = 0,
+                PredictionWindowMaxSizeBytes = predictedAnchor.PredictedSizeBytes,
                 WindowMinSizeBytes = 0,
                 WindowMaxSizeBytes = anchor.SizeBytes,
                 CandidatePoolSize = poolCount,
@@ -427,6 +461,7 @@ public sealed class PredictionGuidedHybridSelectionService
 
     private async Task<PhaseValidationResult> RunNearBaselineReplacementAsync(
         IReadOnlyList<BenchmarkSnapshotRecord> currentAnchors,
+        IReadOnlyList<PredictedAnchorRow> predictedAnchors,
         List<BaselineEliminationRecord> eliminations,
         List<CandidateValidationResult> validationFailures,
         List<CandidateValidationResult> validationAttempts,
@@ -465,19 +500,57 @@ public sealed class PredictionGuidedHybridSelectionService
                 continue;
             }
 
-            ulong min = lowerSizeHigherDamage.SizeBytes;
-            ulong max = AddPercent(min, Config.SelectionNearBaselineMaxSizeGrowthPercent);
+            var predictedLowerSizeHigherDamage = await _predictedStore.FindPredictedAnchorForRealAnchorAsync(lowerSizeHigherDamage, predictedAnchors, ct);
+            var predictedUpperSizeLowerDamage = await _predictedStore.FindPredictedAnchorForRealAnchorAsync(upperSizeLowerDamage, predictedAnchors, ct);
+            if (predictedLowerSizeHigherDamage == null || predictedUpperSizeLowerDamage == null)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Skipping near-baseline prediction-space discovery:[/] missing predicted anchor for pair [cyan]{Markup.Escape(lowerSizeHigherDamage.DisplayName)}[/] -> [cyan]{Markup.Escape(upperSizeLowerDamage.DisplayName)}[/].");
+                phaseDiagnostics.Add(new SelectionPhaseDiagnostic
+                {
+                    Phase = "NearBaselineReplacement",
+                    WindowLabel = windowLabel,
+                    PhaseWindowIndex = pairIndex + 1,
+                    PhaseWindowCount = pairs.Count,
+                    HigherDamageSmaller = ToAnchorLog(lowerSizeHigherDamage),
+                    LowerDamageLarger = ToAnchorLog(upperSizeLowerDamage),
+                    PredictionHigherDamageSmaller = ToPredictionAnchorLog(predictedLowerSizeHigherDamage),
+                    PredictionLowerDamageLarger = ToPredictionAnchorLog(predictedUpperSizeLowerDamage),
+                    Notes = ["Skipped because one or both predicted virtual anchor rows were unavailable. DuckDB preselection intentionally does not fall back to real anchor KLD/size."]
+                });
+                continue;
+            }
 
-            if (max > upperSizeLowerDamage.SizeBytes)
-                max = upperSizeLowerDamage.SizeBytes;
+            ulong realMin = lowerSizeHigherDamage.SizeBytes;
+            ulong realMax = AddPercent(realMin, Config.SelectionNearBaselineMaxSizeGrowthPercent);
 
-            long windowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(min, max, ct);
-            long lineBeaters = await _predictedStore.CountBetterThanLinearCandidatesAsync(lowerSizeHigherDamage, upperSizeLowerDamage, min, max, ct);
+            if (realMax > upperSizeLowerDamage.SizeBytes)
+                realMax = upperSizeLowerDamage.SizeBytes;
+
+            ulong predictionMin = predictedLowerSizeHigherDamage.PredictedSizeBytes;
+            ulong predictionMax = AddPercent(predictionMin, Config.SelectionNearBaselineMaxSizeGrowthPercent);
+
+            if (predictionMax > predictedUpperSizeLowerDamage.PredictedSizeBytes)
+                predictionMax = predictedUpperSizeLowerDamage.PredictedSizeBytes;
+
+            if (predictionMax <= predictionMin || realMax <= realMin)
+            {
+                AnsiConsole.MarkupLine($"[grey]Skipping near-baseline pair with empty prediction/real window:[/] {Markup.Escape(lowerSizeHigherDamage.DisplayName)} -> {Markup.Escape(upperSizeLowerDamage.DisplayName)}");
+                continue;
+            }
+
+            LogPredictionAndRealPairLines(lowerSizeHigherDamage, upperSizeLowerDamage, predictedLowerSizeHigherDamage, predictedUpperSizeLowerDamage, "Near-baseline pair");
+
+            long windowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(predictionMin, predictionMax, ct);
+            long lineBeaters = await _predictedStore.CountBetterThanLinearCandidatesAsync(predictedLowerSizeHigherDamage, predictedUpperSizeLowerDamage, predictionMin, predictionMax, ct);
             var rawCandidates = (await _predictedStore.QueryBetterThanLinearCandidatesAsync(
                 lowerSizeHigherDamage,
                 upperSizeLowerDamage,
-                min,
-                max,
+                predictedLowerSizeHigherDamage,
+                predictedUpperSizeLowerDamage,
+                predictionMin,
+                predictionMax,
+                realMin,
+                realMax,
                 HybridSelectionReason.NearBaselineOnePercentReplacement,
                 windowLabel,
                 fetchLimit,
@@ -517,9 +590,13 @@ public sealed class PredictionGuidedHybridSelectionService
                 PhaseWindowCount = pairs.Count,
                 HigherDamageSmaller = ToAnchorLog(lowerSizeHigherDamage),
                 LowerDamageLarger = ToAnchorLog(upperSizeLowerDamage),
-                WindowMinSizeBytes = min,
-                WindowMaxSizeBytes = max,
-                WindowSizeGiB = ToGiB(max > min ? max - min : 0),
+                PredictionHigherDamageSmaller = ToPredictionAnchorLog(predictedLowerSizeHigherDamage),
+                PredictionLowerDamageLarger = ToPredictionAnchorLog(predictedUpperSizeLowerDamage),
+                PredictionWindowMinSizeBytes = predictionMin,
+                PredictionWindowMaxSizeBytes = predictionMax,
+                WindowMinSizeBytes = realMin,
+                WindowMaxSizeBytes = realMax,
+                WindowSizeGiB = ToGiB(realMax > realMin ? realMax - realMin : 0),
                 CandidatePoolSize = lineBeaters,
                 WindowCandidateCount = windowRows,
                 LineBeatingCandidateCount = lineBeaters,
@@ -531,7 +608,7 @@ public sealed class PredictionGuidedHybridSelectionService
                 TopCandidates = candidates.Take(DiagnosticPreviewDisplayCount).Select(ToCandidatePreviewLog).ToList(),
                 RejectedByBrutalityPreview = rejectedByBrutality,
                 Notes = [
-                    "Near-baseline first counts predicted hybrids inside the near-size window, then counts candidates predicted to beat the local line, then applies near-lower-anchor brutality, then caps validation attempts.",
+                    "Near-baseline DuckDB discovery uses predicted virtual anchor windows/lines; real anchor windows/lines are used only after a candidate is benchmarked.",
                     $"Brutal zone fraction={Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan:0.###}; required gain fraction of pair KLD gap={Config.SelectionNearAnchorRequiredKldGainFractionOfPairGap:0.###}."
                 ]
             };
@@ -539,7 +616,7 @@ public sealed class PredictionGuidedHybridSelectionService
 
             AnsiConsole.MarkupLine(
                 $"[grey]Near-baseline window {pairIndex + 1:N0}/{pairs.Count:N0}:[/] {Markup.Escape(lowerSizeHigherDamage.DisplayName)} -> {Markup.Escape(upperSizeLowerDamage.DisplayName)} " +
-                $"| rows-in-window={windowRows:N0}, beat-line={lineBeaters:N0}, fetched={rawCandidates.Count:N0}, after-brutality={diag.CandidatesAfterBrutalityCount:N0}, selected={candidates.Count:N0}/{attemptLimit:N0}");
+                $"| pred-window={predictionMin:N0}..{predictionMax:N0}, real-window={realMin:N0}..{realMax:N0}, rows-in-window={windowRows:N0}, beat-line={lineBeaters:N0}, fetched={rawCandidates.Count:N0}, after-brutality={diag.CandidatesAfterBrutalityCount:N0}, selected={candidates.Count:N0}/{attemptLimit:N0}");
 
             if (rejectedByBrutality.Count > 0)
                 AnsiConsole.MarkupLine($"[grey]  rejected by near-lower-anchor brutality preview:[/] [cyan]{rejectedByBrutality.Count:N0}[/] (see magicquant-selection-phase-diagnostics.json)");
@@ -551,10 +628,10 @@ public sealed class PredictionGuidedHybridSelectionService
             {
                 var validation = await BuildAndValidateSingleAsync(
                     candidate,
-                    snapshot => snapshot.SizeBytes >= min &&
-                                snapshot.SizeBytes <= max &&
+                    snapshot => snapshot.SizeBytes >= realMin &&
+                                snapshot.SizeBytes <= realMax &&
                                 BeatsLinearKldLine(snapshot.SizeBytes, snapshot.Kld, lowerSizeHigherDamage, upperSizeLowerDamage),
-                    $"must land inside {min:N0}..{max:N0} bytes and beat the real linear KLD line",
+                    $"must land inside {realMin:N0}..{realMax:N0} bytes and beat the real linear KLD line",
                     ct);
 
                 validationAttempts.Add(validation);
@@ -580,6 +657,7 @@ public sealed class PredictionGuidedHybridSelectionService
 
     private async Task<PhaseValidationResult> RunInteriorSubspaceDiscoveryAsync(
         IReadOnlyList<BenchmarkSnapshotRecord> currentAnchors,
+        IReadOnlyList<PredictedAnchorRow> predictedAnchors,
         List<CandidateValidationResult> validationFailures,
         List<CandidateValidationResult> validationAttempts,
         List<SelectionPhaseDiagnostic> phaseDiagnostics,
@@ -603,14 +681,28 @@ public sealed class PredictionGuidedHybridSelectionService
         for (int pairIndex = 0; pairIndex < pairs.Count; pairIndex++)
         {
             var pair = pairs[pairIndex];
-            ulong lowSize = pair.HigherDamageSmaller.SizeBytes;
-            ulong highSize = pair.LowerDamageLarger.SizeBytes;
+            var predictedHigherDamageSmaller = await _predictedStore.FindPredictedAnchorForRealAnchorAsync(pair.HigherDamageSmaller, predictedAnchors, ct);
+            var predictedLowerDamageLarger = await _predictedStore.FindPredictedAnchorForRealAnchorAsync(pair.LowerDamageLarger, predictedAnchors, ct);
+            if (predictedHigherDamageSmaller == null || predictedLowerDamageLarger == null)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Skipping interior prediction-space discovery:[/] missing predicted anchor for pair [cyan]{Markup.Escape(pair.HigherDamageSmaller.DisplayName)}[/] -> [cyan]{Markup.Escape(pair.LowerDamageLarger.DisplayName)}[/].");
+                continue;
+            }
 
-            if (highSize <= lowSize)
+            ulong realLowSize = pair.HigherDamageSmaller.SizeBytes;
+            ulong realHighSize = pair.LowerDamageLarger.SizeBytes;
+            ulong predictionLowSize = predictedHigherDamageSmaller.PredictedSizeBytes;
+            ulong predictionHighSize = predictedLowerDamageLarger.PredictedSizeBytes;
+
+            if (realHighSize <= realLowSize || predictionHighSize <= predictionLowSize)
                 continue;
 
-            ulong span = highSize - lowSize;
-            ulong cursor = lowSize;
+            LogPredictionAndRealPairLines(pair.HigherDamageSmaller, pair.LowerDamageLarger, predictedHigherDamageSmaller, predictedLowerDamageLarger, "Interior pair");
+
+            ulong realSpan = realHighSize - realLowSize;
+            ulong predictionSpan = predictionHighSize - predictionLowSize;
+            ulong realCursor = realLowSize;
+            ulong predictionCursor = predictionLowSize;
 
             for (int i = 0; i < fractions.Count; i++)
             {
@@ -618,28 +710,33 @@ public sealed class PredictionGuidedHybridSelectionService
                 if (fraction <= 0d)
                     continue;
 
-                ulong width = (ulong)Math.Round(span * fraction, MidpointRounding.AwayFromZero);
-                if (width == 0)
+                ulong realWidth = (ulong)Math.Round(realSpan * fraction, MidpointRounding.AwayFromZero);
+                ulong predictionWidth = (ulong)Math.Round(predictionSpan * fraction, MidpointRounding.AwayFromZero);
+                if (realWidth == 0 || predictionWidth == 0)
                     continue;
 
-                ulong min = cursor;
-                ulong max = i == fractions.Count - 1
-                    ? Math.Min(highSize, cursor + width)
-                    : Math.Min(highSize, cursor + width);
+                ulong realMin = realCursor;
+                ulong realMax = Math.Min(realHighSize, realCursor + realWidth);
+                ulong predictionMin = predictionCursor;
+                ulong predictionMax = Math.Min(predictionHighSize, predictionCursor + predictionWidth);
 
-                if (max <= min)
+                if (realMax <= realMin || predictionMax <= predictionMin)
                     continue;
 
                 globalWindowIndex++;
                 string windowLabel = $"interior {i + 1}: {pair.HigherDamageSmaller.DisplayName} -> {pair.LowerDamageLarger.DisplayName}";
-                long windowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(min, max, ct);
-                long lineBeaters = await _predictedStore.CountBetterThanLinearCandidatesAsync(pair.HigherDamageSmaller, pair.LowerDamageLarger, min, max, ct);
+                long windowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(predictionMin, predictionMax, ct);
+                long lineBeaters = await _predictedStore.CountBetterThanLinearCandidatesAsync(predictedHigherDamageSmaller, predictedLowerDamageLarger, predictionMin, predictionMax, ct);
 
                 var rawCandidates = (await _predictedStore.QueryBetterThanLinearCandidatesAsync(
                     pair.HigherDamageSmaller,
                     pair.LowerDamageLarger,
-                    min,
-                    max,
+                    predictedHigherDamageSmaller,
+                    predictedLowerDamageLarger,
+                    predictionMin,
+                    predictionMax,
+                    realMin,
+                    realMax,
                     HybridSelectionReason.InteriorSubspaceDiscovery,
                     windowLabel,
                     interiorFetchLimit,
@@ -683,9 +780,13 @@ public sealed class PredictionGuidedHybridSelectionService
                     PhaseWindowCount = estimatedWindowCount,
                     HigherDamageSmaller = ToAnchorLog(pair.HigherDamageSmaller),
                     LowerDamageLarger = ToAnchorLog(pair.LowerDamageLarger),
-                    WindowMinSizeBytes = min,
-                    WindowMaxSizeBytes = max,
-                    WindowSizeGiB = ToGiB(max > min ? max - min : 0),
+                    PredictionHigherDamageSmaller = ToPredictionAnchorLog(predictedHigherDamageSmaller),
+                    PredictionLowerDamageLarger = ToPredictionAnchorLog(predictedLowerDamageLarger),
+                    PredictionWindowMinSizeBytes = predictionMin,
+                    PredictionWindowMaxSizeBytes = predictionMax,
+                    WindowMinSizeBytes = realMin,
+                    WindowMaxSizeBytes = realMax,
+                    WindowSizeGiB = ToGiB(realMax > realMin ? realMax - realMin : 0),
                     CandidatePoolSize = lineBeaters,
                     WindowCandidateCount = windowRows,
                     LineBeatingCandidateCount = lineBeaters,
@@ -696,16 +797,17 @@ public sealed class PredictionGuidedHybridSelectionService
                     QueryFetchLimit = interiorFetchLimit,
                     TopCandidates = kept.Take(DiagnosticPreviewDisplayCount).Select(ToCandidatePreviewLog).ToList(),
                     RejectedByBrutalityPreview = rejectedByBrutality,
-                    Notes = ["Interior candidates are gathered per window, then globally deduped by tensor config before batch validation."]
+                    Notes = ["Interior DuckDB discovery uses predicted virtual anchor windows/lines; real anchor windows/lines are used only after benchmark validation."]
                 });
 
                 AnsiConsole.MarkupLine(
                     $"[grey]Interior window {globalWindowIndex:N0}/{Math.Max(estimatedWindowCount, globalWindowIndex):N0}:[/] {Markup.Escape(pair.HigherDamageSmaller.DisplayName)} -> {Markup.Escape(pair.LowerDamageLarger.DisplayName)} " +
-                    $"| rows-in-window={windowRows:N0}, beat-line={lineBeaters:N0}, fetched={rawCandidates.Count:N0}, after-brutality={afterBrutalityCount:N0}, selected={kept.Count:N0}/{interiorAttemptLimit:N0}");
+                    $"| pred-window={predictionMin:N0}..{predictionMax:N0}, real-window={realMin:N0}..{realMax:N0}, rows-in-window={windowRows:N0}, beat-line={lineBeaters:N0}, fetched={rawCandidates.Count:N0}, after-brutality={afterBrutalityCount:N0}, selected={kept.Count:N0}/{interiorAttemptLimit:N0}");
 
-                cursor = max;
+                realCursor = realMax;
+                predictionCursor = predictionMax;
 
-                if (cursor >= highSize)
+                if (realCursor >= realHighSize || predictionCursor >= predictionHighSize)
                     break;
             }
         }
@@ -846,6 +948,10 @@ public sealed class PredictionGuidedHybridSelectionService
             Reason = candidate.Reason,
             LowerDamageAnchor = candidate.LowerDamageAnchor,
             HigherDamageAnchor = candidate.HigherDamageAnchor,
+            LowerDamagePredictionAnchor = candidate.LowerDamagePredictionAnchor,
+            HigherDamagePredictionAnchor = candidate.HigherDamagePredictionAnchor,
+            PredictionWindowMinSizeBytes = candidate.PredictionWindowMinSizeBytes,
+            PredictionWindowMaxSizeBytes = candidate.PredictionWindowMaxSizeBytes,
             WindowMinSizeBytes = candidate.WindowMinSizeBytes,
             WindowMaxSizeBytes = candidate.WindowMaxSizeBytes,
             LinearExpectedKld = candidate.LinearExpectedKld,
@@ -866,8 +972,21 @@ public sealed class PredictionGuidedHybridSelectionService
 
     private static BrutalityAnalysis AnalyzeNearLowerAnchorBrutality(HybridSelectionCandidate candidate)
     {
-        ulong span = candidate.LowerDamageAnchor.SizeBytes > candidate.HigherDamageAnchor.SizeBytes
-            ? candidate.LowerDamageAnchor.SizeBytes - candidate.HigherDamageAnchor.SizeBytes
+        var higherDamagePredictionAnchor = candidate.HigherDamagePredictionAnchor;
+        var lowerDamagePredictionAnchor = candidate.LowerDamagePredictionAnchor;
+        if (higherDamagePredictionAnchor == null || lowerDamagePredictionAnchor == null)
+        {
+            return new BrutalityAnalysis
+            {
+                Passed = true,
+                FractionFromSmallAnchor = 1d,
+                RequiredGain = Config.SelectionMinimumKldImprovementEpsilon,
+                Explanation = "Brutality skipped because prediction anchor metadata is missing; no predicted-vs-real comparison was performed."
+            };
+        }
+
+        ulong span = lowerDamagePredictionAnchor.PredictedSizeBytes > higherDamagePredictionAnchor.PredictedSizeBytes
+            ? lowerDamagePredictionAnchor.PredictedSizeBytes - higherDamagePredictionAnchor.PredictedSizeBytes
             : 0;
 
         if (span == 0)
@@ -877,18 +996,18 @@ public sealed class PredictionGuidedHybridSelectionService
                 Passed = true,
                 FractionFromSmallAnchor = 1d,
                 RequiredGain = Config.SelectionMinimumKldImprovementEpsilon,
-                Explanation = "Brutality passed because anchor span is zero."
+                Explanation = "Brutality passed because prediction-anchor span is zero."
             };
         }
 
-        ulong distanceFromSmall = candidate.Prediction.PredictedSizeBytes > candidate.HigherDamageAnchor.SizeBytes
-            ? candidate.Prediction.PredictedSizeBytes - candidate.HigherDamageAnchor.SizeBytes
+        ulong distanceFromSmall = candidate.Prediction.PredictedSizeBytes > higherDamagePredictionAnchor.PredictedSizeBytes
+            ? candidate.Prediction.PredictedSizeBytes - higherDamagePredictionAnchor.PredictedSizeBytes
             : 0;
 
         double fraction = distanceFromSmall / (double)span;
         double requiredGain = Math.Max(
             Config.SelectionMinimumKldImprovementEpsilon,
-            Math.Abs(candidate.HigherDamageAnchor.Kld - candidate.LowerDamageAnchor.Kld) *
+            Math.Abs(higherDamagePredictionAnchor.PredictedKld - lowerDamagePredictionAnchor.PredictedKld) *
             Config.SelectionNearAnchorRequiredKldGainFractionOfPairGap);
 
         bool passed = fraction > Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan ||
@@ -896,9 +1015,9 @@ public sealed class PredictionGuidedHybridSelectionService
 
         string explanation = passed
             ? fraction > Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan
-                ? $"Brutality passed because candidate is outside brutal zone (fraction={fraction:0.###} > {Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan:0.###})."
-                : $"Brutality passed because predicted gain {candidate.PredictedGainOverLine:0.########} >= required gain {requiredGain:0.########}."
-            : $"Brutality rejected because candidate is inside brutal zone (fraction={fraction:0.###} <= {Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan:0.###}) and predicted gain {candidate.PredictedGainOverLine:0.########} < required gain {requiredGain:0.########}.";
+                ? $"Brutality passed in prediction space because candidate is outside brutal zone (fraction={fraction:0.###} > {Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan:0.###})."
+                : $"Brutality passed in prediction space because predicted gain {candidate.PredictedGainOverLine:0.########} >= required gain {requiredGain:0.########}."
+            : $"Brutality rejected in prediction space because candidate is inside brutal zone (fraction={fraction:0.###} <= {Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan:0.###}) and predicted gain {candidate.PredictedGainOverLine:0.########} < required gain {requiredGain:0.########}.";
 
         return new BrutalityAnalysis
         {
@@ -1150,6 +1269,9 @@ public sealed class PredictionGuidedHybridSelectionService
             $"kld={candidate.Prediction.PredictedKld:0.000000}, line={candidate.LinearExpectedKld:0.000000}, gain={candidate.PredictedGainOverLine:0.000000}, " +
             $"rank={candidate.Prediction.PredictedRank}, confidence={candidate.Prediction.PredictionConfidence:0.###}");
         AnsiConsole.MarkupLine(
+            $"[grey]  prediction anchors/window:[/] {Markup.Escape(candidate.HigherDamagePredictionAnchor?.DisplayName ?? "n/a")} -> {Markup.Escape(candidate.LowerDamagePredictionAnchor?.DisplayName ?? "n/a")}, " +
+            $"predWindow={candidate.PredictionWindowMinSizeBytes:N0}..{candidate.PredictionWindowMaxSizeBytes:N0}, realWindow={candidate.WindowMinSizeBytes:N0}..{candidate.WindowMaxSizeBytes:N0}");
+        AnsiConsole.MarkupLine(
             $"[grey]  selection context:[/] pool={candidate.CandidatePoolSize:N0}, windowRows={candidate.WindowCandidateCount:N0}, lineBeat={candidate.LineBeatingCandidateCount:N0}, " +
             $"fetched={candidate.FetchedCandidateCount:N0}, afterBrutality={candidate.CandidatesAfterBrutalityCount:N0}, attemptLimit={candidate.CandidateAttemptLimit:N0}");
         AnsiConsole.MarkupLine($"[grey]  bit space:[/] {Markup.Escape(DescribeBitSpace(candidate.Prediction.Config))}");
@@ -1193,6 +1315,77 @@ public sealed class PredictionGuidedHybridSelectionService
         }
 
         AnsiConsole.Write(table);
+    }
+
+    private static void PrintPredictionAnchorFrontier(
+        IReadOnlyList<PredictedAnchorRow> predictedAnchors,
+        IReadOnlyList<BenchmarkSnapshotRecord> realAnchors,
+        string title)
+    {
+        if (predictedAnchors.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Prediction Anchor Frontier:[/] no scored virtual prediction anchors were found. Final DuckDB preselection will skip anchor-based discovery rather than mix prediction and real spaces.");
+            return;
+        }
+
+        var table = new Table().RoundedBorder().BorderColor(Color.Grey);
+        table.Title = new TableTitle(Markup.Escape(title));
+        table.AddColumn("Virtual Anchor");
+        table.AddColumn("Canonical Key");
+        table.AddColumn("Config Key");
+        table.AddColumn("Pred KLD");
+        table.AddColumn("Pred Size GiB");
+        table.AddColumn("Rank");
+        table.AddColumn("Conf");
+        table.AddColumn("Matching Real Anchor");
+        table.AddColumn("Real KLD/Size GiB");
+
+        foreach (var anchor in predictedAnchors.OrderBy(x => x.PredictedKld).ThenBy(x => x.PredictedSizeBytes))
+        {
+            var real = FindMatchingRealAnchor(anchor, realAnchors);
+            table.AddRow(
+                Markup.Escape(anchor.DisplayName),
+                Markup.Escape(anchor.BaselineCanonicalKey),
+                Markup.Escape(anchor.ConfigKey),
+                anchor.PredictedKld.ToString("0.000000"),
+                ToGiB(anchor.PredictedSizeBytes).ToString("0.00"),
+                anchor.PredictionRank.ToString("N0"),
+                anchor.PredictionConfidence.ToString("0.###"),
+                real == null ? "[grey]none[/]" : Markup.Escape(real.DisplayName),
+                real == null ? "[grey]n/a[/]" : $"{real.Kld:0.000000} / {ToGiB(real.SizeBytes):0.00}");
+        }
+
+        AnsiConsole.Write(table);
+    }
+
+    private static BenchmarkSnapshotRecord? FindMatchingRealAnchor(
+        PredictedAnchorRow predictedAnchor,
+        IReadOnlyList<BenchmarkSnapshotRecord> realAnchors)
+    {
+        string predictedKey = NormalizeAnchorKey(predictedAnchor.BaselineCanonicalKey);
+        var byCanonical = realAnchors.FirstOrDefault(x =>
+            string.Equals(
+                NormalizeAnchorKey(HybridBenchmarkRepository.ResolveSourceBaselineForProvider(x.Quant).CanonicalKey),
+                predictedKey,
+                StringComparison.Ordinal));
+
+        if (byCanonical != null)
+            return byCanonical;
+
+        return realAnchors.FirstOrDefault(x =>
+            HybridBenchmarkRepository.ResolveSourceBaselineForProvider(x.Quant).UniqueId == predictedAnchor.RuntimeBaselineId);
+    }
+
+    private static void LogPredictionAndRealPairLines(
+        BenchmarkSnapshotRecord realHigherDamageSmaller,
+        BenchmarkSnapshotRecord realLowerDamageLarger,
+        PredictedAnchorRow predictedHigherDamageSmaller,
+        PredictedAnchorRow predictedLowerDamageLarger,
+        string label)
+    {
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(label)}:[/] [cyan]{Markup.Escape(realHigherDamageSmaller.DisplayName)}[/] -> [cyan]{Markup.Escape(realLowerDamageLarger.DisplayName)}[/]");
+        AnsiConsole.MarkupLine($"[grey]  Prediction line:[/] {Markup.Escape(predictedHigherDamageSmaller.DisplayName)} size={predictedHigherDamageSmaller.PredictedSizeBytes:N0} kld={predictedHigherDamageSmaller.PredictedKld:0.000000} -> {Markup.Escape(predictedLowerDamageLarger.DisplayName)} size={predictedLowerDamageLarger.PredictedSizeBytes:N0} kld={predictedLowerDamageLarger.PredictedKld:0.000000}");
+        AnsiConsole.MarkupLine($"[grey]  Real validation line:[/] {Markup.Escape(realHigherDamageSmaller.DisplayName)} size={realHigherDamageSmaller.SizeBytes:N0} kld={realHigherDamageSmaller.Kld:0.000000} -> {Markup.Escape(realLowerDamageLarger.DisplayName)} size={realLowerDamageLarger.SizeBytes:N0} kld={realLowerDamageLarger.Kld:0.000000}");
     }
 
     private static void PrintCandidatePreviewTable(IReadOnlyList<HybridSelectionCandidate> candidates, string title)
@@ -1269,6 +1462,26 @@ public sealed class PredictionGuidedHybridSelectionService
             ppl = anchor.Ppl,
             bitRange = anchor.Quant.BaseQuant.BitRange,
             quantizeBase = anchor.Quant.BaseQuant.QuantizeBaseArgumentName
+        };
+    }
+
+    private static object? ToPredictionAnchorLog(PredictedAnchorRow? anchor)
+    {
+        if (anchor == null)
+            return null;
+
+        return new
+        {
+            configKey = anchor.ConfigKey,
+            displayName = anchor.DisplayName,
+            baselineCanonicalKey = anchor.BaselineCanonicalKey,
+            runtimeBaselineId = anchor.RuntimeBaselineId,
+            predictedSizeBytes = anchor.PredictedSizeBytes,
+            predictedSizeGiB = ToGiB(anchor.PredictedSizeBytes),
+            predictedKld = anchor.PredictedKld,
+            predictionRank = anchor.PredictionRank,
+            predictionConfidence = anchor.PredictionConfidence,
+            isVirtualPredictionAnchor = anchor.IsVirtualPredictionAnchor
         };
     }
 
@@ -1378,6 +1591,10 @@ public sealed class PredictionGuidedHybridSelectionService
             },
             selectionContext = new
             {
+                predictionWindowMinSizeBytes = c.PredictionWindowMinSizeBytes,
+                predictionWindowMaxSizeBytes = c.PredictionWindowMaxSizeBytes,
+                realValidationWindowMinSizeBytes = c.WindowMinSizeBytes,
+                realValidationWindowMaxSizeBytes = c.WindowMaxSizeBytes,
                 candidatePoolSize = c.CandidatePoolSize,
                 windowCandidateCount = c.WindowCandidateCount,
                 lineBeatingCandidateCount = c.LineBeatingCandidateCount,
@@ -1405,8 +1622,10 @@ public sealed class PredictionGuidedHybridSelectionService
                 },
             anchors = new
             {
-                higherDamageSmaller = ToAnchorLog(c.HigherDamageAnchor),
-                lowerDamageLarger = ToAnchorLog(c.LowerDamageAnchor)
+                realHigherDamageSmaller = ToAnchorLog(c.HigherDamageAnchor),
+                realLowerDamageLarger = ToAnchorLog(c.LowerDamageAnchor),
+                predictionHigherDamageSmaller = ToPredictionAnchorLog(c.HigherDamagePredictionAnchor),
+                predictionLowerDamageLarger = ToPredictionAnchorLog(c.LowerDamagePredictionAnchor)
             }
         };
     }
@@ -1470,6 +1689,8 @@ public sealed class PredictionGuidedHybridSelectionService
 
     private static ulong Distance(ulong left, ulong right) => left >= right ? left - right : right - left;
 
+    private static string NormalizeAnchorKey(string? value) => (value ?? string.Empty).Trim().ToLowerInvariant();
+
     private static string NormalizePublicEliminationReason(string reason)
     {
         if (string.IsNullOrWhiteSpace(reason))
@@ -1528,6 +1749,10 @@ public sealed class PredictionGuidedHybridSelectionService
         public int PhaseWindowCount { get; init; }
         public object? HigherDamageSmaller { get; init; }
         public object? LowerDamageLarger { get; init; }
+        public object? PredictionHigherDamageSmaller { get; init; }
+        public object? PredictionLowerDamageLarger { get; init; }
+        public ulong PredictionWindowMinSizeBytes { get; init; }
+        public ulong PredictionWindowMaxSizeBytes { get; init; }
         public ulong WindowMinSizeBytes { get; init; }
         public ulong WindowMaxSizeBytes { get; init; }
         public double WindowSizeGiB { get; init; }
