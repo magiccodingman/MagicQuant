@@ -1342,6 +1342,7 @@ public sealed class PredictionGuidedHybridSelectionService
         table.AddColumn("Pred Size GiB");
         table.AddColumn("Rank");
         table.AddColumn("Conf");
+        table.AddColumn("Isolation Source");
         table.AddColumn("Matching Real Anchor");
         table.AddColumn("Real KLD/Size GiB");
 
@@ -1356,6 +1357,7 @@ public sealed class PredictionGuidedHybridSelectionService
                 ToGiB(anchor.PredictedSizeBytes).ToString("0.00"),
                 anchor.PredictionRank.ToString("N0"),
                 anchor.PredictionConfidence.ToString("0.###"),
+                Markup.Escape(DescribeVirtualAnchorIsolationSource(anchor)),
                 real == null ? "[grey]none[/]" : Markup.Escape(real.DisplayName),
                 real == null ? "[grey]n/a[/]" : $"{real.Kld:0.000000} / {ToGiB(real.SizeBytes):0.00}");
         }
@@ -1370,6 +1372,25 @@ public sealed class PredictionGuidedHybridSelectionService
         if (q8Anchor != null && Math.Abs(q8Anchor.PredictedKld) <= 1e-12d)
         {
             AnsiConsole.MarkupLine("[yellow]WARNING:[/] Q8_0 virtual prediction anchor has zero predicted KLD. This usually means Q8_0 isolation rows were skipped or missing. Q8_0 must not be treated as native/exact truth in prediction space.");
+        }
+    }
+
+    private static string DescribeVirtualAnchorIsolationSource(PredictedAnchorRow anchor)
+    {
+        try
+        {
+            var baseline = BaselineQuants.FromId(anchor.RuntimeBaselineId);
+            if (baseline.IsExternalRepositoryBaseline)
+                return "exact external; fallback disabled";
+
+            if (BaselineQuants.IsNativeExactAlias(baseline.UniqueId))
+                return "native exact";
+
+            return "standard exact";
+        }
+        catch
+        {
+            return "unknown";
         }
     }
 
@@ -1496,6 +1517,7 @@ public sealed class PredictionGuidedHybridSelectionService
             predictedKld = anchor.PredictedKld,
             predictionRank = anchor.PredictionRank,
             predictionConfidence = anchor.PredictionConfidence,
+            isolationSource = DescribeVirtualAnchorIsolationSource(anchor),
             isVirtualPredictionAnchor = anchor.IsVirtualPredictionAnchor
         };
     }

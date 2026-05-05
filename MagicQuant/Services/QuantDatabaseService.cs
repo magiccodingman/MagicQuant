@@ -914,42 +914,108 @@ FROM {BuildValuesSql(values)};";
 
         public ulong GetBaseSizeForSql(byte baseQuant)
         {
-            byte normalizedBaseId = NormalizeBaselineIdForIsolation(baseQuant);
-            return _pureBaselineSizes.TryGetValue(baseQuant, out var directBase)
-                ? directBase
-                : _pureBaselineSizes.TryGetValue(normalizedBaseId, out var normalizedBase)
-                    ? normalizedBase
-                    : PureQ8BaseSize;
+            if (_pureBaselineSizes.TryGetValue(baseQuant, out var directBase))
+                return directBase;
+
+            if (TryGetDisabledSurrogateBaselineId(baseQuant, out var disabledSurrogateId) &&
+                _pureBaselineSizes.ContainsKey(disabledSurrogateId))
+            {
+                /*
+                 * Deprecated surrogate fallback, intentionally disabled:
+                 *
+                 * return _pureBaselineSizes[disabledSurrogateId];
+                 *
+                 * This made external/custom carriers inherit standard-family base size in the
+                 * SQL pre-pruning path. The RankSafe materializer now requires exact external
+                 * base-only truth, and this older helper should fail the same way.
+                 */
+                throw new InvalidOperationException(
+                    $"Missing exact pure/base size for external baseline {FormatBaselineForSql(baseQuant)} (id '{baseQuant}'), " +
+                    $"but disabled surrogate {FormatBaselineForSql(disabledSurrogateId)} (id '{disabledSurrogateId}') exists. " +
+                    "SQL size prediction fallback is disabled to prevent external/custom collapse.");
+            }
+
+            throw new InvalidOperationException(
+                $"Missing pure/base size for baseline {FormatBaselineForSql(baseQuant)} (id '{baseQuant}'). " +
+                "SQL size prediction no longer falls back to Q8_0 because missing size truth should stop the run.");
         }
 
         public long GetRelativeSizeDeltaForSql(byte groupId, byte baseQuant, byte storedSlot)
         {
             if (storedSlot == 0)
                 return 0;
+
             byte decoded = BaselineQuants.DecodeTensorConfigGroupSlotToBaselineId(storedSlot);
-            if (decoded == BaselineQuants.BF16_Hybrid.UniqueId || decoded == BaselineQuants.F16_Hybrid.UniqueId)
+            if (BaselineQuants.IsNativeExactAlias(decoded))
                 return 0;
-            byte normalizedBase = NormalizeBaselineIdForIsolation(baseQuant);
-            byte normalizedCandidateId = NormalizeBaselineIdForIsolation(decoded);
-            if (normalizedCandidateId == normalizedBase)
+
+            if (decoded == baseQuant)
                 return 0;
-            if (!_sizesByGroupAndCandidate.TryGetValue((groupId, normalizedCandidateId), out var candidateSize))
-                return 0;
-            if (!_sizesByGroupAndCandidate.TryGetValue((groupId, normalizedBase), out var baseSize))
-                return 0;
+
+            ulong candidateSize = GetExactGroupSizeOrThrow(groupId, decoded, "candidate");
+            ulong baseSize = GetExactGroupSizeOrThrow(groupId, baseQuant, "base");
             return (long)candidateSize - (long)baseSize;
         }
 
-        private static byte NormalizeBaselineIdForIsolation(byte baselineId)
+        private ulong GetExactGroupSizeOrThrow(byte groupId, byte baselineId, string role)
         {
+            if (_sizesByGroupAndCandidate.TryGetValue((groupId, baselineId), out var exactSize))
+                return exactSize;
+
+            if (TryGetDisabledSurrogateBaselineId(baselineId, out var disabledSurrogateId) &&
+                _sizesByGroupAndCandidate.ContainsKey((groupId, disabledSurrogateId)))
+            {
+                /*
+                 * Deprecated surrogate fallback, intentionally disabled:
+                 *
+                 * return _sizesByGroupAndCandidate[(groupId, disabledSurrogateId)];
+                 *
+                 * Group-size deltas must be based on the exact runtime baseline id. Re-enabling
+                 * this would collapse external/custom group assignments into their standard
+                 * family before DuckDB ranking ever sees them.
+                 */
+                throw new InvalidOperationException(
+                    $"Missing exact group-size isolation for {role} baseline {FormatBaselineForSql(baselineId)} (id '{baselineId}') " +
+                    $"in tensor group id '{groupId}', but disabled surrogate {FormatBaselineForSql(disabledSurrogateId)} (id '{disabledSurrogateId}') exists. " +
+                    "Regenerate the exact isolated sample instead of using SQL size fallback.");
+            }
+
+            throw new InvalidOperationException(
+                $"Missing group-size isolation for {role} baseline {FormatBaselineForSql(baselineId)} (id '{baselineId}') in tensor group id '{groupId}'. " +
+                "SQL size prediction no longer returns zero for missing isolation truth.");
+        }
+
+        private static bool TryGetDisabledSurrogateBaselineId(byte baselineId, out byte surrogateBaselineId)
+        {
+            surrogateBaselineId = baselineId;
+
+            if (BaselineQuants.IsNativeExactAlias(baselineId))
+                return false;
+
             var baseline = BaselineQuants.FromId(baselineId);
             if (!baseline.IsExternalRepositoryBaseline)
-                return baselineId;
+                return false;
 
             var builtIn = BaselineQuants.ResolveBuiltInStandardBaseline(baseline.QuantizeBaseArgumentName)
                           ?? BaselineQuants.ResolveBuiltInStandardBaseline(baseline.Names[0]);
 
-            return builtIn?.UniqueId ?? baselineId;
+            if (builtIn == null || builtIn.UniqueId == baselineId)
+                return false;
+
+            surrogateBaselineId = builtIn.UniqueId;
+            return true;
+        }
+
+        private static string FormatBaselineForSql(byte baselineId)
+        {
+            try
+            {
+                return BaselineQuants.FromId(baselineId).Names[0];
+            }
+            catch
+            {
+                return $"id {baselineId}";
+            }
         }
     }
 }

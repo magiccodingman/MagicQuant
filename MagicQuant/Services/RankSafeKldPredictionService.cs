@@ -105,27 +105,19 @@ public sealed class RankSafeKldPredictionService
             Notes = effective.Warnings.ToList()
         };
 
-        byte normalizedBaseId = NormalizeBaselineIdForIsolation(config.BaseQuant);
-
-        if (row.IsPureBaseline && context.PureSnapshotsByBaselineId.TryGetValue(config.BaseQuant, out var pureDirect))
+        if (row.IsPureBaseline)
         {
-            row.PredictedSizeBytes = pureDirect.SizeBytes;
-            row.AdditiveKld = pureDirect.Kld;
-            row.InteractionKld = pureDirect.Kld;
-            row.PredictedKld = pureDirect.Kld;
-            row.PredictedPpl = pureDirect.Ppl;
-            return row;
-        }
+            if (context.PureSnapshotsByBaselineId.TryGetValue(config.BaseQuant, out var pureDirect))
+            {
+                row.PredictedSizeBytes = pureDirect.SizeBytes;
+                row.AdditiveKld = pureDirect.Kld;
+                row.InteractionKld = pureDirect.Kld;
+                row.PredictedKld = pureDirect.Kld;
+                row.PredictedPpl = pureDirect.Ppl;
+                return row;
+            }
 
-        if (row.IsPureBaseline && context.PureSnapshotsByBaselineId.TryGetValue(normalizedBaseId, out var pureNormalized))
-        {
-            row.PredictedSizeBytes = pureNormalized.SizeBytes;
-            row.AdditiveKld = pureNormalized.Kld;
-            row.InteractionKld = pureNormalized.Kld;
-            row.PredictedKld = pureNormalized.Kld;
-            row.PredictedPpl = pureNormalized.Ppl;
-            row.Notes.Add($"Pure baseline '{quant.BaseQuant.Names[0]}' was normalized to '{pureNormalized.Quant.BaseQuant.Names[0]}' for prediction.");
-            return row;
+            GuardAgainstDisabledPureBaselineSurrogateFallback(config.BaseQuant, context, row.Notes);
         }
 
         row.PredictedSizeBytes = PredictSize(config, context, row.Notes, out bool canPredictSize);
@@ -176,8 +168,18 @@ public sealed class RankSafeKldPredictionService
         var q8BaseOnly = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)q8BaseOnlyQuant, ct);
         if (q8BaseOnly == null)
         {
-            notes.Add("Q8 native-exact base-only anchor was missing. Size fallback will use pure Q8; Q8_0 group KLD still requires measured Q8_0 isolation snapshots and will not be treated as zero damage.");
-            q8BaseOnly = pureQ8;
+            /*
+             * Deprecated fallback, intentionally disabled:
+             *
+             * notes.Add("Q8 native-exact base-only anchor was missing. Size fallback will use pure Q8...");
+             * q8BaseOnly = pureQ8;
+             *
+             * Base-only anchors define the additive size coordinate system. Falling back to a pure
+             * Q8 model hides missing isolation truth and can flatten external/custom size geometry.
+             */
+            throw new InvalidOperationException(
+                "Rank-safe prediction requires the Q8_0 native-exact base-only anchor. " +
+                "The old pure-Q8 fallback is intentionally disabled; generate the missing base-only isolation sample instead.");
         }
 
         var baseOnlyByBaselineId = new Dictionary<byte, BenchmarkSnapshotRecord>
@@ -189,37 +191,28 @@ public sealed class RankSafeKldPredictionService
                      .Where(x => !BaselineQuants.IsNativeExactAlias(x.UniqueId))
                      .OrderBy(x => x.UniqueId))
         {
-            byte normalizedBaselineId = NormalizeBaselineIdForIsolation(baseline.UniqueId);
-
-            if (!baseOnlyByBaselineId.ContainsKey(baseline.UniqueId))
-            {
-                var directBaseOnlyQuant = HybridQuant.CreateExactBlanket(
-                    baseQuant: baseline,
-                    groups: activeGroups,
-                    exactScheme: nativeExactScheme);
-
-                var directBaseOnlySnapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)directBaseOnlyQuant, ct);
-                if (directBaseOnlySnapshot != null)
-                {
-                    baseOnlyByBaselineId[baseline.UniqueId] = directBaseOnlySnapshot;
-                    if (!baseOnlyByBaselineId.ContainsKey(normalizedBaselineId))
-                        baseOnlyByBaselineId[normalizedBaselineId] = directBaseOnlySnapshot;
-                    continue;
-                }
-            }
-
-            if (baseOnlyByBaselineId.ContainsKey(normalizedBaselineId))
+            if (baseOnlyByBaselineId.ContainsKey(baseline.UniqueId))
                 continue;
 
-            var normalizedBaseline = BaselineQuants.FromId(normalizedBaselineId);
-            var baseOnlyQuant = HybridQuant.CreateExactBlanket(
-                baseQuant: normalizedBaseline,
+            var directBaseOnlyQuant = HybridQuant.CreateExactBlanket(
+                baseQuant: baseline,
                 groups: activeGroups,
                 exactScheme: nativeExactScheme);
 
-            var baseOnlySnapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)baseOnlyQuant, ct);
-            if (baseOnlySnapshot != null)
-                baseOnlyByBaselineId[normalizedBaselineId] = baseOnlySnapshot;
+            var directBaseOnlySnapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)directBaseOnlyQuant, ct);
+            if (directBaseOnlySnapshot != null)
+            {
+                baseOnlyByBaselineId[baseline.UniqueId] = directBaseOnlySnapshot;
+                continue;
+            }
+
+            if (TryGetDisabledSurrogateBaselineId(baseline.UniqueId, out var disabledSurrogateId) &&
+                baseOnlyByBaselineId.ContainsKey(disabledSurrogateId))
+            {
+                notes.Add(
+                    $"Missing exact base-only anchor for external baseline {FormatBaselineForNote(baseline.UniqueId)} (id '{baseline.UniqueId}'). " +
+                    $"A normalized surrogate {FormatBaselineForNote(disabledSurrogateId)} (id '{disabledSurrogateId}') exists, but surrogate base-size fallback is intentionally disabled.");
+            }
         }
 
         var isolationByGroupAndBaseline = new Dictionary<(byte GroupId, byte BaselineId), BenchmarkSnapshotRecord>();
@@ -230,9 +223,7 @@ public sealed class RankSafeKldPredictionService
                          .Where(x => !BaselineQuants.IsNativeExactAlias(x.UniqueId))
                          .OrderBy(x => x.UniqueId))
             {
-                var normalizedBaselineId = NormalizeBaselineIdForIsolation(baseline.UniqueId);
-
-                if (isolationByGroupAndBaseline.ContainsKey((group.UniqueId, normalizedBaselineId)))
+                if (isolationByGroupAndBaseline.ContainsKey((group.UniqueId, baseline.UniqueId)))
                     continue;
 
                 var isolationQuant = HybridQuant.CreateExactBlanket(
@@ -240,11 +231,22 @@ public sealed class RankSafeKldPredictionService
                     groups: activeGroups,
                     exactScheme: nativeExactScheme);
 
-                isolationQuant.SetLearnedCandidateOverride(group, BaselineQuants.FromId(normalizedBaselineId));
+                isolationQuant.SetLearnedCandidateOverride(group, baseline);
                 var snapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)isolationQuant, ct);
 
                 if (snapshot != null)
-                    isolationByGroupAndBaseline[(group.UniqueId, normalizedBaselineId)] = snapshot;
+                {
+                    isolationByGroupAndBaseline[(group.UniqueId, baseline.UniqueId)] = snapshot;
+                    continue;
+                }
+
+                if (TryGetDisabledSurrogateBaselineId(baseline.UniqueId, out var disabledSurrogateId) &&
+                    isolationByGroupAndBaseline.ContainsKey((group.UniqueId, disabledSurrogateId)))
+                {
+                    notes.Add(
+                        $"Missing exact isolation snapshot for group '{group.Name}' and external baseline {FormatBaselineForNote(baseline.UniqueId)} (id '{baseline.UniqueId}'). " +
+                        $"A normalized surrogate {FormatBaselineForNote(disabledSurrogateId)} (id '{disabledSurrogateId}') exists, but surrogate isolation fallback is intentionally disabled.");
+                }
             }
         }
 
@@ -264,6 +266,8 @@ public sealed class RankSafeKldPredictionService
         {
             notes.Add($"Q8_0 isolation snapshots loaded for {activeGroups.Count:N0} active tensor groups. Q8_0 will contribute measured prediction-space KLD, not zero/native damage.");
         }
+
+        AppendExternalCoverageDiagnostics(notes, activeGroups, baseOnlyByBaselineId, isolationByGroupAndBaseline);
 
         return new RankSafePredictionModel(
             activeGroups: activeGroups,
@@ -494,18 +498,14 @@ public sealed class RankSafeKldPredictionService
             if (IsZeroDamageAlias(effectiveBaselineId))
                 continue;
 
-            byte normalized = NormalizeBaselineIdForIsolation(effectiveBaselineId);
-            if (IsZeroDamageAlias(normalized))
-                continue;
-
-            if (!context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, normalized), out var isolation))
+            if (!TryResolveIsolationBaselineForPrediction(group, effectiveBaselineId, context, notes, out var resolved))
             {
-                notes.Add(BuildMissingIsolationNote(group, normalized));
+                notes.Add(BuildMissingIsolationNote(group, effectiveBaselineId));
                 canPredict = false;
                 continue;
             }
 
-            total += Math.Max(0d, isolation.Kld);
+            total += Math.Max(0d, resolved.Snapshot.Kld);
         }
 
         return Math.Max(0d, total);
@@ -523,9 +523,10 @@ public sealed class RankSafeKldPredictionService
             if (IsZeroDamageAlias(effectiveBaselineId))
                 continue;
 
-            byte normalized = NormalizeBaselineIdForIsolation(effectiveBaselineId);
-            if (context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, normalized), out var isolation))
-                total += isolation.Ppl;
+            if (TryResolveIsolationBaselineForPrediction(group, effectiveBaselineId, context, notes, out var resolved))
+                total += resolved.Snapshot.Ppl;
+            else
+                notes.Add(BuildMissingIsolationNote(group, effectiveBaselineId));
         }
 
         return total;
@@ -538,11 +539,10 @@ public sealed class RankSafeKldPredictionService
         out bool canPredictSize)
     {
         canPredictSize = true;
-        byte normalizedBaseId = NormalizeBaselineIdForIsolation(config.BaseQuant);
 
-        if (!context.BaseOnlySnapshotsByBaselineId.TryGetValue(normalizedBaseId, out var baseOnlyAnchor))
+        if (!TryResolveBaseOnlySnapshotForPrediction(config.BaseQuant, context, notes, out var baseOnlyAnchor))
         {
-            notes.Add($"Missing base-only size anchor for base baseline id '{normalizedBaseId}'. Size prediction is not safe for selection.");
+            notes.Add($"Missing base-only size anchor for base baseline {FormatBaselineForNote(config.BaseQuant)} (id '{config.BaseQuant}'). Size prediction is not safe for selection.");
             canPredictSize = false;
             return 0;
         }
@@ -552,21 +552,19 @@ public sealed class RankSafeKldPredictionService
 
         foreach (var (group, effectiveBaselineId) in EnumerateEffectiveBaselines(config, context.ActiveGroups))
         {
-            byte normalizedTargetId = NormalizeBaselineIdForIsolation(effectiveBaselineId);
-
             // Base-only anchors already hold every active group at native exact precision.
             // Exact aliases therefore contribute no size delta.
-            if (BaselineQuants.IsNativeExactAlias(normalizedTargetId))
+            if (BaselineQuants.IsNativeExactAlias(effectiveBaselineId))
                 continue;
 
-            if (!context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, normalizedTargetId), out var targetIsolation))
+            if (!TryResolveIsolationBaselineForPrediction(group, effectiveBaselineId, context, notes, out var resolved))
             {
-                notes.Add($"Missing group size-isolation snapshot for group '{group.Name}' and effective baseline id '{normalizedTargetId}'. Size prediction is not safe for selection.");
+                notes.Add($"Missing group size-isolation snapshot for group '{group.Name}' and effective baseline {FormatBaselineForNote(effectiveBaselineId)} (id '{effectiveBaselineId}'). Size prediction is not safe for selection.");
                 canPredictSize = false;
                 continue;
             }
 
-            total += (long)targetIsolation.SizeBytes - q8ExactBlanketSize;
+            total += (long)resolved.Snapshot.SizeBytes - q8ExactBlanketSize;
         }
 
         if (total <= 0)
@@ -588,15 +586,11 @@ public sealed class RankSafeKldPredictionService
             if (IsZeroDamageAlias(effectiveBaselineId))
                 continue;
 
-            byte normalized = NormalizeBaselineIdForIsolation(effectiveBaselineId);
-            if (IsZeroDamageAlias(normalized))
+            if (!TryResolveIsolationBaselineForPrediction(group, effectiveBaselineId, context, notes: null, out var resolved))
                 continue;
 
-            if (!context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, normalized), out var isolation))
-                continue;
-
-            var baseline = BaselineQuants.FromId(normalized);
-            contributions.Add((Math.Max(0d, isolation.Kld), baseline.BitRange));
+            var baseline = BaselineQuants.FromId(resolved.BaselineId);
+            contributions.Add((Math.Max(0d, resolved.Snapshot.Kld), baseline.BitRange));
         }
 
         double cross = 0d;
@@ -657,6 +651,196 @@ public sealed class RankSafeKldPredictionService
         return builtIn?.UniqueId ?? baselineId;
     }
 
+    internal static bool TryResolveIsolationBaselineForPrediction(
+        TensorGroup group,
+        byte effectiveBaselineId,
+        RankSafePredictionModel context,
+        List<string>? notes,
+        out IsolationBaselineResolution resolution)
+    {
+        if (context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, effectiveBaselineId), out var exact))
+        {
+            resolution = new IsolationBaselineResolution(effectiveBaselineId, exact, false, null);
+            return true;
+        }
+
+        if (TryGetDisabledSurrogateBaselineId(effectiveBaselineId, out var disabledSurrogateId) &&
+            context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, disabledSurrogateId), out var disabledSurrogate))
+        {
+            /*
+             * Deprecated surrogate fallback, intentionally disabled:
+             *
+             * resolution = new IsolationBaselineResolution(disabledSurrogateId, disabledSurrogate, true, disabledSurrogateId);
+             * notes?.Add($"External baseline {FormatBaselineForNote(effectiveBaselineId)} used surrogate isolation {FormatBaselineForNote(disabledSurrogateId)} for group '{group.Name}'.");
+             * return true;
+             *
+             * This used to collapse external/custom repositories such as Unsloth Dynamic into
+             * their built-in llama.cpp family before prediction. MagicQuant should already have
+             * exact isolated samples for every registered external candidate, so using this path
+             * would hide a truth-coverage bug. Keep the old shape here only as a breadcrumb if a
+             * future emergency compatibility mode is deliberately reintroduced.
+             */
+            _ = disabledSurrogate;
+            ThrowExternalIsolationSurrogateFallbackDisabled(group, effectiveBaselineId, disabledSurrogateId);
+        }
+
+        if (IsExternalRepositoryBaseline(effectiveBaselineId))
+            ThrowMissingExactExternalIsolation(group, effectiveBaselineId);
+
+        resolution = default;
+        return false;
+    }
+
+    internal static bool TryResolveBaseOnlySnapshotForPrediction(
+        byte baselineId,
+        RankSafePredictionModel context,
+        List<string>? notes,
+        out BenchmarkSnapshotRecord snapshot)
+    {
+        if (context.BaseOnlySnapshotsByBaselineId.TryGetValue(baselineId, out var exactSnapshot))
+        {
+            snapshot = exactSnapshot;
+            return true;
+        }
+
+        if (TryGetDisabledSurrogateBaselineId(baselineId, out var disabledSurrogateId) &&
+            context.BaseOnlySnapshotsByBaselineId.ContainsKey(disabledSurrogateId))
+        {
+            /*
+             * Deprecated surrogate fallback, intentionally disabled:
+             *
+             * snapshot = context.BaseOnlySnapshotsByBaselineId[disabledSurrogateId];
+             * notes?.Add($"External baseline {FormatBaselineForNote(baselineId)} used surrogate base-only size {FormatBaselineForNote(disabledSurrogateId)}.");
+             * return true;
+             *
+             * Base-only size anchors must preserve the exact runtime baseline id. Falling back
+             * here makes UD-Q4_K_XL and Q4_K_M look byte-identical before selection even starts.
+             */
+            ThrowExternalBaseOnlySurrogateFallbackDisabled(baselineId, disabledSurrogateId);
+        }
+
+        if (IsExternalRepositoryBaseline(baselineId))
+            throw new InvalidOperationException(
+                $"Missing exact base-only anchor for external baseline {FormatBaselineForNote(baselineId)} (id '{baselineId}'). " +
+                "Surrogate base-only fallback is disabled because every external/custom baseline should have exact isolated truth before prediction.");
+
+        snapshot = default!;
+        return false;
+    }
+
+    internal static bool TryGetDisabledSurrogateBaselineId(byte baselineId, out byte surrogateBaselineId)
+    {
+        surrogateBaselineId = baselineId;
+
+        if (BaselineQuants.IsNativeExactAlias(baselineId))
+            return false;
+
+        var baseline = BaselineQuants.FromId(baselineId);
+        if (!baseline.IsExternalRepositoryBaseline)
+            return false;
+
+        var normalized = NormalizeBaselineIdForIsolation(baselineId);
+        if (normalized == baselineId)
+            return false;
+
+        surrogateBaselineId = normalized;
+        return true;
+    }
+
+    internal static bool IsExternalRepositoryBaseline(byte baselineId)
+    {
+        if (BaselineQuants.IsNativeExactAlias(baselineId))
+            return false;
+
+        return BaselineQuants.FromId(baselineId).IsExternalRepositoryBaseline;
+    }
+
+    private static void GuardAgainstDisabledPureBaselineSurrogateFallback(
+        byte baselineId,
+        RankSafePredictionModel context,
+        List<string> notes)
+    {
+        if (!TryGetDisabledSurrogateBaselineId(baselineId, out var disabledSurrogateId) ||
+            !context.PureSnapshotsByBaselineId.ContainsKey(disabledSurrogateId))
+        {
+            return;
+        }
+
+        /*
+         * Deprecated surrogate fallback, intentionally disabled:
+         *
+         * var pureSurrogate = context.PureSnapshotsByBaselineId[disabledSurrogateId];
+         * notes.Add($"Pure baseline {FormatBaselineForNote(baselineId)} used surrogate pure snapshot {FormatBaselineForNote(disabledSurrogateId)}.");
+         *
+         * Pure external baselines must not inherit standard-family prediction identity.
+         */
+        throw new InvalidOperationException(
+            $"Missing exact pure snapshot for external baseline {FormatBaselineForNote(baselineId)} (id '{baselineId}'), " +
+            $"but surrogate pure snapshot {FormatBaselineForNote(disabledSurrogateId)} (id '{disabledSurrogateId}') exists. " +
+            "Surrogate pure-baseline fallback is disabled to prevent external/custom collapse.");
+    }
+
+    private static void ThrowExternalIsolationSurrogateFallbackDisabled(
+        TensorGroup group,
+        byte externalBaselineId,
+        byte surrogateBaselineId)
+    {
+        throw new InvalidOperationException(
+            $"Missing exact isolation snapshot for group '{group.Name}' and external baseline {FormatBaselineForNote(externalBaselineId)} (id '{externalBaselineId}'). " +
+            $"Surrogate isolation {FormatBaselineForNote(surrogateBaselineId)} (id '{surrogateBaselineId}') exists, but fallback is disabled. " +
+            "External/custom baselines must be scored from exact isolated prediction truth; regenerate/relearn the missing isolated sample instead of silently collapsing it.");
+    }
+
+    private static void ThrowExternalBaseOnlySurrogateFallbackDisabled(byte externalBaselineId, byte surrogateBaselineId)
+    {
+        throw new InvalidOperationException(
+            $"Missing exact base-only anchor for external baseline {FormatBaselineForNote(externalBaselineId)} (id '{externalBaselineId}'). " +
+            $"Surrogate base-only anchor {FormatBaselineForNote(surrogateBaselineId)} (id '{surrogateBaselineId}') exists, but fallback is disabled. " +
+            "External/custom baselines must preserve exact runtime identity for size prediction.");
+    }
+
+    private static void ThrowMissingExactExternalIsolation(TensorGroup group, byte externalBaselineId)
+    {
+        throw new InvalidOperationException(
+            $"Missing exact isolation snapshot for group '{group.Name}' and external baseline {FormatBaselineForNote(externalBaselineId)} (id '{externalBaselineId}'). " +
+            "No surrogate fallback was used. MagicQuant expects external/custom isolated samples to exist before prediction materialization.");
+    }
+
+    private static void AppendExternalCoverageDiagnostics(
+        List<string> notes,
+        IReadOnlyList<TensorGroup> activeGroups,
+        Dictionary<byte, BenchmarkSnapshotRecord> baseOnlyByBaselineId,
+        Dictionary<(byte GroupId, byte BaselineId), BenchmarkSnapshotRecord> isolationByGroupAndBaseline)
+    {
+        var externalBaselines = BaselineQuants.GetAllRecognizedBaselines()
+            .Where(x => x.IsExternalRepositoryBaseline)
+            .OrderBy(x => x.UniqueId)
+            .ToList();
+
+        if (externalBaselines.Count == 0)
+            return;
+
+        notes.Add("External/custom surrogate fallback is disabled; missing exact external prediction truth will throw instead of collapsing to a standard family.");
+
+        foreach (var baseline in externalBaselines)
+        {
+            int exactIsolation = activeGroups.Count(group => isolationByGroupAndBaseline.ContainsKey((group.UniqueId, baseline.UniqueId)));
+            bool exactBaseOnly = baseOnlyByBaselineId.ContainsKey(baseline.UniqueId);
+            string fallbackText = TryGetDisabledSurrogateBaselineId(baseline.UniqueId, out var fallbackId)
+                ? $"; disabled fallback target would have been {FormatBaselineForNote(fallbackId)}:{fallbackId}"
+                : string.Empty;
+
+            notes.Add(
+                $"External isolation exact coverage: {baseline.Names[0]}:{baseline.UniqueId} exact={exactIsolation}/{activeGroups.Count} groups; base-only={(exactBaseOnly ? "exact" : "missing")}{fallbackText}.");
+        }
+    }
+
+    internal readonly record struct IsolationBaselineResolution(
+        byte BaselineId,
+        BenchmarkSnapshotRecord Snapshot,
+        bool IsSurrogate,
+        byte? FallbackBaselineId);
+
     private static bool IsZeroDamageAlias(byte baselineId) => IsNativeExactZeroReferenceAlias(baselineId);
 
     private static bool IsNativeExactZeroReferenceAlias(byte baselineId)
@@ -667,15 +851,15 @@ public sealed class RankSafeKldPredictionService
         return BaselineQuants.IsNativeExactAlias(baselineId);
     }
 
-    private static string BuildMissingIsolationNote(TensorGroup group, byte normalizedBaselineId)
+    private static string BuildMissingIsolationNote(TensorGroup group, byte baselineId)
     {
-        var baselineName = FormatBaselineForNote(normalizedBaselineId);
-        if (normalizedBaselineId == BaselineQuants.Q8_0.UniqueId)
+        var baselineName = FormatBaselineForNote(baselineId);
+        if (baselineId == BaselineQuants.Q8_0.UniqueId)
         {
             return $"Missing KLD isolation snapshot for group '{group.Name}' and baseline Q8_0. Q8_0 is quantized damage, not native truth; this row is marked incomplete instead of silently receiving zero KLD.";
         }
 
-        return $"Missing KLD isolation snapshot for group '{group.Name}' and baseline {baselineName} (id '{normalizedBaselineId}').";
+        return $"Missing KLD isolation snapshot for group '{group.Name}' and baseline {baselineName} (id '{baselineId}').";
     }
 
     private static string FormatBaselineForNote(byte baselineId)

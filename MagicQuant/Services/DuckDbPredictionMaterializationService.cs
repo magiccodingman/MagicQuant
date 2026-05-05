@@ -99,12 +99,14 @@ CREATE TEMP TABLE temp_effective_group_prediction (
     GroupId UTINYINT,
     StoredSlot UTINYINT,
     EffectiveBaselineId UTINYINT,
-    NormalizedBaselineId UTINYINT,
+    ResolvedBaselineId UTINYINT,
     KldContribution DOUBLE,
     PplContribution DOUBLE,
     BitRange DOUBLE,
     IsZeroDamage BOOLEAN,
-    IsKldPredictable BOOLEAN
+    IsKldPredictable BOOLEAN,
+    IsolationSource VARCHAR,
+    IsSurrogateFallback BOOLEAN
 );
 
 CREATE TEMP TABLE temp_base_predicted_size (
@@ -152,11 +154,14 @@ CREATE TEMP TABLE temp_group_size_delta (
 
         foreach (var baseline in activeBaselines)
         {
-            byte normalizedBase = RankSafeKldPredictionService.NormalizeBaselineIdForIsolation(baseline.UniqueId);
-            bool hasBaseSize = model.BaseOnlySnapshotsByBaselineId.TryGetValue(baseline.UniqueId, out var baseOnly) ||
-                               model.BaseOnlySnapshotsByBaselineId.TryGetValue(normalizedBase, out baseOnly);
+            bool hasBaseSize = RankSafeKldPredictionService.TryResolveBaseOnlySnapshotForPrediction(
+                baseline.UniqueId,
+                model,
+                notes: null,
+                out var baseOnly);
+
             await ExecuteAsync(c,
-                $"INSERT INTO temp_base_predicted_size VALUES ({baseline.UniqueId}, {SqlULong(hasBaseSize ? baseOnly!.SizeBytes : 0UL)}, {SqlBool(hasBaseSize)});",
+                $"INSERT INTO temp_base_predicted_size VALUES ({baseline.UniqueId}, {SqlULong(hasBaseSize ? baseOnly.SizeBytes : 0UL)}, {SqlBool(hasBaseSize)});",
                 ct);
 
             foreach (var slot in activeGroups)
@@ -165,30 +170,45 @@ CREATE TEMP TABLE temp_group_size_delta (
                 foreach (byte storedSlot in storedSlotsForGroup)
                 {
                     var effectiveBaselineId = GetEffectiveBaselineId(baseline.UniqueId, storedSlot);
-                    var normalizedBaselineId = RankSafeKldPredictionService.NormalizeBaselineIdForIsolation(effectiveBaselineId);
-                    bool zeroDamage = IsZeroDamageAlias(effectiveBaselineId) || IsZeroDamageAlias(normalizedBaselineId);
+                    bool zeroDamage = IsZeroDamageAlias(effectiveBaselineId);
 
+                    byte resolvedBaselineId = effectiveBaselineId;
+                    string isolationSource = zeroDamage ? "zero" : "missing";
+                    bool isSurrogateFallback = false;
+                    BenchmarkSnapshotRecord? resolvedIsolation = null;
                     double kldContribution = 0d;
                     double pplContribution = 0d;
-                    double bitRange = zeroDamage ? 99d : GetBitRange(normalizedBaselineId);
                     bool kldPredictable = true;
 
                     if (!zeroDamage)
                     {
-                        if (model.IsolationByGroupAndBaseline.TryGetValue((slot.Group.UniqueId, normalizedBaselineId), out var isolation))
+                        if (RankSafeKldPredictionService.TryResolveIsolationBaselineForPrediction(
+                                slot.Group,
+                                effectiveBaselineId,
+                                model,
+                                notes: null,
+                                out var resolved))
                         {
-                            kldContribution = Math.Max(0d, isolation.Kld);
-                            pplContribution = isolation.Ppl;
+                            resolvedBaselineId = resolved.BaselineId;
+                            resolvedIsolation = resolved.Snapshot;
+                            isSurrogateFallback = resolved.IsSurrogate;
+                            isolationSource = resolved.IsSurrogate
+                                ? $"surrogate:{FormatBaselineId(resolved.FallbackBaselineId ?? resolved.BaselineId)}"
+                                : "exact";
+                            kldContribution = Math.Max(0d, resolved.Snapshot.Kld);
+                            pplContribution = resolved.Snapshot.Ppl;
                         }
                         else
                         {
                             kldPredictable = false;
-                            if (normalizedBaselineId == BaselineQuants.Q8_0.UniqueId && warnedMissingQ8IsolationGroups.Add(slot.Group.UniqueId))
+                            if (effectiveBaselineId == BaselineQuants.Q8_0.UniqueId && warnedMissingQ8IsolationGroups.Add(slot.Group.UniqueId))
                             {
                                 AnsiConsole.MarkupLine($"[yellow]Missing KLD isolation snapshot for group '{Markup.Escape(slot.Group.Name)}' and baseline Q8_0 while building DuckDB prediction lookup. Q8_0 is quantized damage, not native truth; matching rows will stay unpredicted instead of receiving zero KLD.[/]");
                             }
                         }
                     }
+
+                    double bitRange = zeroDamage ? 99d : GetBitRange(resolvedBaselineId);
 
                     await ExecuteAsync(c, $@"
 INSERT INTO temp_effective_group_prediction VALUES (
@@ -197,12 +217,14 @@ INSERT INTO temp_effective_group_prediction VALUES (
     {slot.Group.UniqueId},
     {storedSlot},
     {effectiveBaselineId},
-    {normalizedBaselineId},
+    {resolvedBaselineId},
     {SqlDouble(kldContribution)},
     {SqlDouble(pplContribution)},
     {SqlDouble(bitRange)},
     {SqlBool(zeroDamage)},
-    {SqlBool(kldPredictable)}
+    {SqlBool(kldPredictable)},
+    {SqlString(isolationSource)},
+    {SqlBool(isSurrogateFallback)}
 );", ct);
 
                     long deltaBytes = 0L;
@@ -210,12 +232,14 @@ INSERT INTO temp_effective_group_prediction VALUES (
 
                     // This mirrors RankSafeKldPredictionService.PredictSize:
                     // base-only anchor starts with native-exact groups, then every active
-                    // effective group contributes its measured isolation size delta.
-                    if (!BaselineQuants.IsNativeExactAlias(normalizedBaselineId))
+                    // effective group contributes its measured exact isolation size delta.
+                    // External/custom surrogate fallbacks are intentionally disabled by
+                    // TryResolveIsolationBaselineForPrediction and will throw before this point.
+                    if (!BaselineQuants.IsNativeExactAlias(effectiveBaselineId))
                     {
-                        if (model.IsolationByGroupAndBaseline.TryGetValue((slot.Group.UniqueId, normalizedBaselineId), out var targetIsolation))
+                        if (resolvedIsolation != null)
                         {
-                            deltaBytes = (long)targetIsolation.SizeBytes - (long)model.Q8BaseOnly.SizeBytes;
+                            deltaBytes = (long)resolvedIsolation.SizeBytes - (long)model.Q8BaseOnly.SizeBytes;
                         }
                         else
                         {
@@ -577,7 +601,26 @@ WHERE b.BaseQuant IS NULL;", ct);
         AnsiConsole.MarkupLine($"[grey]DuckDB prediction lookup rows:[/] total=[cyan]{totalRows:N0}[/] base-lookups=[cyan]{baseLookupRows:N0}[/] missing-base-join=[cyan]{missingBaseJoin:N0}[/]");
 
         await PrintBaseLookupRowsAsync(c, ct);
+        await PrintIsolationSourceDiagnosticsAsync(c, ct);
         await PrintMissingGroupLookupRowsAsync(c, model, ct);
+    }
+
+    private static async Task PrintIsolationSourceDiagnosticsAsync(DuckDBConnection c, CancellationToken ct)
+    {
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"
+SELECT IsolationSource, COUNT(*) AS Rows
+FROM temp_effective_group_prediction
+GROUP BY IsolationSource
+ORDER BY Rows DESC, IsolationSource;";
+
+        using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            string source = reader.GetValue(0)?.ToString() ?? "unknown";
+            long rows = ToInt64(reader.GetValue(1));
+            AnsiConsole.MarkupLine($"[grey]  - isolation source {Markup.Escape(source)}:[/] rows={rows:N0}");
+        }
     }
 
     private static async Task PrintBaseLookupRowsAsync(DuckDBConnection c, CancellationToken ct)
@@ -895,6 +938,14 @@ ORDER BY BaseQuant;";
             return "0.0";
 
         return value.ToString("R", CultureInfo.InvariantCulture);
+    }
+
+    private static string SqlString(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "NULL";
+
+        return $"'{value.Replace("'", "''")}'";
     }
 
     private static string SqlULong(ulong value) => value.ToString(CultureInfo.InvariantCulture);
