@@ -126,6 +126,12 @@ public sealed class SelectionDiagnosticsLogService
                 fetchedCandidateCount = c.FetchedCandidateCount,
                 candidatesAfterBrutalityCount = c.CandidatesAfterBrutalityCount,
                 candidateAttemptLimit = c.CandidateAttemptLimit,
+                rawSelectionRank = c.RawSelectionRank,
+                diversityMode = c.DiversityMode,
+                candidateTheoryFamilyKey = c.CandidateTheoryFamilyKey,
+                candidateTheoryFamilyDisplay = c.CandidateTheoryFamilyDisplay,
+                candidateTheoryFamilyRank = c.CandidateTheoryFamilyRank,
+                candidateTheoryFamilyMemberRank = c.CandidateTheoryFamilyMemberRank,
                 notes = c.CandidateSelectionNotes
             },
             actual = snap == null

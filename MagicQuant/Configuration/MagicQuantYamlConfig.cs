@@ -254,6 +254,33 @@ public sealed class RuntimeCandidateSelectionConfig
     /// build/benchmark attempts on the rest of the fetched top-N list.
     /// </summary>
     public bool ValidateAllAnomalyStrictCandidatesAfterSuccess { get; set; } = false;
+
+    /// <summary>
+    /// When true, windows with more predicted candidates than validation attempts fetch a
+    /// bounded scan pool and round-robin across candidate theory families before validation.
+    /// </summary>
+    public bool DiversifyValidationCandidates { get; set; } = true;
+
+    /// <summary>
+    /// Scan roughly attemptLimit * multiplier predicted rows before selecting final attempts.
+    /// </summary>
+    public int DiversityScanMultiplier { get; set; } = 25;
+
+    /// <summary>
+    /// Lower bound for the prediction-only scan pool when diversity is active.
+    /// </summary>
+    public int DiversityScanMinCandidates { get; set; } = 100;
+
+    /// <summary>
+    /// Upper bound for the prediction-only scan pool when diversity is active.
+    /// </summary>
+    public int DiversityScanMaxCandidates { get; set; } = 500;
+
+    /// <summary>
+    /// Optional escape hatch: if true, diversify only windows whose anchor band is Q4-ish or below.
+    /// Defaults false because diversity is cheap and does not increase validation attempts.
+    /// </summary>
+    public bool DiversityLowBitOnly { get; set; } = false;
 }
 
 

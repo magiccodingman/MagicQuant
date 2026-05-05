@@ -144,6 +144,9 @@ public static class MagicQuantYamlLoader
         config.CandidateSelection.MaxFallbackAttemptsPerAnchor = Math.Max(1, config.CandidateSelection.MaxFallbackAttemptsPerAnchor);
         config.CandidateSelection.NearBaselineMaxSizeGrowthPercent = Math.Max(0d, config.CandidateSelection.NearBaselineMaxSizeGrowthPercent);
         config.CandidateSelection.MinimumKldImprovementEpsilon = Math.Max(0d, config.CandidateSelection.MinimumKldImprovementEpsilon);
+        config.CandidateSelection.DiversityScanMultiplier = Math.Max(1, config.CandidateSelection.DiversityScanMultiplier);
+        config.CandidateSelection.DiversityScanMinCandidates = Math.Max(1, config.CandidateSelection.DiversityScanMinCandidates);
+        config.CandidateSelection.DiversityScanMaxCandidates = Math.Max(config.CandidateSelection.DiversityScanMinCandidates, config.CandidateSelection.DiversityScanMaxCandidates);
 
         config.AnomalyDetection ??= new RuntimeAnomalyDetectionConfig();
         config.SynergyDetection ??= new RuntimeSynergyDetectionConfig();
@@ -340,6 +343,21 @@ public static class MagicQuantYamlLoader
         if (Has("validate-all-anomaly-strict-candidates-after-success"))
             config.CandidateSelection.ValidateAllAnomalyStrictCandidatesAfterSuccess = true;
 
+        if (TryParseBool(Get("selection-diversify-validation-candidates"), out var diversifyValidationCandidates))
+            config.CandidateSelection.DiversifyValidationCandidates = diversifyValidationCandidates;
+
+        if (int.TryParse(Get("selection-diversity-scan-multiplier"), out var diversityScanMultiplier) && diversityScanMultiplier > 0)
+            config.CandidateSelection.DiversityScanMultiplier = diversityScanMultiplier;
+
+        if (int.TryParse(Get("selection-diversity-scan-min-candidates"), out var diversityScanMinCandidates) && diversityScanMinCandidates > 0)
+            config.CandidateSelection.DiversityScanMinCandidates = diversityScanMinCandidates;
+
+        if (int.TryParse(Get("selection-diversity-scan-max-candidates"), out var diversityScanMaxCandidates) && diversityScanMaxCandidates > 0)
+            config.CandidateSelection.DiversityScanMaxCandidates = diversityScanMaxCandidates;
+
+        if (TryParseBool(Get("selection-diversity-low-bit-only"), out var diversityLowBitOnly))
+            config.CandidateSelection.DiversityLowBitOnly = diversityLowBitOnly;
+
         config.Output.OutputDir = Prefer(Get("output-dir"), config.Output.OutputDir);
         config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);
         if (Has("export-external-learned-baselines")) config.Output.ExportExternalLearnedBaselines = true;
@@ -368,6 +386,37 @@ public static class MagicQuantYamlLoader
 
         config.Identity.ArchitectureFamilyName = Prefer(Get("architecture-family"), config.Identity.ArchitectureFamilyName);
         if (Has("allow-architecture-family-alias-override")) config.Identity.AllowArchitectureFamilyAliasOverride = true;
+    }
+
+    private static bool TryParseBool(string? value, out bool result)
+    {
+        result = false;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var normalized = value.Trim();
+        if (bool.TryParse(normalized, out result))
+            return true;
+
+        if (string.Equals(normalized, "1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "yes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "y", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "on", StringComparison.OrdinalIgnoreCase))
+        {
+            result = true;
+            return true;
+        }
+
+        if (string.Equals(normalized, "0", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "no", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "n", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "off", StringComparison.OrdinalIgnoreCase))
+        {
+            result = false;
+            return true;
+        }
+
+        return false;
     }
 
     private static List<double> ParseDoubleList(string? value)

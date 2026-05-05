@@ -111,6 +111,12 @@ public sealed class HybridSelectionCandidate
     public int CandidateAttemptLimit { get; init; }
     public int PhaseWindowIndex { get; init; }
     public int PhaseWindowCount { get; init; }
+    public int RawSelectionRank { get; init; }
+    public string CandidateTheoryFamilyKey { get; init; } = string.Empty;
+    public int CandidateTheoryFamilyRank { get; init; }
+    public int CandidateTheoryFamilyMemberRank { get; init; }
+    public string CandidateTheoryFamilyDisplay { get; init; } = string.Empty;
+    public string DiversityMode { get; init; } = string.Empty;
     public IReadOnlyList<string> CandidateSelectionNotes { get; init; } = Array.Empty<string>();
 }
 

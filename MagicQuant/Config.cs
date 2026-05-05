@@ -71,6 +71,21 @@ public static class Config
     public static bool SelectionValidateAllAnomalyStrictCandidatesAfterSuccess =>
         Current.CandidateSelection.ValidateAllAnomalyStrictCandidatesAfterSuccess;
 
+    public static bool SelectionDiversifyValidationCandidates =>
+        Current.CandidateSelection.DiversifyValidationCandidates;
+
+    public static int SelectionDiversityScanMultiplier =>
+        Math.Max(1, Current.CandidateSelection.DiversityScanMultiplier);
+
+    public static int SelectionDiversityScanMinCandidates =>
+        Math.Max(1, Current.CandidateSelection.DiversityScanMinCandidates);
+
+    public static int SelectionDiversityScanMaxCandidates =>
+        Math.Max(SelectionDiversityScanMinCandidates, Current.CandidateSelection.DiversityScanMaxCandidates);
+
+    public static bool SelectionDiversityLowBitOnly =>
+        Current.CandidateSelection.DiversityLowBitOnly;
+
     public static RuntimeAnomalyDetectionConfig AnomalyDetection => Current.AnomalyDetection;
     public static RuntimeSynergyDetectionConfig SynergyDetection => Current.SynergyDetection;
     public static bool AnomalyDetectionEnabled => Current.AnomalyDetection.Enabled;
