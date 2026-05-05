@@ -247,6 +247,13 @@ public sealed class RuntimeCandidateSelectionConfig
     /// Q8 remains the highest-fidelity practical anchor unless this is explicitly enabled.
     /// </summary>
     public bool AllowEightBitAnchorReplacements { get; set; } = false;
+
+    /// <summary>
+    /// Legacy/diagnostic mode for strict Q8/anomaly discovery. When false, once a strict
+    /// candidate validates for an anchor, MagicQuant accepts it and stops spending more
+    /// build/benchmark attempts on the rest of the fetched top-N list.
+    /// </summary>
+    public bool ValidateAllAnomalyStrictCandidatesAfterSuccess { get; set; } = false;
 }
 
 
@@ -267,6 +274,15 @@ public sealed class RuntimeAnomalyDetectionConfig
     public double MaxNegativeAdjustmentKld { get; set; } = 0.00075d;
     public double MaxPositiveAdjustmentKld { get; set; } = 0.00075d;
     public double MaxAdjustmentFractionOfBaseKld { get; set; } = 0.75d;
+
+    /// <summary>
+    /// Advisory diagnostics cap for confirmed pairwise ordering corrections. Beneficial
+    /// pairwise rules are allowed to cross their own measured twin even when the required
+    /// adjustment exceeds this value; the cap is reported, not used to resurrect the old
+    /// broad-boost poison.
+    /// </summary>
+    public double MaxConfirmedPairwiseOrderingAdjustmentKld { get; set; } = 0.006d;
+
     public int MaxSmokeCandidatesPerReferenceZone { get; set; } = 12;
     public bool PersistSuppressionResults { get; set; } = true;
     public bool VerboseAnomalyLogging { get; set; } = true;

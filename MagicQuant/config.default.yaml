@@ -222,6 +222,9 @@ prediction:
   minimum_fit_rows: 12
 
 candidate_selection:
+  
+  validate_all_anomaly_strict_candidates_after_success: false
+  
   # Phase 2: a hybrid can replace the smaller/higher-damage anchor when it fits
   # inside this size premium and beats the real linear KLD improvement line.
   near_baseline_max_size_growth_percent: 1.0

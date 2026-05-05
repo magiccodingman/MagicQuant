@@ -68,6 +68,9 @@ public static class Config
     public static bool SelectionAllowEightBitAnchorReplacements =>
         Current.CandidateSelection.AllowEightBitAnchorReplacements;
 
+    public static bool SelectionValidateAllAnomalyStrictCandidatesAfterSuccess =>
+        Current.CandidateSelection.ValidateAllAnomalyStrictCandidatesAfterSuccess;
+
     public static RuntimeAnomalyDetectionConfig AnomalyDetection => Current.AnomalyDetection;
     public static RuntimeSynergyDetectionConfig SynergyDetection => Current.SynergyDetection;
     public static bool AnomalyDetectionEnabled => Current.AnomalyDetection.Enabled;

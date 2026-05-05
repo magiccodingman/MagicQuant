@@ -121,7 +121,7 @@ public sealed class PredictionGuidedHybridSelectionService
         CancellationToken ct)
     {
         AnsiConsole.Write(new Rule("[yellow]Prediction Phase 1: Strict Hybrid Dominance[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"[grey]Strict dominance retry policy:[/] max attempts per anchor=[cyan]{Config.SelectionMaxFallbackAttemptsPerAnchor:N0}[/], epsilon=[cyan]{Config.SelectionMinimumKldImprovementEpsilon:0.########}[/]");
+        AnsiConsole.MarkupLine($"[grey]Strict dominance retry policy:[/] max attempts per anchor=[cyan]{Config.SelectionMaxFallbackAttemptsPerAnchor:N0}[/], epsilon=[cyan]{Config.SelectionMinimumKldImprovementEpsilon:0.########}[/], validate all anomaly/Q8 top-N after first success=[cyan]{Config.SelectionValidateAllAnomalyStrictCandidatesAfterSuccess}[/]");
 
         var accepted = new List<BenchmarkSnapshotRecord>();
 
@@ -197,8 +197,13 @@ public sealed class PredictionGuidedHybridSelectionService
                 $"Prediction anchor={predictedAnchor.DisplayName}; predictedKld={predictedAnchor.PredictedKld:0.000000}; predictedSizeBytes={predictedAnchor.PredictedSizeBytes:N0}; realKld={anchor.Kld:0.000000}; realSizeBytes={anchor.SizeBytes:N0}."
             };
             bool anomalyStrictMode = IsQ8Anchor(anchor) || candidates.Any(x => Math.Abs(x.Prediction.AnomalyAdjustmentKld) > 1e-12);
+            bool validateAllAfterSuccess = anomalyStrictMode && Config.SelectionValidateAllAnomalyStrictCandidatesAfterSuccess;
             if (anomalyStrictMode)
-                strictNotes.Add("Q8/anomaly strict mode: validate all fetched candidates up to the configured attempt limit before choosing by actual KLD/size truth.");
+            {
+                strictNotes.Add(validateAllAfterSuccess
+                    ? "Q8/anomaly strict mode: legacy validate-all-after-success is enabled, so all fetched candidates up to the configured attempt limit may be built before choosing by actual KLD/size truth."
+                    : "Q8/anomaly strict mode: stop after the first candidate validates for this anchor. Set candidate_selection.validate_all_anomaly_strict_candidates_after_success=true to restore legacy top-N validation.");
+            }
 
             var diag = new SelectionPhaseDiagnostic
             {
@@ -224,7 +229,7 @@ public sealed class PredictionGuidedHybridSelectionService
             };
             phaseDiagnostics.Add(diag);
 
-            AnsiConsole.MarkupLine($"[grey]Strict candidates for {Markup.Escape(anchor.DisplayName)}:[/] pool={poolCount:N0}, selected={candidates.Count:N0}/{Config.SelectionMaxFallbackAttemptsPerAnchor:N0}, q8/anomaly-mode={anomalyStrictMode}");
+            AnsiConsole.MarkupLine($"[grey]Strict candidates for {Markup.Escape(anchor.DisplayName)}:[/] pool={poolCount:N0}, selected={candidates.Count:N0}/{Config.SelectionMaxFallbackAttemptsPerAnchor:N0}, q8/anomaly-mode={anomalyStrictMode}, validate-all-after-success={validateAllAfterSuccess}");
 
             if (candidates.Count == 0)
                 continue;
@@ -244,7 +249,7 @@ public sealed class PredictionGuidedHybridSelectionService
                 if (validation.Accepted && validation.Snapshot != null)
                 {
                     acceptedForAnchor.Add(validation);
-                    if (!anomalyStrictMode)
+                    if (!validateAllAfterSuccess)
                         break;
 
                     continue;

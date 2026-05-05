@@ -162,6 +162,7 @@ public static class MagicQuantYamlLoader
         config.AnomalyDetection.MaxNegativeAdjustmentKld = Math.Max(0d, config.AnomalyDetection.MaxNegativeAdjustmentKld);
         config.AnomalyDetection.MaxPositiveAdjustmentKld = Math.Max(0d, config.AnomalyDetection.MaxPositiveAdjustmentKld);
         config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld = Math.Clamp(config.AnomalyDetection.MaxAdjustmentFractionOfBaseKld, 0d, 1d);
+        config.AnomalyDetection.MaxConfirmedPairwiseOrderingAdjustmentKld = Math.Max(0d, config.AnomalyDetection.MaxConfirmedPairwiseOrderingAdjustmentKld);
         config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone = Math.Max(1, config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone);
 
         ApplyStandardBaselineFilters(config.Baselines);
@@ -335,6 +336,9 @@ public static class MagicQuantYamlLoader
 
         if (Has("allow-eight-bit-anchor-replacements"))
             config.CandidateSelection.AllowEightBitAnchorReplacements = true;
+
+        if (Has("validate-all-anomaly-strict-candidates-after-success"))
+            config.CandidateSelection.ValidateAllAnomalyStrictCandidatesAfterSuccess = true;
 
         config.Output.OutputDir = Prefer(Get("output-dir"), config.Output.OutputDir);
         config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);
