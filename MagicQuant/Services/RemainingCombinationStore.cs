@@ -272,8 +272,16 @@ LIMIT 1;";
         };
     }
 
+    public Task<long> CountStrictDominanceCandidatesAsync(
+        PredictedAnchorRow anchor,
+        CancellationToken ct = default)
+    {
+        return CountStrictDominanceCandidatesAsync(anchor, anchor.PredictedSizeBytes, ct);
+    }
+
     public async Task<long> CountStrictDominanceCandidatesAsync(
         PredictedAnchorRow anchor,
+        ulong maxSizeBytes,
         CancellationToken ct = default)
     {
         string sql = $@"
@@ -289,7 +297,7 @@ WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
 
         return await ExecuteCountAsync(
             sql,
-            new object[] { anchor.PredictedSizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.PredictedKld },
+            new object[] { maxSizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.PredictedKld },
             ct);
     }
 
@@ -311,13 +319,41 @@ WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
         return await ExecuteCountAsync(sql, new object[] { minSize, maxSize }, ct);
     }
 
-    public async Task<long> CountBetterThanLinearCandidatesAsync(
+    public Task<long> CountBetterThanLinearCandidatesAsync(
         PredictedAnchorRow higherDamageSmaller,
         PredictedAnchorRow lowerDamageLarger,
         ulong minSize,
         ulong maxSize,
         CancellationToken ct = default)
     {
+        return CountBetterThanLinearCandidatesAsync(
+            higherDamageSmaller,
+            lowerDamageLarger,
+            predictionWindowMinSize: minSize,
+            predictionWindowMaxSize: maxSize,
+            deterministicWindowMinSize: minSize,
+            deterministicWindowMaxSize: maxSize,
+            ct: ct);
+    }
+
+    public async Task<long> CountBetterThanLinearCandidatesAsync(
+        PredictedAnchorRow higherDamageSmaller,
+        PredictedAnchorRow lowerDamageLarger,
+        ulong predictionWindowMinSize,
+        ulong predictionWindowMaxSize,
+        ulong deterministicWindowMinSize,
+        ulong deterministicWindowMaxSize,
+        CancellationToken ct = default)
+    {
+        var effectiveWindow = IntersectSizeWindows(
+            predictionWindowMinSize,
+            predictionWindowMaxSize,
+            deterministicWindowMinSize,
+            deterministicWindowMaxSize);
+
+        if (effectiveWindow == null)
+            return 0;
+
         string sql = $@"
 WITH scored AS (
     SELECT {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
@@ -350,15 +386,24 @@ WHERE LinearExpectedKld - PredictedKld > ?;";
                 denominator,
                 lowerDamageLarger.PredictedKld,
                 higherDamageSmaller.PredictedKld,
-                minSize,
-                maxSize,
+                effectiveWindow.Value.Min,
+                effectiveWindow.Value.Max,
                 Config.SelectionMinimumKldImprovementEpsilon
             },
             ct);
     }
 
+    public Task<IReadOnlyList<RankSafePredictionRow>> QueryStrictDominanceCandidatesAsync(
+        PredictedAnchorRow anchor,
+        int limit,
+        CancellationToken ct = default)
+    {
+        return QueryStrictDominanceCandidatesAsync(anchor, anchor.PredictedSizeBytes, limit, ct);
+    }
+
     public async Task<IReadOnlyList<RankSafePredictionRow>> QueryStrictDominanceCandidatesAsync(
         PredictedAnchorRow anchor,
+        ulong maxSizeBytes,
         int limit,
         CancellationToken ct = default)
     {
@@ -385,7 +430,7 @@ LIMIT ?;";
 
         return await QueryPredictedRowsAsync(
             sql,
-            new object[] { anchor.PredictedSizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.PredictedKld, limit },
+            new object[] { maxSizeBytes, Config.SelectionMinimumKldImprovementEpsilon, anchor.PredictedKld, limit },
             ct);
     }
 
@@ -403,6 +448,15 @@ LIMIT ?;";
         int limit,
         CancellationToken ct = default)
     {
+        var effectiveWindow = IntersectSizeWindows(
+            predictionWindowMinSize,
+            predictionWindowMaxSize,
+            realValidationWindowMinSize,
+            realValidationWindowMaxSize);
+
+        if (effectiveWindow == null)
+            return Array.Empty<HybridSelectionCandidate>();
+
         string sql = $@"
 WITH scored AS (
     SELECT {CombinationDuckDbSchema.SlotColumnList},
@@ -461,8 +515,8 @@ LIMIT ?;";
                      denominator,
                      lowerDamagePredictionAnchor.PredictedKld,
                      higherDamagePredictionAnchor.PredictedKld,
-                     predictionWindowMinSize,
-                     predictionWindowMaxSize,
+                     effectiveWindow.Value.Min,
+                     effectiveWindow.Value.Max,
                      Config.SelectionMinimumKldImprovementEpsilon,
                      limit
                  })
@@ -499,6 +553,17 @@ LIMIT ?;";
         }
 
         return list;
+    }
+
+    private static (ulong Min, ulong Max)? IntersectSizeWindows(
+        ulong firstMin,
+        ulong firstMax,
+        ulong secondMin,
+        ulong secondMax)
+    {
+        ulong min = Math.Max(firstMin, secondMin);
+        ulong max = Math.Min(firstMax, secondMax);
+        return max < min ? null : (min, max);
     }
 
     private async Task<IReadOnlyList<RankSafePredictionRow>> QueryPredictedRowsAsync(

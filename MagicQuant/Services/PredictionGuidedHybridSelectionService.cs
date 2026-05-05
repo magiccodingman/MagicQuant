@@ -163,10 +163,19 @@ public sealed class PredictionGuidedHybridSelectionService
             }
 
             int attemptLimit = Config.SelectionMaxFallbackAttemptsPerAnchor;
-            long poolCount = await _predictedStore.CountStrictDominanceCandidatesAsync(predictedAnchor, ct);
+            ulong predictedAnchorSizeBytes = predictedAnchor.PredictedSizeBytes;
+            ulong realAnchorSizeBytes = anchor.SizeBytes;
+            ulong effectiveStrictMaxSizeBytes = Math.Min(predictedAnchorSizeBytes, realAnchorSizeBytes);
+
+            long predictedPoolCount = await _predictedStore.CountStrictDominanceCandidatesAsync(predictedAnchor, predictedAnchorSizeBytes, ct);
+            long poolCount = await _predictedStore.CountStrictDominanceCandidatesAsync(predictedAnchor, effectiveStrictMaxSizeBytes, ct);
+            long deterministicEligibleCount = poolCount;
+            long rejectedByRealStrictSizeCeiling = Math.Max(0, predictedPoolCount - deterministicEligibleCount);
+            long rejectedByOtherPhaseDeterministicRules = 0;
+
             bool diversityEligible = ShouldUseDiversityForWindow(anchor, anchor, predictedAnchor, predictedAnchor);
             int strictScanLimit = ResolveValidationScanLimit(attemptLimit, poolCount, diversityEligible);
-            var strictRows = await _predictedStore.QueryStrictDominanceCandidatesAsync(predictedAnchor, strictScanLimit, ct);
+            var strictRows = await _predictedStore.QueryStrictDominanceCandidatesAsync(predictedAnchor, effectiveStrictMaxSizeBytes, strictScanLimit, ct);
             var rankedStrictCandidates = strictRows.Select((x, i) => new HybridSelectionCandidate
             {
                 Prediction = x,
@@ -176,9 +185,9 @@ public sealed class PredictionGuidedHybridSelectionService
                 LowerDamagePredictionAnchor = predictedAnchor,
                 HigherDamagePredictionAnchor = predictedAnchor,
                 PredictionWindowMinSizeBytes = 0,
-                PredictionWindowMaxSizeBytes = predictedAnchor.PredictedSizeBytes,
+                PredictionWindowMaxSizeBytes = effectiveStrictMaxSizeBytes,
                 WindowMinSizeBytes = 0,
-                WindowMaxSizeBytes = anchor.SizeBytes,
+                WindowMaxSizeBytes = effectiveStrictMaxSizeBytes,
                 LinearExpectedKld = predictedAnchor.PredictedKld,
                 PredictedGainOverLine = predictedAnchor.PredictedKld - x.PredictedKld,
                 AttemptOrder = i + 1,
@@ -192,7 +201,11 @@ public sealed class PredictionGuidedHybridSelectionService
                 PhaseWindowIndex = 1,
                 PhaseWindowCount = 1,
                 RawSelectionRank = i + 1,
-                CandidateSelectionNotes = ["Strict DuckDB query uses predicted virtual anchor size/KLD; real anchor size/KLD is used only for post-build validation."]
+                CandidateSelectionNotes =
+                [
+                    "Strict DuckDB query uses prediction-space KLD, but predicted-size eligibility is capped by the real anchor size because MagicQuant size prediction is trusted/exact.",
+                    $"predictedAnchorSizeBytes={predictedAnchorSizeBytes:N0}; realAnchorSizeBytes={realAnchorSizeBytes:N0}; effectiveStrictMaxSizeBytes={effectiveStrictMaxSizeBytes:N0}; deterministicEligibleCount={deterministicEligibleCount:N0}; rejectedByRealStrictSizeCeiling={rejectedByRealStrictSizeCeiling:N0}; rejectedByOtherPhaseDeterministicRules={rejectedByOtherPhaseDeterministicRules:N0}."
+                ]
             }).ToList();
 
             var selection = SelectValidationCandidates(
@@ -208,8 +221,8 @@ public sealed class PredictionGuidedHybridSelectionService
 
             var strictNotes = new List<string>
             {
-                "Strict query uses predicted virtual anchor size/KLD; real benchmark anchor is reserved for post-build validation.",
-                $"Prediction anchor={predictedAnchor.DisplayName}; predictedKld={predictedAnchor.PredictedKld:0.000000}; predictedSizeBytes={predictedAnchor.PredictedSizeBytes:N0}; realKld={anchor.Kld:0.000000}; realSizeBytes={anchor.SizeBytes:N0}."
+                "Strict KLD eligibility remains prediction-space, but strict predicted-size eligibility is capped by the real anchor size because MagicQuant size prediction is trusted/exact.",
+                $"Prediction anchor={predictedAnchor.DisplayName}; predictedKld={predictedAnchor.PredictedKld:0.000000}; predictedAnchorSizeBytes={predictedAnchorSizeBytes:N0}; realKld={anchor.Kld:0.000000}; realAnchorSizeBytes={realAnchorSizeBytes:N0}; effectiveStrictMaxSizeBytes={effectiveStrictMaxSizeBytes:N0}; deterministicEligibleCount={deterministicEligibleCount:N0}; rejectedByRealStrictSizeCeiling={rejectedByRealStrictSizeCeiling:N0}; rejectedByOtherPhaseDeterministicRules={rejectedByOtherPhaseDeterministicRules:N0}."
             };
             bool anomalyStrictMode = IsQ8Anchor(anchor) || candidates.Any(x => Math.Abs(x.Prediction.AnomalyAdjustmentKld) > 1e-12);
             bool validateAllAfterSuccess = anomalyStrictMode && Config.SelectionValidateAllAnomalyStrictCandidatesAfterSuccess;
@@ -229,9 +242,9 @@ public sealed class PredictionGuidedHybridSelectionService
                 PredictionHigherDamageSmaller = ToPredictionAnchorLog(predictedAnchor),
                 PredictionLowerDamageLarger = ToPredictionAnchorLog(predictedAnchor),
                 PredictionWindowMinSizeBytes = 0,
-                PredictionWindowMaxSizeBytes = predictedAnchor.PredictedSizeBytes,
+                PredictionWindowMaxSizeBytes = effectiveStrictMaxSizeBytes,
                 WindowMinSizeBytes = 0,
-                WindowMaxSizeBytes = anchor.SizeBytes,
+                WindowMaxSizeBytes = effectiveStrictMaxSizeBytes,
                 CandidatePoolSize = poolCount,
                 WindowCandidateCount = poolCount,
                 LineBeatingCandidateCount = poolCount,
@@ -247,13 +260,21 @@ public sealed class PredictionGuidedHybridSelectionService
                 CandidateFamilyCount = selection.CandidateFamilyCount,
                 SelectedFamilyCount = selection.SelectedFamilyCount,
                 SelectedFamilyKeys = selection.SelectedFamilyKeys,
+                DiversitySelectionStrategy = selection.SelectionStrategy,
+                DiversityOverflowCount = selection.OverflowCount,
+                DiversitySizeFloorStartBytes = selection.SizeFloorStartBytes,
+                DiversitySizeFloorEndBytes = selection.SizeFloorEndBytes,
                 TopCandidates = candidates.Take(DiagnosticPreviewDisplayCount).Select(ToCandidatePreviewLog).ToList(),
                 Notes = strictNotes.Concat(selection.Notes).ToList()
             };
             phaseDiagnostics.Add(diag);
 
-            AnsiConsole.MarkupLine($"[grey]Strict candidates for {Markup.Escape(anchor.DisplayName)}:[/] pool={poolCount:N0}, scanLimit={strictScanLimit:N0}, scanFetched={strictRows.Count:N0}, afterBrutality={strictRows.Count:N0}, diversity={Markup.Escape(selection.Mode)}, candidateFamilies={selection.CandidateFamilyCount:N0}, selectedFamilies={selection.SelectedFamilyCount:N0}, selected={candidates.Count:N0}/{attemptLimit:N0}, q8/anomaly-mode={anomalyStrictMode}, validate-all-after-success={validateAllAfterSuccess}");
+            AnsiConsole.MarkupLine($"[grey]Strict candidates for {Markup.Escape(anchor.DisplayName)}:[/] pool={poolCount:N0}, predictedPoolCount={predictedPoolCount:N0}, deterministicEligibleCount={deterministicEligibleCount:N0}, scanLimit={strictScanLimit:N0}, scanFetched={strictRows.Count:N0}, afterBrutality={strictRows.Count:N0}, diversity={Markup.Escape(selection.Mode)}, selectionStrategy={Markup.Escape(selection.SelectionStrategy)}, candidateFamilies={selection.CandidateFamilyCount:N0}, selectedFamilies={selection.SelectedFamilyCount:N0}, selected={candidates.Count:N0}/{attemptLimit:N0}, overflowCount={selection.OverflowCount:N0}, sizeFloorStart={selection.SizeFloorStartBytes?.ToString("N0") ?? "n/a"}, predictedAnchorSizeBytes={predictedAnchorSizeBytes:N0}, realAnchorSizeBytes={realAnchorSizeBytes:N0}, effectiveStrictMaxSizeBytes={effectiveStrictMaxSizeBytes:N0}, rejectedByRealStrictSizeCeiling={rejectedByRealStrictSizeCeiling:N0}, rejectedByOtherPhaseDeterministicRules={rejectedByOtherPhaseDeterministicRules:N0}, q8/anomaly-mode={anomalyStrictMode}, validate-all-after-success={validateAllAfterSuccess}");
             PrintSelectedCandidateFamilySummary(candidates);
+            PrintSelectionLadderNotes(selection.Notes);
+
+            if (deterministicEligibleCount == 0)
+                AnsiConsole.MarkupLine($"[yellow]Strict dominance skipped builds for {Markup.Escape(anchor.DisplayName)}:[/] no physically eligible predicted candidates remained after deterministic size/KLD filters.");
 
             if (candidates.Count == 0)
                 continue;
@@ -569,10 +590,20 @@ public sealed class PredictionGuidedHybridSelectionService
 
             LogPredictionAndRealPairLines(lowerSizeHigherDamage, upperSizeLowerDamage, predictedLowerSizeHigherDamage, predictedUpperSizeLowerDamage, "Near-baseline pair");
 
-            long windowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(predictionMin, predictionMax, ct);
-            long lineBeaters = await _predictedStore.CountBetterThanLinearCandidatesAsync(predictedLowerSizeHigherDamage, predictedUpperSizeLowerDamage, predictionMin, predictionMax, ct);
+            long predictedWindowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(predictionMin, predictionMax, ct);
+            long predictedPoolCount = await _predictedStore.CountBetterThanLinearCandidatesAsync(predictedLowerSizeHigherDamage, predictedUpperSizeLowerDamage, predictionMin, predictionMax, ct);
+            long deterministicWindowRows = await CountPredictedRowsInIntersectedSizeWindowAsync(predictionMin, predictionMax, realMin, realMax, ct);
+            long phaseSizeEligiblePool = await _predictedStore.CountBetterThanLinearCandidatesAsync(
+                predictedLowerSizeHigherDamage,
+                predictedUpperSizeLowerDamage,
+                predictionMin,
+                predictionMax,
+                realMin,
+                realMax,
+                ct);
+            long rejectedByRealSizeWindow = Math.Max(0, predictedPoolCount - phaseSizeEligiblePool);
             bool diversityEligible = ShouldUseDiversityForWindow(lowerSizeHigherDamage, upperSizeLowerDamage, predictedLowerSizeHigherDamage, predictedUpperSizeLowerDamage);
-            fetchLimit = ResolveValidationScanLimit(attemptLimit, lineBeaters, diversityEligible);
+            fetchLimit = ResolveValidationScanLimit(attemptLimit, phaseSizeEligiblePool, diversityEligible);
             var rawCandidates = (await _predictedStore.QueryBetterThanLinearCandidatesAsync(
                 lowerSizeHigherDamage,
                 upperSizeLowerDamage,
@@ -592,13 +623,15 @@ public sealed class PredictionGuidedHybridSelectionService
                 .ToList();
 
             int afterBrutalityCount = brutalityAnalyses.Count(y => y.Brutality.Passed);
+            long deterministicEligibleCount = afterBrutalityCount;
+            long rejectedByOtherPhaseDeterministicRules = Math.Max(0, rawCandidates.Count - afterBrutalityCount);
             var rankedCandidates = brutalityAnalyses
                 .Where(x => x.Brutality.Passed)
                 .Select(x => AttachSelectionDiagnostics(
                     x.Candidate,
-                    poolSize: lineBeaters,
-                    windowCandidateCount: windowRows,
-                    lineBeatingCandidateCount: lineBeaters,
+                    poolSize: phaseSizeEligiblePool,
+                    windowCandidateCount: deterministicWindowRows,
+                    lineBeatingCandidateCount: phaseSizeEligiblePool,
                     fetchedCandidateCount: rawCandidates.Count,
                     candidatesAfterBrutalityCount: afterBrutalityCount,
                     candidateAttemptLimit: attemptLimit,
@@ -640,9 +673,13 @@ public sealed class PredictionGuidedHybridSelectionService
                 WindowMinSizeBytes = realMin,
                 WindowMaxSizeBytes = realMax,
                 WindowSizeGiB = ToGiB(realMax > realMin ? realMax - realMin : 0),
-                CandidatePoolSize = lineBeaters,
-                WindowCandidateCount = windowRows,
-                LineBeatingCandidateCount = lineBeaters,
+                CandidatePoolSize = phaseSizeEligiblePool,
+                PredictedPoolCount = predictedPoolCount,
+                DeterministicEligibleCount = deterministicEligibleCount,
+                RejectedByRealSizeWindow = rejectedByRealSizeWindow,
+                RejectedByOtherPhaseDeterministicRules = rejectedByOtherPhaseDeterministicRules,
+                WindowCandidateCount = deterministicWindowRows,
+                LineBeatingCandidateCount = phaseSizeEligiblePool,
                 FetchedCandidateCount = rawCandidates.Count,
                 CandidatesAfterBrutalityCount = afterBrutalityCount,
                 SelectedForValidationCount = candidates.Count,
@@ -655,11 +692,16 @@ public sealed class PredictionGuidedHybridSelectionService
                 CandidateFamilyCount = selection.CandidateFamilyCount,
                 SelectedFamilyCount = selection.SelectedFamilyCount,
                 SelectedFamilyKeys = selection.SelectedFamilyKeys,
+                DiversitySelectionStrategy = selection.SelectionStrategy,
+                DiversityOverflowCount = selection.OverflowCount,
+                DiversitySizeFloorStartBytes = selection.SizeFloorStartBytes,
+                DiversitySizeFloorEndBytes = selection.SizeFloorEndBytes,
                 TopCandidates = candidates.Take(DiagnosticPreviewDisplayCount).Select(ToCandidatePreviewLog).ToList(),
                 RejectedByBrutalityPreview = rejectedByBrutality,
                 Notes = new[]
                 {
-                    "Near-baseline DuckDB discovery uses predicted virtual anchor windows/lines; real anchor windows/lines are used only after a candidate is benchmarked.",
+                    "Near-baseline DuckDB discovery uses the predicted virtual KLD line, then deterministically caps candidate size to the real validation window before diversity/ladder selection. Real KLD is still used only after benchmark validation.",
+                    $"predictedPoolCount={predictedPoolCount:N0}; phaseSizeEligiblePool={phaseSizeEligiblePool:N0}; deterministicEligibleCount={deterministicEligibleCount:N0}; rejectedByRealSizeWindow={rejectedByRealSizeWindow:N0}; rejectedByOtherPhaseDeterministicRules={rejectedByOtherPhaseDeterministicRules:N0}.",
                     $"Brutal zone fraction={Config.SelectionNearLowerAnchorBrutalZoneFractionOfPairSpan:0.###}; required gain fraction of pair KLD gap={Config.SelectionNearAnchorRequiredKldGainFractionOfPairGap:0.###}."
                 }.Concat(selection.Notes).ToList()
             };
@@ -667,8 +709,12 @@ public sealed class PredictionGuidedHybridSelectionService
 
             AnsiConsole.MarkupLine(
                 $"[grey]Near-baseline window {pairIndex + 1:N0}/{pairs.Count:N0}:[/] {Markup.Escape(lowerSizeHigherDamage.DisplayName)} -> {Markup.Escape(upperSizeLowerDamage.DisplayName)} " +
-                $"| pred-window={predictionMin:N0}..{predictionMax:N0}, real-window={realMin:N0}..{realMax:N0}, rows-in-window={windowRows:N0}, beat-line={lineBeaters:N0}, scanLimit={fetchLimit:N0}, scanFetched={rawCandidates.Count:N0}, after-brutality={afterBrutalityCount:N0}, diversity={Markup.Escape(selection.Mode)}, candidateFamilies={selection.CandidateFamilyCount:N0}, selectedFamilies={selection.SelectedFamilyCount:N0}, selected={candidates.Count:N0}/{attemptLimit:N0}");
+                $"| pred-window={predictionMin:N0}..{predictionMax:N0}, real-window={realMin:N0}..{realMax:N0}, predictedPoolCount={predictedPoolCount:N0}, phaseSizeEligiblePool={phaseSizeEligiblePool:N0}, deterministicEligibleCount={deterministicEligibleCount:N0}, rejectedByRealSizeWindow={rejectedByRealSizeWindow:N0}, rejectedByOtherPhaseDeterministicRules={rejectedByOtherPhaseDeterministicRules:N0}, rows-in-window={deterministicWindowRows:N0}, beat-line={phaseSizeEligiblePool:N0}, scanLimit={fetchLimit:N0}, scanFetched={rawCandidates.Count:N0}, after-brutality={afterBrutalityCount:N0}, diversity={Markup.Escape(selection.Mode)}, selectionStrategy={Markup.Escape(selection.SelectionStrategy)}, candidateFamilies={selection.CandidateFamilyCount:N0}, selectedFamilies={selection.SelectedFamilyCount:N0}, selected={candidates.Count:N0}/{attemptLimit:N0}, overflowCount={selection.OverflowCount:N0}, sizeFloorStart={selection.SizeFloorStartBytes?.ToString("N0") ?? "n/a"}");
             PrintSelectedCandidateFamilySummary(candidates);
+            PrintSelectionLadderNotes(selection.Notes);
+
+            if (deterministicEligibleCount == 0)
+                AnsiConsole.MarkupLine($"[yellow]Near-baseline window skipped builds:[/] no physically eligible candidates remained after predicted line, real size window, and deterministic brutality filters.");
 
             if (rejectedByBrutality.Count > 0)
                 AnsiConsole.MarkupLine($"[grey]  rejected by near-lower-anchor brutality preview:[/] [cyan]{rejectedByBrutality.Count:N0}[/] (see magicquant-selection-phase-diagnostics.json)");
@@ -777,10 +823,20 @@ public sealed class PredictionGuidedHybridSelectionService
 
                 globalWindowIndex++;
                 string windowLabel = $"interior {i + 1}: {pair.HigherDamageSmaller.DisplayName} -> {pair.LowerDamageLarger.DisplayName}";
-                long windowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(predictionMin, predictionMax, ct);
-                long lineBeaters = await _predictedStore.CountBetterThanLinearCandidatesAsync(predictedHigherDamageSmaller, predictedLowerDamageLarger, predictionMin, predictionMax, ct);
+                long predictedWindowRows = await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(predictionMin, predictionMax, ct);
+                long predictedPoolCount = await _predictedStore.CountBetterThanLinearCandidatesAsync(predictedHigherDamageSmaller, predictedLowerDamageLarger, predictionMin, predictionMax, ct);
+                long deterministicWindowRows = await CountPredictedRowsInIntersectedSizeWindowAsync(predictionMin, predictionMax, realMin, realMax, ct);
+                long phaseSizeEligiblePool = await _predictedStore.CountBetterThanLinearCandidatesAsync(
+                    predictedHigherDamageSmaller,
+                    predictedLowerDamageLarger,
+                    predictionMin,
+                    predictionMax,
+                    realMin,
+                    realMax,
+                    ct);
+                long rejectedByRealSizeWindow = Math.Max(0, predictedPoolCount - phaseSizeEligiblePool);
                 bool diversityEligible = ShouldUseDiversityForWindow(pair.HigherDamageSmaller, pair.LowerDamageLarger, predictedHigherDamageSmaller, predictedLowerDamageLarger);
-                interiorFetchLimit = ResolveValidationScanLimit(interiorAttemptLimit, lineBeaters, diversityEligible);
+                interiorFetchLimit = ResolveValidationScanLimit(interiorAttemptLimit, phaseSizeEligiblePool, diversityEligible);
 
                 var rawCandidates = (await _predictedStore.QueryBetterThanLinearCandidatesAsync(
                     pair.HigherDamageSmaller,
@@ -801,14 +857,16 @@ public sealed class PredictionGuidedHybridSelectionService
                     .ToList();
 
                 int afterBrutalityCount = brutalityAnalyses.Count(y => y.Brutality.Passed);
+                long deterministicEligibleCount = afterBrutalityCount;
+                long rejectedByOtherPhaseDeterministicRules = Math.Max(0, rawCandidates.Count - afterBrutalityCount);
 
                 var rankedCandidates = brutalityAnalyses
                     .Where(x => x.Brutality.Passed)
                     .Select(x => AttachSelectionDiagnostics(
                         x.Candidate,
-                        poolSize: lineBeaters,
-                        windowCandidateCount: windowRows,
-                        lineBeatingCandidateCount: lineBeaters,
+                        poolSize: phaseSizeEligiblePool,
+                        windowCandidateCount: deterministicWindowRows,
+                        lineBeatingCandidateCount: phaseSizeEligiblePool,
                         fetchedCandidateCount: rawCandidates.Count,
                         candidatesAfterBrutalityCount: afterBrutalityCount,
                         candidateAttemptLimit: interiorAttemptLimit,
@@ -852,9 +910,13 @@ public sealed class PredictionGuidedHybridSelectionService
                     WindowMinSizeBytes = realMin,
                     WindowMaxSizeBytes = realMax,
                     WindowSizeGiB = ToGiB(realMax > realMin ? realMax - realMin : 0),
-                    CandidatePoolSize = lineBeaters,
-                    WindowCandidateCount = windowRows,
-                    LineBeatingCandidateCount = lineBeaters,
+                    CandidatePoolSize = phaseSizeEligiblePool,
+                    PredictedPoolCount = predictedPoolCount,
+                    DeterministicEligibleCount = deterministicEligibleCount,
+                    RejectedByRealSizeWindow = rejectedByRealSizeWindow,
+                    RejectedByOtherPhaseDeterministicRules = rejectedByOtherPhaseDeterministicRules,
+                    WindowCandidateCount = deterministicWindowRows,
+                    LineBeatingCandidateCount = phaseSizeEligiblePool,
                     FetchedCandidateCount = rawCandidates.Count,
                     CandidatesAfterBrutalityCount = afterBrutalityCount,
                     SelectedForValidationCount = kept.Count,
@@ -867,15 +929,27 @@ public sealed class PredictionGuidedHybridSelectionService
                     CandidateFamilyCount = selection.CandidateFamilyCount,
                     SelectedFamilyCount = selection.SelectedFamilyCount,
                     SelectedFamilyKeys = selection.SelectedFamilyKeys,
+                    DiversitySelectionStrategy = selection.SelectionStrategy,
+                    DiversityOverflowCount = selection.OverflowCount,
+                    DiversitySizeFloorStartBytes = selection.SizeFloorStartBytes,
+                    DiversitySizeFloorEndBytes = selection.SizeFloorEndBytes,
                     TopCandidates = kept.Take(DiagnosticPreviewDisplayCount).Select(ToCandidatePreviewLog).ToList(),
                     RejectedByBrutalityPreview = rejectedByBrutality,
-                    Notes = new[] { "Interior DuckDB discovery uses predicted virtual anchor windows/lines; real anchor windows/lines are used only after benchmark validation." }.Concat(selection.Notes).ToList()
+                    Notes = new[]
+                    {
+                        "Interior DuckDB discovery uses the predicted virtual nonlinear KLD line/window, then deterministically caps candidate size to the real interior slice before diversity/ladder selection. Real KLD is still used only after benchmark validation.",
+                        $"predictedPoolCount={predictedPoolCount:N0}; phaseSizeEligiblePool={phaseSizeEligiblePool:N0}; deterministicEligibleCount={deterministicEligibleCount:N0}; rejectedByRealSizeWindow={rejectedByRealSizeWindow:N0}; rejectedByOtherPhaseDeterministicRules={rejectedByOtherPhaseDeterministicRules:N0}."
+                    }.Concat(selection.Notes).ToList()
                 });
 
                 AnsiConsole.MarkupLine(
                     $"[grey]Interior window {globalWindowIndex:N0}/{Math.Max(estimatedWindowCount, globalWindowIndex):N0}:[/] {Markup.Escape(pair.HigherDamageSmaller.DisplayName)} -> {Markup.Escape(pair.LowerDamageLarger.DisplayName)} " +
-                    $"| pred-window={predictionMin:N0}..{predictionMax:N0}, real-window={realMin:N0}..{realMax:N0}, rows-in-window={windowRows:N0}, beat-line={lineBeaters:N0}, scanLimit={interiorFetchLimit:N0}, scanFetched={rawCandidates.Count:N0}, after-brutality={afterBrutalityCount:N0}, diversity={Markup.Escape(selection.Mode)}, candidateFamilies={selection.CandidateFamilyCount:N0}, selectedFamilies={selection.SelectedFamilyCount:N0}, selected={kept.Count:N0}/{interiorAttemptLimit:N0}");
+                    $"| pred-window={predictionMin:N0}..{predictionMax:N0}, real-window={realMin:N0}..{realMax:N0}, predictedPoolCount={predictedPoolCount:N0}, phaseSizeEligiblePool={phaseSizeEligiblePool:N0}, deterministicEligibleCount={deterministicEligibleCount:N0}, rejectedByRealSizeWindow={rejectedByRealSizeWindow:N0}, rejectedByOtherPhaseDeterministicRules={rejectedByOtherPhaseDeterministicRules:N0}, rows-in-window={deterministicWindowRows:N0}, beat-line={phaseSizeEligiblePool:N0}, scanLimit={interiorFetchLimit:N0}, scanFetched={rawCandidates.Count:N0}, after-brutality={afterBrutalityCount:N0}, diversity={Markup.Escape(selection.Mode)}, selectionStrategy={Markup.Escape(selection.SelectionStrategy)}, candidateFamilies={selection.CandidateFamilyCount:N0}, selectedFamilies={selection.SelectedFamilyCount:N0}, selected={kept.Count:N0}/{interiorAttemptLimit:N0}, overflowCount={selection.OverflowCount:N0}, sizeFloorStart={selection.SizeFloorStartBytes?.ToString("N0") ?? "n/a"}");
                 PrintSelectedCandidateFamilySummary(kept);
+                PrintSelectionLadderNotes(selection.Notes);
+
+                if (deterministicEligibleCount == 0)
+                    AnsiConsole.MarkupLine($"[yellow]Interior window skipped builds:[/] no physically eligible candidates remained after predicted nonlinear line, real size slice, and deterministic brutality filters.");
 
                 realCursor = realMax;
                 predictionCursor = predictionMax;
@@ -1110,7 +1184,8 @@ public sealed class PredictionGuidedHybridSelectionService
                 Candidates = Array.Empty<HybridSelectionCandidate>(),
                 Mode = Config.SelectionDiversifyValidationCandidates ? diversityEligible ? "enabled-empty" : "disabled-low-bit-only" : "disabled",
                 DiversityEnabled = Config.SelectionDiversifyValidationCandidates && diversityEligible,
-                Notes = ["No candidates survived the prediction/brutality filters for this window."]
+                SelectionStrategy = "none",
+                Notes = ["No deterministic-eligible candidates survived the prediction/brutality filters for this window; no phase-original primary candidate exists."]
             };
         }
 
@@ -1128,13 +1203,222 @@ public sealed class PredictionGuidedHybridSelectionService
             })
             .ToList();
 
+        var families = BuildCandidateTheoryFamilies(entries);
+        var originalPrimary = entries[0];
+        string originalPrimaryConfigKey = TensorConfigIdentity.ToKey(originalPrimary.Candidate.Prediction.Config);
+
+        var originalOrderNotes = BuildOriginalPhaseOrderPreviewNotes(phaseName, rankedCandidates, previewLimit: 10);
+        PrintOriginalPhaseOrderPreview(phaseName, higherDamageSmaller, lowerDamageLarger, rankedCandidates, previewLimit: 10);
+
+        bool canDiversify = Config.SelectionDiversifyValidationCandidates && diversityEligible && rankedCandidates.Count > attemptLimit;
+        if (!canDiversify || attemptLimit == 1)
+        {
+            string mode = Config.SelectionDiversifyValidationCandidates
+                ? diversityEligible
+                    ? rankedCandidates.Count <= attemptLimit ? "not-needed" : "not-needed"
+                    : "disabled-low-bit-only"
+                : "disabled";
+
+            var selectedWithoutDiversity = entries
+                .Take(attemptLimit)
+                .Select((entry, index) => DecorateSelectedCandidate(
+                    entry,
+                    families,
+                    index + 1,
+                    index == 0 ? "primary-original-phase-order" : mode))
+                .ToList();
+
+            AssertPrimaryPreserved(phaseName, originalPrimaryConfigKey, selectedWithoutDiversity);
+
+            var nonDiversityNotes = new List<string>
+            {
+                BuildDiversityNote(mode, phaseName, rankedCandidates.Count, attemptLimit, families.Count, selectedWithoutDiversity.Count, overflowCount: 0),
+                $"primarySelectionSource=original-phase-order; primaryRawRankBeforeDiversity={originalPrimary.RawRank:N0}; primaryConfigKey={originalPrimaryConfigKey}; primaryPredictedSizeBytes={originalPrimary.Candidate.Prediction.PredictedSizeBytes:N0}; primaryEffectivePredictedKld={GetEffectivePredictedKld(originalPrimary.Candidate):0.000000}; primaryPredictionRank={FormatNullableRank(originalPrimary.Candidate.Prediction.PredictedRank)}; primaryWasExcluded=false.",
+                "fallbackSelectionStrategy=not-applied; diversity ladder did not run because the candidate count did not exceed the attempt limit, diversity was disabled, or only one attempt was allowed."
+            };
+            nonDiversityNotes.AddRange(originalOrderNotes);
+
+            return new ValidationCandidateSelectionResult
+            {
+                Candidates = selectedWithoutDiversity,
+                Mode = mode,
+                DiversityEnabled = false,
+                SelectionStrategy = "original-phase-order",
+                CandidateFamilyCount = families.Count,
+                SelectedFamilyCount = selectedWithoutDiversity.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).Count(),
+                SelectedFamilyKeys = selectedWithoutDiversity.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList(),
+                Notes = nonDiversityNotes
+            };
+        }
+
+        var selectedEntries = new List<CandidateFamilyEntry>();
+        var selectedConfigKeys = new HashSet<string>(StringComparer.Ordinal);
+        var selectedFamilyKeys = new HashSet<string>(StringComparer.Ordinal);
+        var notesForFallback = new List<string>();
+        int overflowCount = 0;
+        int familyExhaustionCount = 0;
+        ulong? sizeFloorStart = null;
+        ulong sizeFloor = 0;
+
+        bool AddEntry(CandidateFamilyEntry entry, string selectionMode, ulong? previousSizeFloor)
+        {
+            string configKey = TensorConfigIdentity.ToKey(entry.Candidate.Prediction.Config);
+            if (!selectedConfigKeys.Add(configKey))
+                return false;
+
+            entry.SelectionMode = selectionMode;
+            entry.PreviousSizeFloorBytes = previousSizeFloor;
+            entry.SizeDeltaVsFloorBytes = previousSizeFloor.HasValue
+                ? unchecked((long)entry.Candidate.Prediction.PredictedSizeBytes - (long)previousSizeFloor.Value)
+                : null;
+            entry.EffectivePredictedKld = GetEffectivePredictedKld(entry.Candidate);
+
+            selectedEntries.Add(entry);
+            selectedFamilyKeys.Add(entry.Signature.Key);
+            return true;
+        }
+
+        // Critical invariant: the phase's original deterministic-eligible primary owns attempt #1.
+        // Diversity and the size ladder are fallback ordering only and must never re-rank this row.
+        AddEntry(originalPrimary, "primary-original-phase-order", previousSizeFloor: null);
+        sizeFloor = originalPrimary.Candidate.Prediction.PredictedSizeBytes;
+        sizeFloorStart = sizeFloor;
+
+        while (selectedEntries.Count < attemptLimit)
+        {
+            ulong previousFloor = sizeFloor;
+
+            var unusedAtOrAbove = entries
+                .Skip(1)
+                .Where(x => IsSelectable(x, selectedConfigKeys) && !selectedFamilyKeys.Contains(x.Signature.Key) && x.Candidate.Prediction.PredictedSizeBytes >= sizeFloor)
+                .OrderBy(GetEffectivePredictedKld)
+                .ThenByDescending(x => x.Candidate.Prediction.PredictedSizeBytes)
+                .ThenBy(x => x.RawRank)
+                .ToList();
+
+            var next = unusedAtOrAbove.FirstOrDefault();
+            if (next != null && AddEntry(next, "fallback-ladder-unused-family", previousFloor))
+            {
+                sizeFloor = Math.Max(sizeFloor, next.Candidate.Prediction.PredictedSizeBytes);
+                continue;
+            }
+
+            int unusedFamiliesRemaining = families.Count(f => !selectedFamilyKeys.Contains(f.Key) && f.Members.Any(m => IsSelectable(m, selectedConfigKeys)));
+            int unusedBelowCount = entries.Skip(1).Count(x => IsSelectable(x, selectedConfigKeys) && !selectedFamilyKeys.Contains(x.Signature.Key) && x.Candidate.Prediction.PredictedSizeBytes < sizeFloor);
+
+            if (unusedFamiliesRemaining > 0)
+            {
+                overflowCount++;
+                notesForFallback.Add(
+                    $"Diversity ladder overflow: attemptSlot={selectedEntries.Count + 1:N0}; sizeFloorBytes={sizeFloor:N0}; unusedFamiliesRemaining={unusedFamiliesRemaining:N0}; candidatesAtOrAboveFloor=0; overflowCandidatesBelowFloor={unusedBelowCount:N0}; reason=no-unused-family-candidate-at-or-above-size-floor.");
+
+                next = entries
+                    .Skip(1)
+                    .Where(x => IsSelectable(x, selectedConfigKeys) && !selectedFamilyKeys.Contains(x.Signature.Key) && x.Candidate.Prediction.PredictedSizeBytes < sizeFloor)
+                    .OrderByDescending(x => x.Candidate.Prediction.PredictedSizeBytes)
+                    .ThenBy(GetEffectivePredictedKld)
+                    .ThenBy(x => x.RawRank)
+                    .FirstOrDefault();
+
+                if (next != null && AddEntry(next, "fallback-overflow-unused-family", previousFloor))
+                {
+                    // Deliberately monotone: an overflow candidate below the floor cannot drag the safety floor down.
+                    sizeFloor = Math.Max(sizeFloor, next.Candidate.Prediction.PredictedSizeBytes);
+                    continue;
+                }
+            }
+
+            familyExhaustionCount++;
+            notesForFallback.Add(
+                $"Diversity ladder family exhaustion: attemptSlot={selectedEntries.Count + 1:N0}; selectedFamilies={selectedFamilyKeys.Count:N0}; candidateFamilies={families.Count:N0}; reason=all-distinct-families-exhausted.");
+
+            next = entries
+                .Skip(1)
+                .Where(x => IsSelectable(x, selectedConfigKeys) && x.Candidate.Prediction.PredictedSizeBytes >= sizeFloor)
+                .OrderBy(GetEffectivePredictedKld)
+                .ThenByDescending(x => x.Candidate.Prediction.PredictedSizeBytes)
+                .ThenBy(x => x.RawRank)
+                .FirstOrDefault();
+
+            if (next != null && AddEntry(next, "fallback-ladder-used-family", previousFloor))
+            {
+                sizeFloor = Math.Max(sizeFloor, next.Candidate.Prediction.PredictedSizeBytes);
+                continue;
+            }
+
+            int belowFloorCount = entries.Skip(1).Count(x => IsSelectable(x, selectedConfigKeys) && x.Candidate.Prediction.PredictedSizeBytes < sizeFloor);
+            overflowCount++;
+            notesForFallback.Add(
+                $"Diversity ladder overflow: attemptSlot={selectedEntries.Count + 1:N0}; sizeFloorBytes={sizeFloor:N0}; unusedFamiliesRemaining=0; candidatesAtOrAboveFloor=0; overflowCandidatesBelowFloor={belowFloorCount:N0}; reason=no-remaining-candidate-at-or-above-size-floor.");
+
+            next = entries
+                .Skip(1)
+                .Where(x => IsSelectable(x, selectedConfigKeys) && x.Candidate.Prediction.PredictedSizeBytes < sizeFloor)
+                .OrderByDescending(x => x.Candidate.Prediction.PredictedSizeBytes)
+                .ThenBy(GetEffectivePredictedKld)
+                .ThenBy(x => x.RawRank)
+                .FirstOrDefault();
+
+            if (next != null && AddEntry(next, "fallback-overflow-used-family", previousFloor))
+            {
+                // Deliberately monotone: do not lower the floor after overflow.
+                sizeFloor = Math.Max(sizeFloor, next.Candidate.Prediction.PredictedSizeBytes);
+                continue;
+            }
+
+            break;
+        }
+
+        var selected = selectedEntries
+            .Take(attemptLimit)
+            .Select((entry, index) => DecorateSelectedCandidate(entry, families, index + 1, entry.SelectionMode))
+            .ToList();
+
+        AssertPrimaryPreserved(phaseName, originalPrimaryConfigKey, selected);
+
+        bool exhaustedDistinctFamilies = selected.Count > selected.Select(x => x.CandidateTheoryFamilyKey).Distinct(StringComparer.Ordinal).Count();
+        var notes = new List<string>
+        {
+            BuildDiversityNote("enabled", phaseName, rankedCandidates.Count, attemptLimit, families.Count, selected.Count, overflowCount),
+            $"primarySelectionSource=original-phase-order; primaryRawRankBeforeDiversity={originalPrimary.RawRank:N0}; primaryConfigKey={originalPrimaryConfigKey}; primaryPredictedSizeBytes={originalPrimary.Candidate.Prediction.PredictedSizeBytes:N0}; primaryEffectivePredictedKld={GetEffectivePredictedKld(originalPrimary.Candidate):0.000000}; primaryPredictionRank={FormatNullableRank(originalPrimary.Candidate.Prediction.PredictedRank)}; primaryWasExcluded=false.",
+            $"fallbackSelectionStrategy=family-size-ladder; fallbackCount={Math.Max(0, selected.Count - 1):N0}; sizeFloorStartBytes={sizeFloorStart.GetValueOrDefault():N0}; sizeFloorEndBytes={sizeFloor:N0}; overflowCount={overflowCount:N0}; familyExhaustionCount={familyExhaustionCount:N0}."
+        };
+        notes.AddRange(originalOrderNotes);
+        notes.AddRange(notesForFallback);
+
+        if (exhaustedDistinctFamilies)
+            notes.Add("Distinct candidate theory families were exhausted before the attempt limit; remaining fallback slots were filled from already-selected families using the same monotone size-floor ladder.");
+        if (overflowCount > 0)
+            notes.Add("Diversity ladder overflow occurred: at least one selected retry was below the monotone size floor because no same/larger alternative was available in the preferred family bucket.");
+        if (selected.Count > 0 && overflowCount >= Math.Max(1, selected.Count / 2))
+            notes.Add("WARNING: Diversity ladder overflow selected many candidates below the size floor; candidate pool may not contain enough safer alternatives.");
+        if (families.Count >= rankedCandidates.Count * 0.90 && rankedCandidates.Count >= 25)
+            notes.Add("WARNING: Diversity warning: candidate family key may be too fine-grained; most scanned candidates formed unique families.");
+
+        return new ValidationCandidateSelectionResult
+        {
+            Candidates = selected,
+            Mode = "enabled",
+            DiversityEnabled = true,
+            SelectionStrategy = "original-primary-plus-family-size-ladder-fallbacks",
+            CandidateFamilyCount = families.Count,
+            SelectedFamilyCount = selected.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).Count(),
+            SelectedFamilyKeys = selected.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList(),
+            OverflowCount = overflowCount,
+            SizeFloorStartBytes = sizeFloorStart,
+            SizeFloorEndBytes = sizeFloor,
+            Notes = notes
+        };
+    }
+
+    private static List<CandidateTheoryFamily> BuildCandidateTheoryFamilies(IReadOnlyList<CandidateFamilyEntry> entries)
+    {
         var families = entries
             .GroupBy(x => x.Signature.Key, StringComparer.Ordinal)
-            .Select((g, familyIndex) => new CandidateTheoryFamily
+            .Select(g => new CandidateTheoryFamily
             {
                 Key = g.Key,
                 Display = g.First().Signature.Display,
-                Rank = familyIndex + 1,
                 Members = g.OrderBy(x => x.RawRank).ToList()
             })
             .OrderBy(x => x.Members[0].RawRank)
@@ -1143,99 +1427,91 @@ public sealed class PredictionGuidedHybridSelectionService
         for (int familyIndex = 0; familyIndex < families.Count; familyIndex++)
         {
             families[familyIndex].Rank = familyIndex + 1;
+            foreach (var member in families[familyIndex].Members)
+                member.Family = families[familyIndex];
+
             for (int memberIndex = 0; memberIndex < families[familyIndex].Members.Count; memberIndex++)
                 families[familyIndex].Members[memberIndex].MemberRank = memberIndex + 1;
         }
 
-        bool canDiversify = Config.SelectionDiversifyValidationCandidates && diversityEligible && rankedCandidates.Count > attemptLimit;
-        if (!canDiversify)
-        {
-            string mode = Config.SelectionDiversifyValidationCandidates
-                ? diversityEligible
-                    ? "not-needed"
-                    : "disabled-low-bit-only"
-                : "disabled";
+        return families;
+    }
 
-            var selectedWithoutDiversity = entries
-                .Take(attemptLimit)
-                .Select((entry, index) => DecorateSelectedCandidate(entry, families, index + 1, mode))
-                .ToList();
+    private static void AssertPrimaryPreserved(
+        string phaseName,
+        string originalPrimaryConfigKey,
+        IReadOnlyList<HybridSelectionCandidate> selected)
+    {
+        if (selected.Count == 0)
+            return;
 
-            var notesWithoutDiversity = new List<string>
-            {
-                BuildDiversityNote(mode, phaseName, rankedCandidates.Count, attemptLimit, families.Count, selectedWithoutDiversity.Count)
-            };
-            AddDiversityFamilyGranularityWarning(notesWithoutDiversity, families.Count, rankedCandidates.Count);
+        string selectedPrimaryConfigKey = TensorConfigIdentity.ToKey(selected[0].Prediction.Config);
+        if (string.Equals(originalPrimaryConfigKey, selectedPrimaryConfigKey, StringComparison.Ordinal))
+            return;
 
-            return new ValidationCandidateSelectionResult
-            {
-                Candidates = selectedWithoutDiversity,
-                Mode = mode,
-                DiversityEnabled = false,
-                CandidateFamilyCount = families.Count,
-                SelectedFamilyCount = selectedWithoutDiversity.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).Count(),
-                SelectedFamilyKeys = selectedWithoutDiversity.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList(),
-                Notes = notesWithoutDiversity
-            };
-        }
+        string message =
+            $"CRITICAL SELECTION INVARIANT FAILED: {phaseName} fallback ordering changed attempt #1. " +
+            $"originalPrimary={originalPrimaryConfigKey}; selectedPrimary={selectedPrimaryConfigKey}. " +
+            "Family diversity / size ladder may only reorder fallback attempts after the phase-original primary candidate.";
 
-        var selectedEntries = new List<CandidateFamilyEntry>();
-        var selectedKeys = new HashSet<string>(StringComparer.Ordinal);
-        void AddEntry(CandidateFamilyEntry entry)
-        {
-            string key = TensorConfigIdentity.ToKey(entry.Candidate.Prediction.Config);
-            if (!selectedKeys.Add(key))
-                return;
-            selectedEntries.Add(entry);
-        }
+        AnsiConsole.MarkupLine($"[red]{Markup.Escape(message)}[/]");
+        throw new InvalidOperationException(message);
+    }
 
-        AddEntry(entries[0]);
-
-        for (int memberRank = 1; selectedEntries.Count < attemptLimit; memberRank++)
-        {
-            bool addedThisRound = false;
-            foreach (var family in families)
-            {
-                var member = family.Members.FirstOrDefault(x => x.MemberRank == memberRank);
-                if (member == null)
-                    continue;
-
-                int before = selectedEntries.Count;
-                AddEntry(member);
-                addedThisRound |= selectedEntries.Count > before;
-
-                if (selectedEntries.Count >= attemptLimit)
-                    break;
-            }
-
-            if (!addedThisRound)
-                break;
-        }
-
-        var selected = selectedEntries
-            .Take(attemptLimit)
-            .Select((entry, index) => DecorateSelectedCandidate(entry, families, index + 1, "enabled"))
-            .ToList();
-
-        bool exhaustedDistinctFamilies = selected.Count > selected.Select(x => x.CandidateTheoryFamilyKey).Distinct(StringComparer.Ordinal).Count();
+    private static IReadOnlyList<string> BuildOriginalPhaseOrderPreviewNotes(
+        string phaseName,
+        IReadOnlyList<HybridSelectionCandidate> rankedCandidates,
+        int previewLimit)
+    {
         var notes = new List<string>
         {
-            BuildDiversityNote("enabled", phaseName, rankedCandidates.Count, attemptLimit, families.Count, selected.Count)
+            $"originalOrderPreview phase={phaseName}; showingTop={Math.Min(previewLimit, rankedCandidates.Count):N0}/{rankedCandidates.Count:N0}; these rows are in deterministic-eligible original phase order before fallback diversity."
         };
-        if (exhaustedDistinctFamilies)
-            notes.Add("Distinct candidate theory families were exhausted before the attempt limit; remaining slots were filled round-robin by the next-best members of already-selected families.");
-        AddDiversityFamilyGranularityWarning(notes, families.Count, rankedCandidates.Count);
 
-        return new ValidationCandidateSelectionResult
+        int order = 0;
+        foreach (var candidate in rankedCandidates.Take(previewLimit))
         {
-            Candidates = selected,
-            Mode = "enabled",
-            DiversityEnabled = true,
-            CandidateFamilyCount = families.Count,
-            SelectedFamilyCount = selected.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).Count(),
-            SelectedFamilyKeys = selected.Select(x => x.CandidateTheoryFamilyKey).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToList(),
-            Notes = notes
-        };
+            order++;
+            notes.Add(
+                $"originalOrderPreview rawOrder={order:N0}; config={TensorConfigIdentity.ToKey(candidate.Prediction.Config)}; size={candidate.Prediction.PredictedSizeBytes:N0}; predKld={GetEffectivePredictedKld(candidate):0.000000}; predictionRank={FormatNullableRank(candidate.Prediction.PredictedRank)}.");
+        }
+
+        return notes;
+    }
+
+    private static void PrintOriginalPhaseOrderPreview(
+        string phaseName,
+        BenchmarkSnapshotRecord higherDamageSmaller,
+        BenchmarkSnapshotRecord lowerDamageLarger,
+        IReadOnlyList<HybridSelectionCandidate> rankedCandidates,
+        int previewLimit)
+    {
+        int count = Math.Min(previewLimit, rankedCandidates.Count);
+        if (count == 0)
+            return;
+
+        string anchorText = ReferenceEquals(higherDamageSmaller, lowerDamageLarger) ||
+                            TensorConfigIdentity.ToKey(higherDamageSmaller.Config) == TensorConfigIdentity.ToKey(lowerDamageLarger.Config)
+            ? higherDamageSmaller.DisplayName
+            : $"{higherDamageSmaller.DisplayName} -> {lowerDamageLarger.DisplayName}";
+
+        AnsiConsole.MarkupLine($"[grey]Original phase order preview ({Markup.Escape(phaseName)}) for {Markup.Escape(anchorText)}:[/] [cyan]{count:N0}/{rankedCandidates.Count:N0}[/]");
+        int order = 0;
+        foreach (var candidate in rankedCandidates.Take(previewLimit))
+        {
+            order++;
+            AnsiConsole.MarkupLine(
+                $"[grey]  rawOrder={order:N0} config={Markup.Escape(TensorConfigIdentity.ToKey(candidate.Prediction.Config))} " +
+                $"size={candidate.Prediction.PredictedSizeBytes:N0} predKld={GetEffectivePredictedKld(candidate):0.000000} predictionRank={Markup.Escape(FormatNullableRank(candidate.Prediction.PredictedRank))}[/]");
+        }
+    }
+
+    private static string FormatNullableRank(ulong? rank) => rank.HasValue ? rank.Value.ToString("N0") : "n/a";
+
+    private static bool IsSelectable(CandidateFamilyEntry entry, HashSet<string> selectedConfigKeys)
+    {
+        string key = TensorConfigIdentity.ToKey(entry.Candidate.Prediction.Config);
+        return !selectedConfigKeys.Contains(key);
     }
 
     private static HybridSelectionCandidate DecorateSelectedCandidate(
@@ -1244,12 +1520,23 @@ public sealed class PredictionGuidedHybridSelectionService
         int attemptOrder,
         string diversityMode)
     {
-        var family = families.First(x => string.Equals(x.Key, entry.Signature.Key, StringComparison.Ordinal));
+        var family = entry.Family ?? families.First(x => string.Equals(x.Key, entry.Signature.Key, StringComparison.Ordinal));
         int memberRank = entry.MemberRank > 0 ? entry.MemberRank : Math.Max(1, family.Members.FindIndex(x => ReferenceEquals(x, entry)) + 1);
+        double effectivePredictedKld = double.IsNaN(entry.EffectivePredictedKld) ? GetEffectivePredictedKld(entry.Candidate) : entry.EffectivePredictedKld;
+        string previousFloorText = entry.PreviousSizeFloorBytes.HasValue ? entry.PreviousSizeFloorBytes.Value.ToString("N0") : "n/a";
+        string deltaText = entry.SizeDeltaVsFloorBytes.HasValue ? entry.SizeDeltaVsFloorBytes.Value.ToString("N0") : "n/a";
+
+        string selectionStrategy = diversityMode switch
+        {
+            "primary-original-phase-order" => "original-phase-primary",
+            "disabled" or "not-needed" or "disabled-low-bit-only" => "original-phase-order",
+            _ => "family-size-ladder-fallback"
+        };
+
         var notes = entry.Candidate.CandidateSelectionNotes
             .Concat(new[]
             {
-                $"diversity={diversityMode}; rawRank={entry.RawRank}; familyRank={family.Rank}; familyMemberRank={memberRank}; familyKey={entry.Signature.Key}; familyDisplay={entry.Signature.Display}"
+                $"diversity={diversityMode}; selectionStrategy={selectionStrategy}; rawRank={entry.RawRank}; familyRank={family.Rank}; familyMemberRank={memberRank}; previousSizeFloorBytes={previousFloorText}; selectedSizeBytes={entry.Candidate.Prediction.PredictedSizeBytes:N0}; sizeDeltaVsFloorBytes={deltaText}; effectivePredictedKld={effectivePredictedKld:0.000000}; familyKey={entry.Signature.Key}; familyDisplay={entry.Signature.Display}"
             })
             .ToList();
 
@@ -1328,17 +1615,12 @@ public sealed class PredictionGuidedHybridSelectionService
     {
         var config = candidate.Prediction.Config;
         var baseQuant = BaselineQuants.FromId(config.BaseQuant);
-        int anchorBit = ResolveCandidateTheoryAnchorBit(higherDamageSmaller, lowerDamageLarger, higherDamagePredictionAnchor, lowerDamagePredictionAnchor);
+        int anchorBit = Math.Min(higherDamageSmaller.Quant.BaseQuant.BitRange, lowerDamageLarger.Quant.BaseQuant.BitRange);
 
-        var coarseRisk = new List<string>();
-        var coarseProtected = new List<string>();
-        var coarseSensitive = new List<string>();
-
-        var displayRisk = new List<string>();
-        var displayProtected = new List<string>();
-        var displayExternal = new List<string>();
-        var displaySensitive = new List<string>();
-
+        var lowRisk = new List<string>();
+        var protectedGroups = new List<string>();
+        var external = new List<string>();
+        var sensitivity = new List<string>();
         int sixPlus = 0;
         int five = 0;
         int four = 0;
@@ -1347,9 +1629,7 @@ public sealed class PredictionGuidedHybridSelectionService
         foreach (var group in activeGroups.OrderBy(x => x.UniqueId))
         {
             var effective = GetEffectiveGroupBaseline(config, group);
-            string exactPlacement = $"{group.ShortCode}={effective.Names[0]}";
-            string coarsePlacement = $"{group.ShortCode}={ToCoarseBitBand(effective.BitRange)}";
-            int bitDeltaFromAnchor = effective.BitRange - anchorBit;
+            string placement = $"{group.ShortCode}={effective.Names[0]}";
 
             if (effective.BitRange >= 6)
                 sixPlus++;
@@ -1360,152 +1640,41 @@ public sealed class PredictionGuidedHybridSelectionService
             else
                 threeOrLess++;
 
-            bool severeRisk = effective.BitRange <= 3 || effective.BitRange <= anchorBit - 1;
-            bool majorProtection = (anchorBit <= 5 && effective.BitRange >= 6) || effective.BitRange >= anchorBit + 1;
-            bool externalOrCustom = effective.IsCustomBaseline || effective.IsExternalRepositoryBaseline;
+            if (effective.BitRange <= anchorBit - 1 || effective.BitRange <= 3)
+                lowRisk.Add(placement);
 
-            if (severeRisk)
-            {
-                coarseRisk.Add(coarsePlacement);
-                displayRisk.Add(exactPlacement);
-            }
+            if ((anchorBit <= 5 && effective.BitRange >= 6) || effective.BitRange >= anchorBit + 1)
+                protectedGroups.Add(placement);
 
-            if (majorProtection)
-            {
-                coarseProtected.Add(coarsePlacement);
-                displayProtected.Add(exactPlacement);
-            }
+            if (effective.IsCustomBaseline || effective.IsExternalRepositoryBaseline)
+                external.Add(placement);
 
-            // External/custom identity is valuable in diagnostics, but it must not make every
-            // UD-vs-standard sibling its own selection family.  The coarse key intentionally
-            // relies on the strategic bit-band role; the exact external name stays in Display.
-            if (externalOrCustom)
-                displayExternal.Add(exactPlacement);
-
-            // Sensitive groups are allowed to influence the coarse key only when the placement is
-            // a real strategy shift, not merely a Q4 sibling spelling such as IQ4_NL vs Q4_K_M.
             if (IsHighSensitivityGroup(group) && effective.UniqueId != baseQuant.UniqueId)
-            {
-                displaySensitive.Add(exactPlacement);
-                if (!severeRisk && !majorProtection && Math.Abs(bitDeltaFromAnchor) > 1)
-                    coarseSensitive.Add(coarsePlacement);
-            }
+                sensitivity.Add(placement);
         }
 
-        string anchorDisplay = $"anchor={higherDamagePredictionAnchor?.DisplayName ?? higherDamageSmaller.DisplayName}->{lowerDamagePredictionAnchor?.DisplayName ?? lowerDamageLarger.DisplayName}@{anchorBit}b";
-        string anchorKey = $"anchor={ToAnchorBand(anchorBit)}";
+        string anchorBand = $"anchor={higherDamagePredictionAnchor?.DisplayName ?? higherDamageSmaller.DisplayName}->{lowerDamagePredictionAnchor?.DisplayName ?? lowerDamageLarger.DisplayName}@{anchorBit}b";
         string bulk = $"bulk:6p={sixPlus},5={five},4={four},3m={threeOrLess}";
 
-        var keyComponents = new List<string>
+        var components = new List<string>
         {
+            anchorBand,
             $"base={baseQuant.Names[0]}",
-            anchorKey,
             bulk
         };
 
-        AddSortedComponent(keyComponents, "risk", coarseRisk);
-        AddSortedComponent(keyComponents, "protect", coarseProtected);
-        AddSortedComponent(keyComponents, "sensitiveShift", coarseSensitive);
+        if (lowRisk.Count > 0)
+            components.Add("risk:" + string.Join(",", lowRisk.OrderBy(x => x, StringComparer.Ordinal)));
+        if (protectedGroups.Count > 0)
+            components.Add("protect:" + string.Join(",", protectedGroups.OrderBy(x => x, StringComparer.Ordinal)));
+        if (external.Count > 0)
+            components.Add("external:" + string.Join(",", external.OrderBy(x => x, StringComparer.Ordinal)));
+        if (sensitivity.Count > 0)
+            components.Add("sensitive:" + string.Join(",", sensitivity.OrderBy(x => x, StringComparer.Ordinal)));
 
-        var displayComponents = new List<string>
-        {
-            $"base={baseQuant.Names[0]}",
-            anchorDisplay,
-            bulk
-        };
-
-        AddSortedComponent(displayComponents, "risk", displayRisk);
-        AddSortedComponent(displayComponents, "protect", displayProtected);
-        AddSortedComponent(displayComponents, "external", displayExternal);
-        AddSortedComponent(displayComponents, "sensitive", displaySensitive);
-
-        return new CandidateTheorySignature
-        {
-            Key = string.Join("|", keyComponents),
-            Display = string.Join("|", displayComponents)
-        };
-    }
-
-    private static int ResolveCandidateTheoryAnchorBit(
-        BenchmarkSnapshotRecord higherDamageSmaller,
-        BenchmarkSnapshotRecord lowerDamageLarger,
-        PredictedAnchorRow? higherDamagePredictionAnchor,
-        PredictedAnchorRow? lowerDamagePredictionAnchor)
-    {
-        var bits = new List<int>
-        {
-            higherDamageSmaller.Quant.BaseQuant.BitRange,
-            lowerDamageLarger.Quant.BaseQuant.BitRange
-        };
-
-        AddPredictedAnchorBit(bits, higherDamagePredictionAnchor);
-        AddPredictedAnchorBit(bits, lowerDamagePredictionAnchor);
-        return bits.Count == 0 ? 4 : bits.Min();
-    }
-
-    private static void AddPredictedAnchorBit(List<int> bits, PredictedAnchorRow? anchor)
-    {
-        if (anchor == null)
-            return;
-
-        try
-        {
-            bits.Add(BaselineQuants.FromId(anchor.RuntimeBaselineId).BitRange);
-        }
-        catch
-        {
-            // Predicted anchor metadata is diagnostic here; real benchmark anchors remain the fallback.
-        }
-    }
-
-    private static string ToAnchorBand(int bitRange)
-    {
-        if (bitRange <= 3)
-            return "Q3ish";
-        if (bitRange == 4)
-            return "Q4ish";
-        if (bitRange == 5)
-            return "Q5ish";
-        if (bitRange == 6)
-            return "Q6ish";
-        return "Q8ish";
-    }
-
-    private static string ToCoarseBitBand(int bitRange)
-    {
-        if (bitRange >= 6)
-            return "6p";
-        if (bitRange == 5)
-            return "5bit";
-        if (bitRange == 4)
-            return "4bit";
-        return "3bit";
-    }
-
-    private static void AddSortedComponent(List<string> components, string label, IEnumerable<string> values)
-    {
-        var distinct = values
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(x => x, StringComparer.Ordinal)
-            .ToList();
-
-        if (distinct.Count > 0)
-            components.Add($"{label}:" + string.Join(",", distinct));
-    }
-
-    private static void AddDiversityFamilyGranularityWarning(List<string> notes, int candidateFamilyCount, int scannedCandidateCount)
-    {
-        if (!Config.SelectionDiversifyValidationCandidates)
-            return;
-
-        if (scannedCandidateCount < 25)
-            return;
-
-        if (candidateFamilyCount < scannedCandidateCount * 0.90d)
-            return;
-
-        notes.Add("Diversity warning: candidate family key may be too fine-grained; most scanned candidates formed unique families.");
+        string key = string.Join("|", components);
+        string display = string.Join("|", components.Where(x => !x.StartsWith("anchor=", StringComparison.Ordinal)));
+        return new CandidateTheorySignature { Key = key, Display = display };
     }
 
     private static BaselineQuants GetEffectiveGroupBaseline(TensorConfig config, TensorGroup group)
@@ -1542,14 +1711,37 @@ public sealed class PredictionGuidedHybridSelectionService
         group.UniqueId == TReg.AttnKV.UniqueId ||
         group.UniqueId == TReg.FfnDown.UniqueId;
 
-    private static string BuildDiversityNote(string mode, string phaseName, int candidateCount, int attemptLimit, int familyCount, int selectedCount) =>
+
+    private static double GetEffectivePredictedKld(CandidateFamilyEntry entry) => GetEffectivePredictedKld(entry.Candidate);
+
+    private static double GetEffectivePredictedKld(HybridSelectionCandidate candidate) =>
+        double.IsNaN(candidate.Prediction.PredictedKld) ? double.PositiveInfinity : candidate.Prediction.PredictedKld;
+
+    private static string BuildDiversityNote(string mode, string phaseName, int candidateCount, int attemptLimit, int familyCount, int selectedCount, int overflowCount) =>
         mode switch
         {
-            "enabled" => $"Diversity enabled for {phaseName}: selected {selectedCount:N0}/{attemptLimit:N0} validation attempts from {familyCount:N0} candidate theory families across {candidateCount:N0} filtered scan candidates; raw top prediction is preserved as attempt 1.",
+            "enabled" => $"Diversity enabled for {phaseName}: selectionStrategy=family-size-ladder; selected {selectedCount:N0}/{attemptLimit:N0} validation attempts from {familyCount:N0} candidate theory families across {candidateCount:N0} filtered scan candidates; phase-original primary candidate is preserved as attempt 1; only fallback attempts prefer same/larger predicted size before explicit overflow; overflowCount={overflowCount:N0}.",
             "not-needed" => $"Diversity not needed for {phaseName}: filtered candidate count {candidateCount:N0} <= attempt limit {attemptLimit:N0}; candidates kept in raw predicted order.",
             "disabled-low-bit-only" => $"Diversity skipped for {phaseName}: candidate_selection.diversity_low_bit_only=true and this anchor/window was not Q4-ish or below.",
             _ => $"Diversity disabled for {phaseName}; candidates kept in raw predicted order."
         };
+
+    private static void PrintSelectionLadderNotes(IReadOnlyList<string> notes)
+    {
+        foreach (var note in notes)
+        {
+            if (note.Contains("WARNING", StringComparison.OrdinalIgnoreCase) ||
+                note.Contains("Diversity ladder overflow", StringComparison.OrdinalIgnoreCase) ||
+                note.Contains("Diversity ladder family exhaustion", StringComparison.OrdinalIgnoreCase))
+            {
+                AnsiConsole.MarkupLine($"[yellow]  {Markup.Escape(note)}[/]");
+            }
+            else if (note.Contains("selectionStrategy=family-size-ladder", StringComparison.OrdinalIgnoreCase))
+            {
+                AnsiConsole.MarkupLine($"[grey]  {Markup.Escape(note)}[/]");
+            }
+        }
+    }
 
     private static void PrintSelectedCandidateFamilySummary(IReadOnlyList<HybridSelectionCandidate> candidates)
     {
@@ -1558,12 +1750,33 @@ public sealed class PredictionGuidedHybridSelectionService
             if (string.IsNullOrWhiteSpace(candidate.CandidateTheoryFamilyDisplay))
                 continue;
 
+            string ladderNote = candidate.CandidateSelectionNotes.FirstOrDefault(x => x.Contains("selectionStrategy=family-size-ladder", StringComparison.Ordinal)) ?? string.Empty;
+            string previousFloor = ExtractSelectionNoteValue(ladderNote, "previousSizeFloorBytes") ?? "n/a";
+            string deltaVsFloor = ExtractSelectionNoteValue(ladderNote, "sizeDeltaVsFloorBytes") ?? "n/a";
+            string effectiveKld = ExtractSelectionNoteValue(ladderNote, "effectivePredictedKld") ?? candidate.Prediction.PredictedKld.ToString("0.000000");
+
             AnsiConsole.MarkupLine(
                 $"[grey]  selected attempt={candidate.AttemptOrder:N0}/{candidate.CandidateAttemptLimit:N0} rawRank={candidate.RawSelectionRank:N0} " +
-                $"familyRank={candidate.CandidateTheoryFamilyRank:N0} memberRank={candidate.CandidateTheoryFamilyMemberRank:N0}[/]");
+                $"selectionMode={Markup.Escape(candidate.DiversityMode)} familyRank={candidate.CandidateTheoryFamilyRank:N0} memberRank={candidate.CandidateTheoryFamilyMemberRank:N0} " +
+                $"previousSizeFloorBytes={Markup.Escape(previousFloor)} selectedSizeBytes={candidate.Prediction.PredictedSizeBytes:N0} sizeDeltaVsFloorBytes={Markup.Escape(deltaVsFloor)} effectivePredictedKld={Markup.Escape(effectiveKld)}[/]");
             AnsiConsole.MarkupLine($"[grey]    familyKey=[/][cyan]{Markup.Escape(candidate.CandidateTheoryFamilyKey)}[/]");
             AnsiConsole.MarkupLine($"[grey]    familyDisplay=[/][cyan]{Markup.Escape(candidate.CandidateTheoryFamilyDisplay)}[/]");
         }
+    }
+
+    private static string? ExtractSelectionNoteValue(string note, string key)
+    {
+        if (string.IsNullOrWhiteSpace(note))
+            return null;
+
+        string prefix = key + "=";
+        int start = note.IndexOf(prefix, StringComparison.Ordinal);
+        if (start < 0)
+            return null;
+
+        start += prefix.Length;
+        int end = note.IndexOf(';', start);
+        return end < 0 ? note[start..].Trim() : note[start..end].Trim();
     }
 
     private static BrutalityAnalysis AnalyzeNearLowerAnchorBrutality(HybridSelectionCandidate candidate)
@@ -1872,11 +2085,16 @@ public sealed class PredictionGuidedHybridSelectionService
             $"fetched={candidate.FetchedCandidateCount:N0}, afterBrutality={candidate.CandidatesAfterBrutalityCount:N0}, attemptLimit={candidate.CandidateAttemptLimit:N0}");
         if (!string.IsNullOrWhiteSpace(candidate.CandidateTheoryFamilyDisplay))
         {
+            string ladderNote = candidate.CandidateSelectionNotes.FirstOrDefault(x => x.Contains("selectionStrategy=family-size-ladder", StringComparison.Ordinal)) ?? string.Empty;
+            string previousFloor = ExtractSelectionNoteValue(ladderNote, "previousSizeFloorBytes") ?? "n/a";
+            string deltaVsFloor = ExtractSelectionNoteValue(ladderNote, "sizeDeltaVsFloorBytes") ?? "n/a";
+            string effectiveKld = ExtractSelectionNoteValue(ladderNote, "effectivePredictedKld") ?? candidate.Prediction.PredictedKld.ToString("0.000000");
             AnsiConsole.MarkupLine(
-                $"[grey]  diversity family:[/] mode={Markup.Escape(candidate.DiversityMode)}, rawRank={candidate.RawSelectionRank:N0}, " +
-                $"familyRank={candidate.CandidateTheoryFamilyRank:N0}, memberRank={candidate.CandidateTheoryFamilyMemberRank:N0}");
-            AnsiConsole.MarkupLine($"[grey]    familyKey:[/] {Markup.Escape(candidate.CandidateTheoryFamilyKey)}");
-            AnsiConsole.MarkupLine($"[grey]    familyDisplay:[/] {Markup.Escape(candidate.CandidateTheoryFamilyDisplay)}");
+                $"[grey]  diversity family:[/] selectionMode={Markup.Escape(candidate.DiversityMode)}, rawRank={candidate.RawSelectionRank:N0}, " +
+                $"familyRank={candidate.CandidateTheoryFamilyRank:N0}, memberRank={candidate.CandidateTheoryFamilyMemberRank:N0}, " +
+                $"previousSizeFloorBytes={Markup.Escape(previousFloor)}, selectedSizeBytes={candidate.Prediction.PredictedSizeBytes:N0}, sizeDeltaVsFloorBytes={Markup.Escape(deltaVsFloor)}, effectivePredictedKld={Markup.Escape(effectiveKld)}");
+            AnsiConsole.MarkupLine($"[grey]  diversity familyKey:[/] {Markup.Escape(candidate.CandidateTheoryFamilyKey)}");
+            AnsiConsole.MarkupLine($"[grey]  diversity familyDisplay:[/] {Markup.Escape(candidate.CandidateTheoryFamilyDisplay)}");
         }
         AnsiConsole.MarkupLine($"[grey]  bit space:[/] {Markup.Escape(DescribeBitSpace(candidate.Prediction.Config))}");
     }
@@ -2252,6 +2470,7 @@ public sealed class PredictionGuidedHybridSelectionService
                 candidateAttemptLimit = c.CandidateAttemptLimit,
                 rawSelectionRank = c.RawSelectionRank,
                 diversityMode = c.DiversityMode,
+                selectionStrategy = c.CandidateSelectionNotes.FirstOrDefault(x => x.Contains("selectionStrategy=family-size-ladder", StringComparison.Ordinal)),
                 candidateTheoryFamilyKey = c.CandidateTheoryFamilyKey,
                 candidateTheoryFamilyDisplay = c.CandidateTheoryFamilyDisplay,
                 candidateTheoryFamilyRank = c.CandidateTheoryFamilyRank,
@@ -2329,6 +2548,31 @@ public sealed class PredictionGuidedHybridSelectionService
         return Path.Combine(Directory.GetCurrentDirectory(), "GGUF");
     }
 
+    private async Task<long> CountPredictedRowsInIntersectedSizeWindowAsync(
+        ulong predictionMin,
+        ulong predictionMax,
+        ulong realMin,
+        ulong realMax,
+        CancellationToken ct)
+    {
+        var window = IntersectSizeWindows(predictionMin, predictionMax, realMin, realMax);
+        if (window == null)
+            return 0;
+
+        return await _predictedStore.CountPredictedHybridCandidatesInSizeWindowAsync(window.Value.Min, window.Value.Max, ct);
+    }
+
+    private static (ulong Min, ulong Max)? IntersectSizeWindows(
+        ulong firstMin,
+        ulong firstMax,
+        ulong secondMin,
+        ulong secondMax)
+    {
+        ulong min = Math.Max(firstMin, secondMin);
+        ulong max = Math.Min(firstMax, secondMax);
+        return max < min ? null : (min, max);
+    }
+
     private static ulong AddPercent(ulong bytes, double percent)
     {
         if (percent <= 0d)
@@ -2377,9 +2621,17 @@ public sealed class PredictionGuidedHybridSelectionService
         public IReadOnlyList<HybridSelectionCandidate> Candidates { get; init; } = Array.Empty<HybridSelectionCandidate>();
         public string Mode { get; init; } = string.Empty;
         public bool DiversityEnabled { get; init; }
+        public string SelectionStrategy { get; init; } = string.Empty;
         public int CandidateFamilyCount { get; init; }
         public int SelectedFamilyCount { get; init; }
         public IReadOnlyList<string> SelectedFamilyKeys { get; init; } = Array.Empty<string>();
+        public string DiversitySelectionStrategy { get; init; } = string.Empty;
+        public int DiversityOverflowCount { get; init; }
+        public ulong? DiversitySizeFloorStartBytes { get; init; }
+        public ulong? DiversitySizeFloorEndBytes { get; init; }
+        public int OverflowCount { get; init; }
+        public ulong? SizeFloorStartBytes { get; init; }
+        public ulong? SizeFloorEndBytes { get; init; }
         public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
     }
 
@@ -2395,6 +2647,11 @@ public sealed class PredictionGuidedHybridSelectionService
         public CandidateTheorySignature Signature { get; init; } = new();
         public int RawRank { get; init; }
         public int MemberRank { get; set; }
+        public CandidateTheoryFamily? Family { get; set; }
+        public string SelectionMode { get; set; } = string.Empty;
+        public ulong? PreviousSizeFloorBytes { get; set; }
+        public long? SizeDeltaVsFloorBytes { get; set; }
+        public double EffectivePredictedKld { get; set; } = double.NaN;
     }
 
     private sealed class CandidateTheoryFamily
@@ -2445,6 +2702,10 @@ public sealed class PredictionGuidedHybridSelectionService
         public ulong WindowMaxSizeBytes { get; init; }
         public double WindowSizeGiB { get; init; }
         public long CandidatePoolSize { get; init; }
+        public long PredictedPoolCount { get; init; }
+        public long DeterministicEligibleCount { get; init; }
+        public long RejectedByRealSizeWindow { get; init; }
+        public long RejectedByOtherPhaseDeterministicRules { get; init; }
         public long WindowCandidateCount { get; init; }
         public long LineBeatingCandidateCount { get; init; }
         public int FetchedCandidateCount { get; init; }
@@ -2459,6 +2720,10 @@ public sealed class PredictionGuidedHybridSelectionService
         public int CandidateFamilyCount { get; init; }
         public int SelectedFamilyCount { get; init; }
         public IReadOnlyList<string> SelectedFamilyKeys { get; init; } = Array.Empty<string>();
+        public string DiversitySelectionStrategy { get; init; } = string.Empty;
+        public int DiversityOverflowCount { get; init; }
+        public ulong? DiversitySizeFloorStartBytes { get; init; }
+        public ulong? DiversitySizeFloorEndBytes { get; init; }
         public IReadOnlyList<CandidatePreviewLog> TopCandidates { get; init; } = Array.Empty<CandidatePreviewLog>();
         public IReadOnlyList<CandidatePreviewLog> RejectedByBrutalityPreview { get; init; } = Array.Empty<CandidatePreviewLog>();
         public IReadOnlyList<string> Notes { get; init; } = Array.Empty<string>();
