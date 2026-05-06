@@ -34,6 +34,7 @@ public sealed class PredictionGuidedHybridSelectionService
     private readonly HybridBenchmarkRepository _repository;
     private readonly FinalRealBenchmarkEliminationService _finalEliminator;
     private readonly RemainingCombinationStore _predictedStore;
+    private readonly SmartBaselineTuningFallbackService _smartFallbackService;
 
     public PredictionGuidedHybridSelectionService(
         QuantizationService quantizationService,
@@ -45,6 +46,7 @@ public sealed class PredictionGuidedHybridSelectionService
         _repository = repository;
         _finalEliminator = finalEliminator;
         _predictedStore = predictedStore;
+        _smartFallbackService = new SmartBaselineTuningFallbackService(repository);
     }
 
     public async Task<PredictionGuidedSelectionResult> RunAsync(
@@ -156,9 +158,11 @@ public sealed class PredictionGuidedHybridSelectionService
                     LowerDamageLarger = ToAnchorLog(anchor),
                     WindowMinSizeBytes = 0,
                     WindowMaxSizeBytes = anchor.SizeBytes,
-                    CandidateAttemptLimit = Config.SelectionMaxFallbackAttemptsPerAnchor,
-                    Notes = ["Skipped because no predicted virtual anchor row was available. DuckDB preselection intentionally does not fall back to real anchor KLD/size."]
+                    CandidateAttemptLimit = Config.SelectionMaxFallbackAttemptsPerAnchor + Config.SelectionSmartFallbackAttemptsPerFailure,
+                    Notes = ["Skipped because no predicted virtual anchor row was available. DuckDB preselection intentionally does not fall back to real anchor KLD/size. Smart baseline fallback may still inspect SQLite isolation truth."]
                 });
+
+                await TryRunSmartStrictFallbackAsync(anchor, accepted, eliminations, validationFailures, validationAttempts, ct);
                 continue;
             }
 
@@ -277,7 +281,10 @@ public sealed class PredictionGuidedHybridSelectionService
                 AnsiConsole.MarkupLine($"[yellow]Strict dominance skipped builds for {Markup.Escape(anchor.DisplayName)}:[/] no physically eligible predicted candidates remained after deterministic size/KLD filters.");
 
             if (candidates.Count == 0)
+            {
+                await TryRunSmartStrictFallbackAsync(anchor, accepted, eliminations, validationFailures, validationAttempts, ct);
                 continue;
+            }
 
             var acceptedForAnchor = new List<CandidateValidationResult>();
             foreach (var candidate in candidates)
@@ -306,6 +313,7 @@ public sealed class PredictionGuidedHybridSelectionService
             if (acceptedForAnchor.Count == 0)
             {
                 AnsiConsole.MarkupLine($"[grey]No strict predicted replacement validated for anchor:[/] {Markup.Escape(anchor.DisplayName)}");
+                await TryRunSmartStrictFallbackAsync(anchor, accepted, eliminations, validationFailures, validationAttempts, ct);
                 continue;
             }
 
@@ -345,6 +353,69 @@ public sealed class PredictionGuidedHybridSelectionService
 
         return new PhaseValidationResult { AcceptedSnapshots = accepted };
     }
+
+
+    private async Task<bool> TryRunSmartStrictFallbackAsync(
+        BenchmarkSnapshotRecord anchor,
+        List<BenchmarkSnapshotRecord> accepted,
+        List<BaselineEliminationRecord> eliminations,
+        List<CandidateValidationResult> validationFailures,
+        List<CandidateValidationResult> validationAttempts,
+        CancellationToken ct)
+    {
+        if (!Config.SelectionSmartFallbackEnabled)
+            return false;
+
+        var smartCandidates = (await _smartFallbackService.BuildStrictDominanceCandidatesAsync(anchor, 1, 1, ct)).ToList();
+        if (smartCandidates.Count == 0)
+            return false;
+
+        var acceptedForAnchor = new List<CandidateValidationResult>();
+
+        foreach (var candidate in smartCandidates)
+        {
+            var validation = await BuildAndValidateSingleAsync(
+                candidate,
+                snapshot => snapshot.SizeBytes <= anchor.SizeBytes &&
+                            snapshot.Kld + Config.SelectionMinimumKldImprovementEpsilon < anchor.Kld,
+                $"smart fallback must be <= {anchor.SizeBytes:N0} bytes and lower KLD than {anchor.DisplayName}",
+                ct);
+
+            validationAttempts.Add(validation);
+
+            if (validation.Accepted && validation.Snapshot != null)
+            {
+                acceptedForAnchor.Add(validation);
+                break;
+            }
+
+            validationFailures.Add(validation);
+        }
+
+        if (acceptedForAnchor.Count == 0)
+        {
+            AnsiConsole.MarkupLine($"[grey]Smart strict fallback found no validated replacement for anchor:[/] {Markup.Escape(anchor.DisplayName)}");
+            return false;
+        }
+
+        var chosen = ChooseBestStrictDominanceCandidate(anchor, acceptedForAnchor);
+        accepted.Add(chosen.Snapshot!);
+        eliminations.Add(new BaselineEliminationRecord
+        {
+            Eliminated = anchor,
+            Eliminator = chosen.Snapshot!,
+            Reason = "smart baseline-tuning strict dominance fallback: real benchmark validated lower KLD at same-or-smaller size"
+        });
+
+        AnsiConsole.MarkupLine("[green]Smart strict fallback candidate selected:[/]");
+        AnsiConsole.MarkupLine($"[grey]  anchor=[/] [cyan]{Markup.Escape(anchor.DisplayName)}[/]");
+        AnsiConsole.MarkupLine($"[grey]  chosen=[/] [cyan]{Markup.Escape(chosen.Snapshot!.DisplayName)}[/]");
+        AnsiConsole.MarkupLine($"[grey]  actualKld=[/] [cyan]{chosen.Snapshot.Kld:0.000000}[/]");
+        AnsiConsole.MarkupLine($"[grey]  actualSizeBytes=[/] [cyan]{chosen.Snapshot.SizeBytes:N0}[/]");
+        AnsiConsole.MarkupLine($"[grey]  gainVsAnchor=[/] [cyan]{anchor.Kld - chosen.Snapshot.Kld:0.000000}[/]");
+        return true;
+    }
+
 
 
 
@@ -550,6 +621,18 @@ public sealed class PredictionGuidedHybridSelectionService
                 continue;
             }
 
+            ulong realMin = lowerSizeHigherDamage.SizeBytes;
+            ulong realMax = AddPercent(realMin, Config.SelectionNearBaselineMaxSizeGrowthPercent);
+
+            if (realMax > upperSizeLowerDamage.SizeBytes)
+                realMax = upperSizeLowerDamage.SizeBytes;
+
+            if (realMax <= realMin)
+            {
+                AnsiConsole.MarkupLine($"[grey]Skipping near-baseline pair with empty real window:[/] {Markup.Escape(lowerSizeHigherDamage.DisplayName)} -> {Markup.Escape(upperSizeLowerDamage.DisplayName)}");
+                continue;
+            }
+
             var predictedLowerSizeHigherDamage = await _predictedStore.FindPredictedAnchorForRealAnchorAsync(lowerSizeHigherDamage, predictedAnchors, ct);
             var predictedUpperSizeLowerDamage = await _predictedStore.FindPredictedAnchorForRealAnchorAsync(upperSizeLowerDamage, predictedAnchors, ct);
             if (predictedLowerSizeHigherDamage == null || predictedUpperSizeLowerDamage == null)
@@ -565,16 +648,15 @@ public sealed class PredictionGuidedHybridSelectionService
                     LowerDamageLarger = ToAnchorLog(upperSizeLowerDamage),
                     PredictionHigherDamageSmaller = ToPredictionAnchorLog(predictedLowerSizeHigherDamage),
                     PredictionLowerDamageLarger = ToPredictionAnchorLog(predictedUpperSizeLowerDamage),
-                    Notes = ["Skipped because one or both predicted virtual anchor rows were unavailable. DuckDB preselection intentionally does not fall back to real anchor KLD/size."]
+                    WindowMinSizeBytes = realMin,
+                    WindowMaxSizeBytes = realMax,
+                    CandidateAttemptLimit = Config.SelectionMaxFallbackAttemptsPerAnchor + Config.SelectionSmartFallbackAttemptsPerFailure,
+                    Notes = ["Skipped because one or both predicted virtual anchor rows were unavailable. DuckDB preselection intentionally does not fall back to real anchor KLD/size. Smart baseline fallback may still inspect SQLite isolation truth."]
                 });
+
+                await TryRunSmartNearFallbackAsync(lowerSizeHigherDamage, upperSizeLowerDamage, realMin, realMax, pairIndex + 1, pairs.Count, accepted, eliminations, validationFailures, validationAttempts, ct);
                 continue;
             }
-
-            ulong realMin = lowerSizeHigherDamage.SizeBytes;
-            ulong realMax = AddPercent(realMin, Config.SelectionNearBaselineMaxSizeGrowthPercent);
-
-            if (realMax > upperSizeLowerDamage.SizeBytes)
-                realMax = upperSizeLowerDamage.SizeBytes;
 
             ulong predictionMin = predictedLowerSizeHigherDamage.PredictedSizeBytes;
             ulong predictionMax = AddPercent(predictionMin, Config.SelectionNearBaselineMaxSizeGrowthPercent);
@@ -585,6 +667,7 @@ public sealed class PredictionGuidedHybridSelectionService
             if (predictionMax <= predictionMin || realMax <= realMin)
             {
                 AnsiConsole.MarkupLine($"[grey]Skipping near-baseline pair with empty prediction/real window:[/] {Markup.Escape(lowerSizeHigherDamage.DisplayName)} -> {Markup.Escape(upperSizeLowerDamage.DisplayName)}");
+                await TryRunSmartNearFallbackAsync(lowerSizeHigherDamage, upperSizeLowerDamage, realMin, realMax, pairIndex + 1, pairs.Count, accepted, eliminations, validationFailures, validationAttempts, ct);
                 continue;
             }
 
@@ -720,8 +803,12 @@ public sealed class PredictionGuidedHybridSelectionService
                 AnsiConsole.MarkupLine($"[grey]  rejected by near-lower-anchor brutality preview:[/] [cyan]{rejectedByBrutality.Count:N0}[/] (see magicquant-selection-phase-diagnostics.json)");
 
             if (candidates.Count == 0)
+            {
+                await TryRunSmartNearFallbackAsync(lowerSizeHigherDamage, upperSizeLowerDamage, realMin, realMax, pairIndex + 1, pairs.Count, accepted, eliminations, validationFailures, validationAttempts, ct);
                 continue;
+            }
 
+            bool acceptedThisPair = false;
             foreach (var candidate in candidates)
             {
                 var validation = await BuildAndValidateSingleAsync(
@@ -743,15 +830,89 @@ public sealed class PredictionGuidedHybridSelectionService
                         Eliminator = validation.Snapshot,
                         Reason = $"near-baseline replacement within +{Config.SelectionNearBaselineMaxSizeGrowthPercent:0.###}% size premium"
                     });
+                    acceptedThisPair = true;
                     break;
                 }
 
                 validationFailures.Add(validation);
             }
+
+            if (!acceptedThisPair)
+            {
+                await TryRunSmartNearFallbackAsync(lowerSizeHigherDamage, upperSizeLowerDamage, realMin, realMax, pairIndex + 1, pairs.Count, accepted, eliminations, validationFailures, validationAttempts, ct);
+            }
         }
 
         return new PhaseValidationResult { AcceptedSnapshots = accepted };
     }
+
+
+    private async Task<bool> TryRunSmartNearFallbackAsync(
+        BenchmarkSnapshotRecord lowerSizeHigherDamage,
+        BenchmarkSnapshotRecord upperSizeLowerDamage,
+        ulong realMin,
+        ulong realMax,
+        int phaseWindowIndex,
+        int phaseWindowCount,
+        List<BenchmarkSnapshotRecord> accepted,
+        List<BaselineEliminationRecord> eliminations,
+        List<CandidateValidationResult> validationFailures,
+        List<CandidateValidationResult> validationAttempts,
+        CancellationToken ct)
+    {
+        if (!Config.SelectionSmartFallbackEnabled)
+            return false;
+
+        var smartCandidates = (await _smartFallbackService.BuildNearBaselineCandidatesAsync(
+            lowerSizeHigherDamage,
+            upperSizeLowerDamage,
+            realMin,
+            realMax,
+            phaseWindowIndex,
+            phaseWindowCount,
+            ct)).ToList();
+
+        if (smartCandidates.Count == 0)
+            return false;
+
+        foreach (var candidate in smartCandidates)
+        {
+            var validation = await BuildAndValidateSingleAsync(
+                candidate,
+                snapshot => snapshot.SizeBytes >= realMin &&
+                            snapshot.SizeBytes <= realMax &&
+                            BeatsLinearKldLine(snapshot.SizeBytes, snapshot.Kld, lowerSizeHigherDamage, upperSizeLowerDamage),
+                $"smart fallback must land inside {realMin:N0}..{realMax:N0} bytes and beat the real linear KLD line",
+                ct);
+
+            validationAttempts.Add(validation);
+
+            if (validation.Accepted && validation.Snapshot != null)
+            {
+                accepted.Add(validation.Snapshot);
+                eliminations.Add(new BaselineEliminationRecord
+                {
+                    Eliminated = lowerSizeHigherDamage,
+                    Eliminator = validation.Snapshot,
+                    Reason = $"smart baseline-tuning near-baseline fallback within +{Config.SelectionNearBaselineMaxSizeGrowthPercent:0.###}% size premium"
+                });
+
+                AnsiConsole.MarkupLine("[green]Smart near-baseline fallback candidate selected:[/]");
+                AnsiConsole.MarkupLine($"[grey]  lower anchor=[/] [cyan]{Markup.Escape(lowerSizeHigherDamage.DisplayName)}[/]");
+                AnsiConsole.MarkupLine($"[grey]  upper anchor=[/] [cyan]{Markup.Escape(upperSizeLowerDamage.DisplayName)}[/]");
+                AnsiConsole.MarkupLine($"[grey]  chosen=[/] [cyan]{Markup.Escape(validation.Snapshot.DisplayName)}[/]");
+                AnsiConsole.MarkupLine($"[grey]  actualKld=[/] [cyan]{validation.Snapshot.Kld:0.000000}[/]");
+                AnsiConsole.MarkupLine($"[grey]  actualSizeBytes=[/] [cyan]{validation.Snapshot.SizeBytes:N0}[/]");
+                return true;
+            }
+
+            validationFailures.Add(validation);
+        }
+
+        AnsiConsole.MarkupLine($"[grey]Smart near-baseline fallback found no validated candidate for:[/] {Markup.Escape(lowerSizeHigherDamage.DisplayName)} -> {Markup.Escape(upperSizeLowerDamage.DisplayName)}");
+        return false;
+    }
+
 
     private async Task<PhaseValidationResult> RunInteriorSubspaceDiscoveryAsync(
         IReadOnlyList<BenchmarkSnapshotRecord> currentAnchors,
@@ -972,7 +1133,8 @@ public sealed class PredictionGuidedHybridSelectionService
         if (deduped.Count == 0)
         {
             AnsiConsole.MarkupLine("[grey]No predicted interior candidates beat their local linear KLD lines after window/brutality filtering.[/]");
-            return new PhaseValidationResult();
+            var smartOnly = await RunSmartInteriorFallbackAsync(pairs, fractions, validationFailures, validationAttempts, ct);
+            return new PhaseValidationResult { AcceptedSnapshots = smartOnly };
         }
 
         AnsiConsole.MarkupLine($"[grey]Interior candidates selected for batch validation:[/] [cyan]{deduped.Count:N0}[/]");
@@ -1029,7 +1191,102 @@ public sealed class PredictionGuidedHybridSelectionService
             validationFailures.Add(validation);
         }
 
+        if (accepted.Count == 0)
+        {
+            var smartAccepted = await RunSmartInteriorFallbackAsync(pairs, fractions, validationFailures, validationAttempts, ct);
+            accepted.AddRange(smartAccepted);
+        }
+
         return new PhaseValidationResult { AcceptedSnapshots = accepted };
+    }
+
+    private async Task<IReadOnlyList<BenchmarkSnapshotRecord>> RunSmartInteriorFallbackAsync(
+        IReadOnlyList<AdjacentAnchorPair> pairs,
+        IReadOnlyList<double> fractions,
+        List<CandidateValidationResult> validationFailures,
+        List<CandidateValidationResult> validationAttempts,
+        CancellationToken ct)
+    {
+        if (!Config.SelectionSmartFallbackEnabled)
+            return Array.Empty<BenchmarkSnapshotRecord>();
+
+        var accepted = new List<BenchmarkSnapshotRecord>();
+        int estimatedWindowCount = pairs.Sum(pair => EstimateInteriorWindowCount(pair, fractions));
+        int globalWindowIndex = 0;
+
+        foreach (var pair in pairs)
+        {
+            ulong realLowSize = pair.HigherDamageSmaller.SizeBytes;
+            ulong realHighSize = pair.LowerDamageLarger.SizeBytes;
+            if (realHighSize <= realLowSize)
+                continue;
+
+            ulong realSpan = realHighSize - realLowSize;
+            ulong realCursor = realLowSize;
+
+            for (int i = 0; i < fractions.Count; i++)
+            {
+                double fraction = fractions[i];
+                if (fraction <= 0d)
+                    continue;
+
+                ulong realWidth = (ulong)Math.Max(1d, Math.Round(realSpan * Math.Clamp(fraction, 0d, 1d)));
+                ulong realMin = realCursor;
+                ulong realMax = i == fractions.Count - 1
+                    ? realHighSize
+                    : Math.Min(realHighSize, realCursor + realWidth);
+
+                if (realMax <= realMin)
+                    continue;
+
+                globalWindowIndex++;
+                string windowLabel = $"smart interior {globalWindowIndex:N0}: {pair.HigherDamageSmaller.DisplayName} -> {pair.LowerDamageLarger.DisplayName}";
+
+                var smartCandidates = (await _smartFallbackService.BuildInteriorCandidatesAsync(
+                    pair.HigherDamageSmaller,
+                    pair.LowerDamageLarger,
+                    realMin,
+                    realMax,
+                    windowLabel,
+                    globalWindowIndex,
+                    Math.Max(estimatedWindowCount, globalWindowIndex),
+                    ct)).ToList();
+
+                foreach (var candidate in smartCandidates)
+                {
+                    var validation = await BuildAndValidateSingleAsync(
+                        candidate,
+                        snapshot => snapshot.SizeBytes >= realMin &&
+                                    snapshot.SizeBytes <= realMax &&
+                                    BeatsLinearKldLine(snapshot.SizeBytes, snapshot.Kld, pair.HigherDamageSmaller, pair.LowerDamageLarger),
+                        $"smart fallback must land inside {realMin:N0}..{realMax:N0} bytes and beat the real interior linear KLD line",
+                        ct);
+
+                    validationAttempts.Add(validation);
+
+                    if (validation.Accepted && validation.Snapshot != null)
+                    {
+                        accepted.Add(validation.Snapshot);
+                        AnsiConsole.MarkupLine("[green]Smart interior fallback candidate selected:[/]");
+                        AnsiConsole.MarkupLine($"[grey]  lower anchor=[/] [cyan]{Markup.Escape(pair.HigherDamageSmaller.DisplayName)}[/]");
+                        AnsiConsole.MarkupLine($"[grey]  upper anchor=[/] [cyan]{Markup.Escape(pair.LowerDamageLarger.DisplayName)}[/]");
+                        AnsiConsole.MarkupLine($"[grey]  chosen=[/] [cyan]{Markup.Escape(validation.Snapshot.DisplayName)}[/]");
+                        AnsiConsole.MarkupLine($"[grey]  actualKld=[/] [cyan]{validation.Snapshot.Kld:0.000000}[/]");
+                        AnsiConsole.MarkupLine($"[grey]  actualSizeBytes=[/] [cyan]{validation.Snapshot.SizeBytes:N0}[/]");
+                        return accepted;
+                    }
+
+                    validationFailures.Add(validation);
+                }
+
+                realCursor = realMax;
+                if (realCursor >= realHighSize)
+                    break;
+            }
+        }
+
+        AnsiConsole.MarkupLine("[grey]Smart interior fallback found no validated candidates.[/]");
+        return accepted;
     }
 
     private async Task<CandidateValidationResult> BuildAndValidateSingleAsync(

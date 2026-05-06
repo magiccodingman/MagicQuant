@@ -53,6 +53,15 @@ public static class Config
     public static int SelectionMaxFallbackAttemptsPerAnchor =>
         Math.Max(1, Current.CandidateSelection.MaxFallbackAttemptsPerAnchor);
 
+    public static bool SelectionSmartFallbackEnabled =>
+        Current.CandidateSelection.SmartFallbackEnabled && SelectionSmartFallbackAttemptsPerFailure > 0;
+
+    public static int SelectionSmartFallbackAttemptsPerFailure =>
+        Math.Max(0, Current.CandidateSelection.SmartFallbackAttemptsPerFailure);
+
+    public static int SelectionSmartFallbackMaxHigherFidelitySteps =>
+        Math.Max(0, Current.CandidateSelection.SmartFallbackMaxHigherFidelitySteps);
+
     public static double SelectionMinimumKldImprovementEpsilon =>
         Math.Max(0d, Current.CandidateSelection.MinimumKldImprovementEpsilon);
 

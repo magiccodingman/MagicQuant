@@ -241,6 +241,15 @@ candidate_selection:
   # If the first predicted candidate fails real validation, try this many fallbacks.
   max_fallback_attempts_per_anchor: 5
 
+  # Conservative SQLite/isolation-truth fallback. This runs only after the
+  # normal DuckDB prediction-guided attempts fail for a strict/premium/interior
+  # phase window. It starts from the anchor baseline blanket and only swaps
+  # tensor groups using surviving isolated group candidates, plus the baseline
+  # itself as the blanket state.
+  smart_fallback_enabled: true
+  smart_fallback_attempts_per_failure: 3
+  smart_fallback_max_higher_fidelity_steps: 2
+
   # Strict epsilon for lower-KLD comparisons after real benchmark validation.
   minimum_kld_improvement_epsilon: 1.0e-9
 

@@ -80,7 +80,14 @@ public enum HybridSelectionReason
 {
     StrictDominanceReplacement = 1,
     NearBaselineOnePercentReplacement = 2,
-    InteriorSubspaceDiscovery = 3
+    InteriorSubspaceDiscovery = 3,
+
+    // SQLite/isolation-truth fallback candidates. These are intentionally not
+    // DuckDB prediction-space rows; they are conservative baseline-blanket
+    // tuning attempts used only after the normal selector cannot validate a win.
+    SmartStrictDominanceFallback = 4,
+    SmartNearBaselineFallback = 5,
+    SmartInteriorSubspaceFallback = 6
 }
 
 public sealed class HybridSelectionCandidate

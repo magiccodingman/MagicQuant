@@ -218,6 +218,26 @@ public sealed class RuntimeCandidateSelectionConfig
     public int MaxFallbackAttemptsPerAnchor { get; set; } = 5;
 
     /// <summary>
+    /// Enables the conservative SQLite/isolation-truth baseline tuning fallback.
+    /// This does not query DuckDB and only runs after a normal phase fails to
+    /// validate a candidate for its anchor/window.
+    /// </summary>
+    public bool SmartFallbackEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Extra build/benchmark attempts permitted after the normal prediction-guided
+    /// attempts fail for a strict, near-baseline, or interior window.
+    /// </summary>
+    public int SmartFallbackAttemptsPerFailure { get; set; } = 3;
+
+    /// <summary>
+    /// Maximum number of higher-fidelity anchor steps the smart fallback may climb
+    /// for a single tensor group. Lower-fidelity swaps are still only allowed when
+    /// their isolated KLD is measurably better than the baseline group state.
+    /// </summary>
+    public int SmartFallbackMaxHigherFidelitySteps { get; set; } = 2;
+
+    /// <summary>
     /// Strict epsilon for "lower KLD" claims. This is intentionally tiny because
     /// the validator verifies the final relationship against real benchmark truth.
     /// </summary>

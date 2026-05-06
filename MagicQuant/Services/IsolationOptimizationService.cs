@@ -44,6 +44,7 @@ public sealed class IsolationOptimizationResult
     public int DominatedGroupCandidatesBanned { get; set; }
     public int HardDamageEliminations { get; set; }
     public int BadTradeEliminations { get; set; }
+    public int FinalKldCleanupEliminations { get; set; }
     public int DisabledBaselines { get; set; }
     public int Bf16SuppressedGroups { get; set; }
 
@@ -267,6 +268,8 @@ public class IsolationOptimizationService
             ApplyDominanceElimination(group, candidates, result);
             candidates = FilterSurvivors(group, candidates);
             ApplyBadTradeElimination(group, candidates, result);
+            candidates = FilterSurvivors(group, candidates);
+            ApplyFinalKldCleanupElimination(group, candidates, result);
             candidates = FilterSurvivors(group, candidates);
             ApplyEquivalentTruthElimination(group, candidates, result);
 
@@ -594,6 +597,56 @@ public class IsolationOptimizationService
                 acceptedAnchor = promotedAnchor;
         }
     }
+
+
+    private static void ApplyFinalKldCleanupElimination(
+        TensorGroup group,
+        List<GroupCandidateEvaluation> candidates,
+        IsolationOptimizationResult result)
+    {
+        var activeCandidates = GetActiveExplicitCandidates(group, candidates, phase: "FinalKldCleanup");
+        if (activeCandidates.Count <= 1)
+            return;
+
+        foreach (var candidate in activeCandidates
+                     .OrderByDescending(x => x.SizeBytes)
+                     .ThenByDescending(x => x.Kld)
+                     .ToList())
+        {
+            if (RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate.CandidateBaseline))
+                continue;
+
+            var better = activeCandidates
+                .Where(x => x.CandidateBaseline.UniqueId != candidate.CandidateBaseline.UniqueId)
+                .Where(x => !RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x.CandidateBaseline))
+                .Where(x => x.SizeBytes <= candidate.SizeBytes)
+                .Where(x => x.Kld + IsolationPruningConfig.FloatingPointEpsilon < candidate.Kld)
+                .OrderBy(x => x.Kld)
+                .ThenBy(x => x.SizeBytes)
+                .ThenBy(x => Math.Abs(x.PplDeltaPercent))
+                .ThenByDescending(x => EquivalentTruthSelectionHelper.GetBaselineSafetyRank(
+                    x.CandidateBaseline,
+                    isHybrid: false,
+                    isExternalPureBaseline: x.CandidateBaseline.IsExternalRepositoryBaseline))
+                .ThenBy(x => x.CandidateBaseline.Names[0], StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            if (better == null)
+                continue;
+
+            RuntimeSearchSpace.BanCombinationCandidateForGroup(
+                group,
+                candidate.CandidateBaseline,
+                phase: "FinalKldCleanup",
+                reason: $"same-size-or-larger and higher KLD than {better.CandidateBaseline.Names[0]} after bad-trade anchoring");
+
+            result.FinalKldCleanupEliminations++;
+            result.Notes.Add(
+                $"Final KLD cleanup elimination: '{candidate.CandidateBaseline.Names[0]}' removed for '{group.Name}' because '{better.CandidateBaseline.Names[0]}' was same-size-or-smaller and lower KLD after bad-trade anchoring completed " +
+                $"(removed size={candidate.SizeBytes:N0}, kld={candidate.Kld:G6}; replacement size={better.SizeBytes:N0}, kld={better.Kld:G6}).");
+        }
+    }
+
 
 
     private static void ApplyEquivalentTruthElimination(

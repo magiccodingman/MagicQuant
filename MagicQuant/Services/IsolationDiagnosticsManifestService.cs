@@ -46,6 +46,7 @@ public sealed class IsolationDiagnosticsManifestService
             summary = new
             {
                 badTradeEliminations = isolationResult.BadTradeEliminations,
+                finalKldCleanupEliminations = isolationResult.FinalKldCleanupEliminations,
                 disabledBaselines = isolationResult.DisabledBaselines,
                 structuredBadTradeRows = isolationResult.BadTradeDetails.Count
             },
