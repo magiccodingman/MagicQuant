@@ -10,13 +10,13 @@ namespace MagicQuant.Services;
 /// Conservative, non-DuckDB fallback used only after the normal prediction-guided
 /// selector fails to validate a candidate for a strict/premium/interior phase.
 ///
-/// The service starts from a uniform learned-baseline blanket, keeps that blanket
-/// baseline available for every group even if the baseline was pruned from a group,
-/// and only swaps in group candidates that survived isolation pruning. It does not
-/// create the normal prediction-space gremlin trades: shrinking is only allowed when
-/// the isolated group sample is same-size-or-smaller and measurably lower KLD than
-/// the blanket state; higher-fidelity protection is bounded by config and must fit
-/// the target real-size window exactly.
+/// The service starts from the real benchmarked pure/uniform baseline anchor, keeps
+/// that blanket baseline available for every group even if the baseline was pruned
+/// from a group, and only swaps in group candidates that survived isolation pruning.
+/// It does not create the normal prediction-space gremlin trades: shrinking is only
+/// allowed when the isolated group sample is same-size-or-smaller and measurably lower
+/// KLD than the blanket state; higher-fidelity protection is bounded by config and
+/// must fit the target real-size window exactly.
 /// </summary>
 public sealed class SmartBaselineTuningFallbackService
 {
@@ -122,27 +122,11 @@ public sealed class SmartBaselineTuningFallbackService
         }
 
         var context = await GetContextAsync(ct);
-        if (!context.BaseOnlySnapshotsByBaselineId.ContainsKey(blanketBaseline.UniqueId))
-        {
-            AnsiConsole.MarkupLine($"[grey]Smart fallback skipped:[/] missing exact base-only anchor for {Markup.Escape(blanketBaseline.Names[0])}.");
-            return Array.Empty<HybridSelectionCandidate>();
-        }
+        var blanketAnchor = ResolveSmartBlanketAnchor(request.BaselineAnchor, blanketBaseline, context);
+        ValidateBlanketIsolationCoverage(blanketBaseline, context);
 
-        var baseBlanket = HybridQuant.CreateLearnedCandidateBlanket(
-            baseQuant: blanketBaseline,
-            groups: context.ActiveGroups,
-            candidateBaseline: blanketBaseline);
-        var baseConfig = (TensorConfig)baseBlanket;
-
-        var hasBaseSize = TryPredictSize(baseConfig, context, out var baseSize, out var baseSizeNotes);
-        var hasBaseKld = TryComputeAdditiveKld(baseConfig, context, out var baseKld, out var baseKldNotes);
-
-        if (!hasBaseSize || !hasBaseKld)
-        {
-            var notes = baseSizeNotes.Concat(baseKldNotes).Distinct().ToList();
-            AnsiConsole.MarkupLine($"[grey]Smart fallback skipped:[/] incomplete isolation truth for {Markup.Escape(blanketBaseline.Names[0])} blanket. {Markup.Escape(string.Join(" ", notes.Take(2)))}");
-            return Array.Empty<HybridSelectionCandidate>();
-        }
+        var baseSize = blanketAnchor.SizeBytes;
+        var baseKld = Math.Max(0d, blanketAnchor.Kld);
 
         if (request.StrictDominance && baseSize > request.WindowMaxSizeBytes)
         {
@@ -160,7 +144,7 @@ public sealed class SmartBaselineTuningFallbackService
             return Array.Empty<HybridSelectionCandidate>();
         }
 
-        var plans = BuildPlans(request, blanketBaseline, baseSize, baseKld, options, context);
+        var plans = BuildPlans(request, blanketBaseline, blanketAnchor, baseSize, baseKld, options, context);
         if (plans.Count == 0)
         {
             AnsiConsole.MarkupLine($"[grey]Smart fallback found no size-safe plans for[/] [cyan]{Markup.Escape(blanketBaseline.Names[0])}[/] in window {Markup.Escape(request.WindowLabel)}.");
@@ -223,6 +207,78 @@ public sealed class SmartBaselineTuningFallbackService
         }
 
         return true;
+    }
+
+    private static BenchmarkSnapshotRecord ResolveSmartBlanketAnchor(
+        BenchmarkSnapshotRecord anchor,
+        BaselineQuants blanketBaseline,
+        RankSafeKldPredictionService.RankSafePredictionModel context)
+    {
+        if (TensorConfigIdentity.IsPureBaseline(anchor.Config))
+        {
+            if (!context.PureSnapshotsByBaselineId.TryGetValue(blanketBaseline.UniqueId, out _))
+            {
+                throw new InvalidOperationException(
+                    $"Smart baseline fallback critical truth error: pure benchmark snapshot for '{blanketBaseline.Names[0]}' (id {blanketBaseline.UniqueId}) was not loaded, " +
+                    $"but strict/near/interior fallback is trying to tune from anchor '{anchor.DisplayName}'. " +
+                    "This is not a soft skip; the original baseline anchor is missing from the prediction context.");
+            }
+
+            /*
+             * Preserve the exact anchor that triggered the fallback. The dictionary check above is a
+             * consistency guard proving the pure baseline truth exists in the loaded context; using
+             * request.BaselineAnchor keeps size/KLD aligned with the active strict/near/interior frontier.
+             */
+            return anchor;
+        }
+
+        if (!IsUniformLearnedBlanket(anchor, blanketBaseline))
+        {
+            throw new InvalidOperationException(
+                $"Smart baseline fallback critical truth error: anchor '{anchor.DisplayName}' resolved to blanket '{blanketBaseline.Names[0]}', " +
+                "but the anchor is not a pure baseline and not a uniform learned-candidate blanket. This should have been rejected before anchor resolution.");
+        }
+
+        return anchor;
+    }
+
+    private static bool IsUniformLearnedBlanket(BenchmarkSnapshotRecord anchor, BaselineQuants blanketBaseline)
+    {
+        if (TensorConfigIdentity.IsPureBaseline(anchor.Config))
+            return true;
+
+        foreach (var (group, storedValue) in TensorConfigIdentity.EnumerateGroupSlots(anchor.Config))
+        {
+            if (Cache.UnusedTensorGroups.Any(x => x.UniqueId == group.UniqueId))
+                continue;
+
+            if (BaselineQuants.IsNullTensorConfigGroupSlot(storedValue))
+                continue;
+
+            var decoded = BaselineQuants.DecodeTensorConfigGroupSlotToBaselineId(storedValue);
+            if (decoded != blanketBaseline.UniqueId)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static void ValidateBlanketIsolationCoverage(
+        BaselineQuants blanketBaseline,
+        RankSafeKldPredictionService.RankSafePredictionModel context)
+    {
+        var missingGroups = context.ActiveGroups
+            .Where(group => !context.IsolationByGroupAndBaseline.ContainsKey((group.UniqueId, blanketBaseline.UniqueId)))
+            .Select(group => group.Name)
+            .ToList();
+
+        if (missingGroups.Count == 0)
+            return;
+
+        throw new InvalidOperationException(
+            $"Smart baseline fallback critical truth error: baseline '{blanketBaseline.Names[0]}' (id {blanketBaseline.UniqueId}) is present as a fallback anchor, " +
+            $"but isolated group truth is missing for {missingGroups.Count:N0}/{context.ActiveGroups.Count:N0} active group(s): {string.Join(", ", missingGroups)}. " +
+            "Smart fallback must not silently skip groups when tuning from a real baseline anchor.");
     }
 
     private async Task<RankSafeKldPredictionService.RankSafePredictionModel> GetContextAsync(CancellationToken ct)
@@ -383,6 +439,7 @@ public sealed class SmartBaselineTuningFallbackService
     private static List<SmartCandidatePlan> BuildPlans(
         SmartFallbackRequest request,
         BaselineQuants blanketBaseline,
+        BenchmarkSnapshotRecord blanketAnchor,
         ulong baseSize,
         double baseKld,
         IReadOnlyList<SmartGroupOption> options,
@@ -415,8 +472,8 @@ public sealed class SmartBaselineTuningFallbackService
             if (!seen.Add(key))
                 return;
 
-            if (!TryPredictSize(config, context, out var predictedSize, out _) ||
-                !TryComputeAdditiveKld(config, context, out var predictedKld, out _))
+            if (!TryPredictSize(config, blanketBaseline, blanketAnchor, context, out var predictedSize, out _) ||
+                !TryComputeAdditiveKld(config, blanketBaseline, blanketAnchor, context, out var predictedKld, out _))
                 return;
 
             if (request.StrictDominance)
@@ -502,7 +559,7 @@ public sealed class SmartBaselineTuningFallbackService
                 foreach (var selected in trial)
                     trialQuant.SetLearnedCandidateOverride(selected.Group, selected.CandidateBaseline);
 
-                if (!TryPredictSize((TensorConfig)trialQuant, context, out var trialSize, out _))
+                if (!TryPredictSize((TensorConfig)trialQuant, blanketBaseline, blanketAnchor, context, out var trialSize, out _))
                     continue;
 
                 if (trialSize <= request.WindowMaxSizeBytes)
@@ -604,6 +661,8 @@ public sealed class SmartBaselineTuningFallbackService
 
     private static bool TryPredictSize(
         TensorConfig config,
+        BaselineQuants blanketBaseline,
+        BenchmarkSnapshotRecord blanketAnchor,
         RankSafeKldPredictionService.RankSafePredictionModel context,
         out ulong sizeBytes,
         out IReadOnlyList<string> notes)
@@ -612,27 +671,20 @@ public sealed class SmartBaselineTuningFallbackService
         notes = localNotes;
         sizeBytes = 0;
 
-        if (!context.BaseOnlySnapshotsByBaselineId.TryGetValue(config.BaseQuant, out var baseOnlyAnchor))
-        {
-            localNotes.Add($"Missing base-only anchor for baseline id {config.BaseQuant}.");
-            return false;
-        }
-
-        long total = (long)baseOnlyAnchor.SizeBytes;
-        long q8ExactBlanketSize = (long)context.Q8BaseOnly.SizeBytes;
+        long total = (long)blanketAnchor.SizeBytes;
 
         foreach (var (group, effectiveBaselineId) in RankSafeKldPredictionService.EnumerateEffectiveBaselines(config, context.ActiveGroups))
         {
-            if (BaselineQuants.IsNativeExactAlias(effectiveBaselineId))
+            if (effectiveBaselineId == blanketBaseline.UniqueId)
                 continue;
 
-            if (!context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, effectiveBaselineId), out var snapshot))
+            if (!TryResolveIsolationSnapshot(group, blanketBaseline.UniqueId, context, localNotes, "baseline size", out var baseSnapshot) ||
+                !TryResolveIsolationSnapshot(group, effectiveBaselineId, context, localNotes, "candidate size", out var candidateSnapshot))
             {
-                localNotes.Add($"Missing isolation size anchor for {group.Name}:{effectiveBaselineId}.");
                 return false;
             }
 
-            total += (long)snapshot.SizeBytes - q8ExactBlanketSize;
+            total += (long)candidateSnapshot.SizeBytes - (long)baseSnapshot.SizeBytes;
         }
 
         if (total <= 0)
@@ -647,29 +699,67 @@ public sealed class SmartBaselineTuningFallbackService
 
     private static bool TryComputeAdditiveKld(
         TensorConfig config,
+        BaselineQuants blanketBaseline,
+        BenchmarkSnapshotRecord blanketAnchor,
         RankSafeKldPredictionService.RankSafePredictionModel context,
         out double additiveKld,
         out IReadOnlyList<string> notes)
     {
         var localNotes = new List<string>();
         notes = localNotes;
-        additiveKld = 0d;
+        additiveKld = Math.Max(0d, blanketAnchor.Kld);
 
         foreach (var (group, effectiveBaselineId) in RankSafeKldPredictionService.EnumerateEffectiveBaselines(config, context.ActiveGroups))
         {
-            if (BaselineQuants.IsNativeExactAlias(effectiveBaselineId))
+            if (effectiveBaselineId == blanketBaseline.UniqueId)
                 continue;
 
-            if (!context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, effectiveBaselineId), out var snapshot))
+            if (!TryResolveIsolationSnapshot(group, blanketBaseline.UniqueId, context, localNotes, "baseline KLD", out var baseSnapshot) ||
+                !TryResolveIsolationSnapshot(group, effectiveBaselineId, context, localNotes, "candidate KLD", out var candidateSnapshot))
             {
-                localNotes.Add($"Missing isolation KLD anchor for {group.Name}:{effectiveBaselineId}.");
                 return false;
             }
 
-            additiveKld += Math.Max(0d, snapshot.Kld);
+            additiveKld += Math.Max(0d, candidateSnapshot.Kld) - Math.Max(0d, baseSnapshot.Kld);
         }
 
+        additiveKld = Math.Max(0d, additiveKld);
         return true;
+    }
+
+    private static bool TryResolveIsolationSnapshot(
+        TensorGroup group,
+        byte baselineId,
+        RankSafeKldPredictionService.RankSafePredictionModel context,
+        List<string> notes,
+        string role,
+        out BenchmarkSnapshotRecord snapshot)
+    {
+        if (BaselineQuants.IsNativeExactAlias(baselineId))
+        {
+            snapshot = context.Q8BaseOnly;
+            return true;
+        }
+
+        if (context.IsolationByGroupAndBaseline.TryGetValue((group.UniqueId, baselineId), out var foundSnapshot))
+        {
+            snapshot = foundSnapshot;
+            return true;
+        }
+
+        var name = BaselineQuants.FromId(baselineId).Names[0];
+        var message = $"Missing {role} isolation anchor for group '{group.Name}' and baseline '{name}' (id {baselineId}).";
+        notes.Add(message);
+
+        if (BaselineQuants.FromId(baselineId).IsExternalRepositoryBaseline)
+        {
+            throw new InvalidOperationException(
+                $"Smart baseline fallback critical truth error: {message} " +
+                "External/custom fallback must use exact isolated truth and must not silently collapse or skip.");
+        }
+
+        snapshot = default!;
+        return false;
     }
 
     private static int CountHigherFidelitySteps(BaselineQuants baseBaseline, BaselineQuants candidate)

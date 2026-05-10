@@ -71,6 +71,35 @@ public static class RuntimeSearchSpace
         MagicQuantDiagnostics.LogRuntimeMutation(phase, group, candidate, reason, before, after);
     }
 
+    public static bool UnbanCombinationCandidateForGroup(
+        TensorGroup group,
+        BaselineQuants candidate,
+        string phase = "Unknown",
+        string reason = "unspecified")
+    {
+        int before = GetAllowedRealExplicitCombinationCandidatesForGroup(group).Count;
+
+        if (!ExplicitCandidateBansByGroup.TryGetValue(group.UniqueId, out var set) ||
+            !set.Remove(candidate.UniqueId))
+        {
+            return false;
+        }
+
+        if (set.Count == 0)
+            ExplicitCandidateBansByGroup.Remove(group.UniqueId);
+
+        if (ExplicitCandidateBanReasonsByGroup.TryGetValue(group.UniqueId, out var reasonMap))
+        {
+            reasonMap.Remove(candidate.UniqueId);
+            if (reasonMap.Count == 0)
+                ExplicitCandidateBanReasonsByGroup.Remove(group.UniqueId);
+        }
+
+        int after = GetAllowedRealExplicitCombinationCandidatesForGroup(group).Count;
+        MagicQuantDiagnostics.LogRuntimeMutation(phase, group, candidate, $"restored: {reason}", before, after);
+        return true;
+    }
+
     public static void BanCombinationCandidateForGroupDueToLearnedSchemeMismatch(
         TensorGroup group,
         BaselineQuants candidate,

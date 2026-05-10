@@ -46,9 +46,11 @@ public sealed class IsolationDiagnosticsManifestService
             summary = new
             {
                 badTradeEliminations = isolationResult.BadTradeEliminations,
+                synergySecondChanceReinstatements = isolationResult.SynergySecondChanceReinstatements,
                 finalKldCleanupEliminations = isolationResult.FinalKldCleanupEliminations,
                 disabledBaselines = isolationResult.DisabledBaselines,
-                structuredBadTradeRows = isolationResult.BadTradeDetails.Count
+                structuredBadTradeRows = isolationResult.BadTradeDetails.Count,
+                structuredSynergySecondChanceRows = isolationResult.SynergySecondChanceDetails.Count
             },
             thresholds = new
             {
@@ -58,8 +60,10 @@ public sealed class IsolationDiagnosticsManifestService
                 floatingPointEpsilon = IsolationPruningConfig.FloatingPointEpsilon
             },
             badTrades = isolationResult.BadTradeDetails,
+            synergySecondChances = isolationResult.SynergySecondChanceDetails,
             notes = isolationResult.Notes
                 .Where(x => x.Contains("bad trade", StringComparison.OrdinalIgnoreCase) ||
+                            x.Contains("synergy", StringComparison.OrdinalIgnoreCase) ||
                             x.Contains("carrier anchor", StringComparison.OrdinalIgnoreCase) ||
                             x.Contains("combination baseline", StringComparison.OrdinalIgnoreCase))
                 .Distinct(StringComparer.Ordinal)

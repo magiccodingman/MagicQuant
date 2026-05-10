@@ -354,6 +354,7 @@ public class Evolution : ICommand
         AnsiConsole.MarkupLine($"[green]Hard damage eliminations:[/] {isolationResult.HardDamageEliminations:N0}");
         AnsiConsole.MarkupLine($"[green]Dominance eliminations:[/] {isolationResult.DominatedGroupCandidatesBanned:N0}");
         AnsiConsole.MarkupLine($"[green]Bad trade eliminations:[/] {isolationResult.BadTradeEliminations:N0}");
+        AnsiConsole.MarkupLine($"[green]Synergy second-chance reinstatements:[/] {isolationResult.SynergySecondChanceReinstatements:N0}");
         AnsiConsole.MarkupLine($"[green]Final KLD cleanup eliminations:[/] {isolationResult.FinalKldCleanupEliminations:N0}");
         AnsiConsole.MarkupLine($"[green]Disabled combination baselines:[/] {isolationResult.DisabledBaselines:N0}");
         AnsiConsole.MarkupLine($"[green]Combination count before pruning:[/] {comboCountBefore:N0}");

@@ -48,9 +48,12 @@ public sealed class IsolationOptimizationResult
     public int DisabledBaselines { get; set; }
     public int Bf16SuppressedGroups { get; set; }
 
+    public int SynergySecondChanceReinstatements { get; set; }
+
     public List<string> Notes { get; set; } = new();
     public List<IsolationGroupDecision> GroupDetails { get; set; } = new();
     public List<IsolationBadTradeRecord> BadTradeDetails { get; set; } = new();
+    public List<IsolationSynergySecondChanceRecord> SynergySecondChanceDetails { get; set; } = new();
 }
 
 public sealed class IsolationBadTradeRecord
@@ -73,6 +76,23 @@ public sealed class IsolationBadTradeRecord
     public double SizeDeltaPercent { get; set; }
     public double KldRatio { get; set; }
     public double PplAbsRatio { get; set; }
+}
+
+public sealed class IsolationSynergySecondChanceRecord
+{
+    public string SynergyName { get; set; } = string.Empty;
+    public string GroupName { get; set; } = string.Empty;
+    public string PeerGroupName { get; set; } = string.Empty;
+    public string RestoredCandidate { get; set; } = string.Empty;
+    public string AcceptedAnchor { get; set; } = string.Empty;
+    public string OriginalBadTradeReason { get; set; } = string.Empty;
+    public string SecondChanceReason { get; set; } = string.Empty;
+    public ulong RestoredSizeBytes { get; set; }
+    public double RestoredKld { get; set; }
+    public double RestoredPplDeltaPercent { get; set; }
+    public ulong AnchorSizeBytes { get; set; }
+    public double AnchorKld { get; set; }
+    public double AnchorPplDeltaPercent { get; set; }
 }
 
 public class IsolationOptimizationService
@@ -200,6 +220,9 @@ public class IsolationOptimizationService
             .OrderBy(x => x.Key)
             .ToList();
 
+        var groupWorkItems = new List<GroupIsolationWorkItem>();
+        var retainedBadTradeEliminations = new List<SynergyBadTradeElimination>();
+
         foreach (var groupSet in groupPlans)
         {
             var group = TReg.All.First(x => x.UniqueId == groupSet.Key);
@@ -267,8 +290,24 @@ public class IsolationOptimizationService
             candidates = FilterSurvivors(group, candidates);
             ApplyDominanceElimination(group, candidates, result);
             candidates = FilterSurvivors(group, candidates);
-            ApplyBadTradeElimination(group, candidates, result);
-            candidates = FilterSurvivors(group, candidates);
+            ApplyBadTradeElimination(group, candidates, result, retainedBadTradeEliminations);
+
+            groupWorkItems.Add(new GroupIsolationWorkItem
+            {
+                Group = group,
+                Candidates = candidates,
+                Decision = decision
+            });
+        }
+
+        ApplySynergySecondChanceReview(groupWorkItems, retainedBadTradeEliminations, result);
+
+        foreach (var workItem in groupWorkItems)
+        {
+            var group = workItem.Group;
+            var decision = workItem.Decision;
+            var candidates = FilterSurvivors(group, workItem.Candidates);
+
             ApplyFinalKldCleanupElimination(group, candidates, result);
             candidates = FilterSurvivors(group, candidates);
             ApplyEquivalentTruthElimination(group, candidates, result);
@@ -545,7 +584,11 @@ public class IsolationOptimizationService
         }
     }
 
-    private static void ApplyBadTradeElimination(TensorGroup group, List<GroupCandidateEvaluation> candidates, IsolationOptimizationResult result)
+    private static void ApplyBadTradeElimination(
+        TensorGroup group,
+        List<GroupCandidateEvaluation> candidates,
+        IsolationOptimizationResult result,
+        List<SynergyBadTradeElimination>? retainedBadTradeEliminations = null)
     {
         var activeCandidates = GetActiveExplicitCandidates(group, candidates, phase: "BadTrade");
         if (activeCandidates.Count <= 1)
@@ -584,6 +627,15 @@ public class IsolationOptimizationService
                         anchorSizeBytes: acceptedAnchor.SizeBytes,
                         anchorKld: acceptedAnchor.Kld,
                         anchorPplDeltaPercent: acceptedAnchor.PplDeltaPercent));
+
+                    retainedBadTradeEliminations?.Add(new SynergyBadTradeElimination
+                    {
+                        Group = group,
+                        Removed = candidate,
+                        Anchor = acceptedAnchor,
+                        Reason = reason
+                    });
+
                     result.Notes.Add(
                         $"Bad trade elimination: '{candidate.CandidateBaseline.Names[0]}' removed vs accepted anchor '{acceptedAnchor.CandidateBaseline.Names[0]}' for '{group.Name}'. {reason}");
                     continue;
@@ -596,6 +648,130 @@ public class IsolationOptimizationService
             if (promotedAnchor != null)
                 acceptedAnchor = promotedAnchor;
         }
+    }
+
+
+    private static void ApplySynergySecondChanceReview(
+        IReadOnlyList<GroupIsolationWorkItem> groupWorkItems,
+        IReadOnlyList<SynergyBadTradeElimination> badTradeEliminations,
+        IsolationOptimizationResult result)
+    {
+        if (groupWorkItems.Count == 0 || badTradeEliminations.Count == 0)
+            return;
+
+        var workByGroupId = groupWorkItems.ToDictionary(x => x.Group.UniqueId);
+        var activeCandidateIdsByGroup = groupWorkItems.ToDictionary(
+            x => x.Group.UniqueId,
+            x => FilterSurvivors(x.Group, x.Candidates)
+                .Where(c => !IsHighPrecisionCandidate(c.CandidateBaseline))
+                .Select(c => c.CandidateBaseline.UniqueId)
+                .ToHashSet());
+
+        var restoredKeys = new HashSet<(byte GroupId, byte CandidateId)>();
+
+        foreach (var synergy in TensorGroupSynergies.All)
+        {
+            var members = synergy.Groups
+                .Where(g => workByGroupId.ContainsKey(g.UniqueId))
+                .ToList();
+
+            if (members.Count < 2)
+                continue;
+
+            foreach (var eliminated in badTradeEliminations
+                         .Where(x => synergy.Contains(x.Group))
+                         .OrderBy(x => x.Group.UniqueId)
+                         .ThenBy(x => x.Removed.CandidateBaseline.UniqueId))
+            {
+                var group = eliminated.Group;
+                var candidate = eliminated.Removed;
+                var candidateId = candidate.CandidateBaseline.UniqueId;
+
+                if (!RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, candidate.CandidateBaseline))
+                    continue;
+
+                if (!restoredKeys.Add((group.UniqueId, candidateId)))
+                    continue;
+
+                var peer = members
+                    .Where(g => g.UniqueId != group.UniqueId)
+                    .FirstOrDefault(g => activeCandidateIdsByGroup.TryGetValue(g.UniqueId, out var ids) && ids.Contains(candidateId));
+
+                if (peer == null)
+                    continue;
+
+                if (ShouldEliminateAsBadTradeIgnoringPpl(eliminated.Anchor, candidate, out var kldOnlyReason))
+                {
+                    result.Notes.Add(
+                        $"Synergy second-chance rejected: '{candidate.CandidateBaseline.Names[0]}' remained removed for '{group.Name}' even though it survived in '{peer.Name}' under synergy '{synergy.Name}'. {kldOnlyReason}");
+                    continue;
+                }
+
+                string restoreReason =
+                    $"synergy '{synergy.Name}' second chance because '{candidate.CandidateBaseline.Names[0]}' survived in peer group '{peer.Name}' and the original bad-trade decision does not survive KLD-only review vs anchor '{eliminated.Anchor.CandidateBaseline.Names[0]}'";
+
+                if (!RuntimeSearchSpace.UnbanCombinationCandidateForGroup(
+                        group,
+                        candidate.CandidateBaseline,
+                        phase: "SynergySecondChance",
+                        reason: restoreReason))
+                {
+                    continue;
+                }
+
+                if (activeCandidateIdsByGroup.TryGetValue(group.UniqueId, out var groupIds))
+                    groupIds.Add(candidateId);
+
+                result.SynergySecondChanceReinstatements++;
+                result.SynergySecondChanceDetails.Add(new IsolationSynergySecondChanceRecord
+                {
+                    SynergyName = synergy.Name,
+                    GroupName = group.Name,
+                    PeerGroupName = peer.Name,
+                    RestoredCandidate = candidate.CandidateBaseline.Names[0],
+                    AcceptedAnchor = eliminated.Anchor.CandidateBaseline.Names[0],
+                    OriginalBadTradeReason = eliminated.Reason,
+                    SecondChanceReason = restoreReason,
+                    RestoredSizeBytes = candidate.SizeBytes,
+                    RestoredKld = candidate.Kld,
+                    RestoredPplDeltaPercent = candidate.PplDeltaPercent,
+                    AnchorSizeBytes = eliminated.Anchor.SizeBytes,
+                    AnchorKld = eliminated.Anchor.Kld,
+                    AnchorPplDeltaPercent = eliminated.Anchor.PplDeltaPercent
+                });
+
+                result.Notes.Add(
+                    $"Synergy second-chance restored: '{candidate.CandidateBaseline.Names[0]}' restored for '{group.Name}' because it survived in peer group '{peer.Name}' under synergy '{synergy.Name}', and KLD-only bad-trade review did not eliminate it vs anchor '{eliminated.Anchor.CandidateBaseline.Names[0]}'.");
+            }
+        }
+    }
+
+    private static bool ShouldEliminateAsBadTradeIgnoringPpl(
+        GroupCandidateEvaluation anchor,
+        GroupCandidateEvaluation candidate,
+        out string reason)
+    {
+        reason = string.Empty;
+
+        if (anchor.SizeBytes <= candidate.SizeBytes)
+            return false;
+
+        double sizeDeltaPercent = ((double)anchor.SizeBytes - candidate.SizeBytes) / anchor.SizeBytes * 100.0;
+        if (sizeDeltaPercent > IsolationPruningConfig.BadTradeMaxSizeDeltaPercent)
+            return false;
+
+        double kldRatio = anchor.Kld <= IsolationPruningConfig.FloatingPointEpsilon
+            ? double.PositiveInfinity
+            : candidate.Kld / anchor.Kld;
+
+        bool kldBadTrade = candidate.Kld > anchor.Kld * IsolationPruningConfig.BadTradeKldMultiplier;
+        if (!kldBadTrade)
+            return false;
+
+        reason =
+            $"Reason: small size gain ({sizeDeltaPercent:F2}%) but disproportionate KLD damage after PPL was ignored for synergy review (KLD x{kldRatio:F2}).";
+
+        return true;
     }
 
 
@@ -1216,6 +1392,21 @@ public class IsolationOptimizationService
         }
 
         return deltas.Count == 0 ? double.PositiveInfinity : deltas.Average();
+    }
+
+    private sealed class GroupIsolationWorkItem
+    {
+        public TensorGroup Group { get; set; } = default!;
+        public List<GroupCandidateEvaluation> Candidates { get; set; } = new();
+        public IsolationGroupDecision Decision { get; set; } = default!;
+    }
+
+    private sealed class SynergyBadTradeElimination
+    {
+        public TensorGroup Group { get; set; } = default!;
+        public GroupCandidateEvaluation Removed { get; set; } = default!;
+        public GroupCandidateEvaluation Anchor { get; set; } = default!;
+        public string Reason { get; set; } = string.Empty;
     }
 
     private sealed class GroupCandidateEvaluation
