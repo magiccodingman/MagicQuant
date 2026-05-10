@@ -267,7 +267,12 @@ public sealed class RankSafeKldPredictionService
             notes.Add($"Q8_0 isolation snapshots loaded for {activeGroups.Count:N0} active tensor groups. Q8_0 will contribute measured prediction-space KLD, not zero/native damage.");
         }
 
-        AppendExternalCoverageDiagnostics(notes, activeGroups, baseOnlyByBaselineId, isolationByGroupAndBaseline);
+        var isolationDominanceBitTruthByGroupAndBaseline = BuildIsolationDominanceBitTruthOverrides(
+            activeGroups,
+            isolationByGroupAndBaseline,
+            notes);
+
+        AppendExternalCoverageDiagnostics(notes, activeGroups, pureByBaselineId, baseOnlyByBaselineId, isolationByGroupAndBaseline);
 
         return new RankSafePredictionModel(
             activeGroups: activeGroups,
@@ -276,6 +281,7 @@ public sealed class RankSafeKldPredictionService
             pureSnapshotsByBaselineId: pureByBaselineId,
             baseOnlySnapshotsByBaselineId: baseOnlyByBaselineId,
             isolationByGroupAndBaseline: isolationByGroupAndBaseline,
+            isolationDominanceBitTruthByGroupAndBaseline: isolationDominanceBitTruthByGroupAndBaseline,
             notes: notes);
     }
 
@@ -291,15 +297,54 @@ public sealed class RankSafeKldPredictionService
 
         var alreadyByKey = alreadyPredicted.ToDictionary(x => TensorConfigIdentity.ToKey(x.Config), StringComparer.Ordinal);
         var fitRows = new List<FitObservation>();
+        var skippedFitReasons = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var snapshot in allBenchmarkRows)
         {
             ct.ThrowIfCancellationRequested();
 
-            RankSafePredictionRow predicted;
-            if (!alreadyByKey.TryGetValue(TensorConfigIdentity.ToKey(snapshot.Config), out predicted!))
+            /*
+             * Keep the rank-safe predictor entirely in prediction space.
+             *
+             * Real pure baselines such as UD-Q6_K_XL can appear in the benchmark table
+             * as BaseQuant=UD-Q6_K_XL with NULL group slots. That shape is a real artifact
+             * identity, not a prediction-space base-only anchor. The prediction coordinate
+             * system is still the Q8_0 carrier plus exact isolated group overrides, so pure
+             * baselines are canonicalized to the virtual all-groups row before prediction:
+             *
+             *   real pure UD-Q6_K_XL       -> Q8_0 carrier with every active group = UD-Q6_K_XL
+             *   real pure Q6_K             -> Q8_0 carrier with every active group = Q6_K
+             *
+             * The real snapshot.Kld remains the fit target. Only the config used to produce
+             * the additive/cross-term prediction is canonicalized. This preserves the hard
+             * separation between real benchmark truth and synthetic prediction geometry.
+             */
+            if (!TryCanonicalizeBenchmarkSnapshotConfigForPrediction(
+                    snapshot.Config,
+                    context,
+                    out var predictionConfig,
+                    out var skipReason))
             {
-                predicted = await PredictSingleAsync(snapshot.Config, context, ct);
+                /*
+                 * This row is real benchmark truth, but it is not representable in the
+                 * rank-safe prediction coordinate system. Do not throw here: old runs and
+                 * helper paths can leave real/external-base synthetic artifacts in SQLite
+                 * even though DuckDB prediction-space candidates always use the Q8_0
+                 * carrier. Those rows are simply not fit observations for the synthetic
+                 * model.
+                 */
+                if (!string.IsNullOrWhiteSpace(skipReason))
+                    skippedFitReasons.Add(skipReason);
+
+                continue;
+            }
+
+            var predictionKey = TensorConfigIdentity.ToKey(predictionConfig);
+
+            RankSafePredictionRow predicted;
+            if (!alreadyByKey.TryGetValue(predictionKey, out predicted!))
+            {
+                predicted = await PredictSingleAsync(predictionConfig, context, ct);
             }
 
             if (!predicted.IsPredictable || double.IsInfinity(predicted.AdditiveKld) || double.IsNaN(predicted.AdditiveKld))
@@ -307,13 +352,60 @@ public sealed class RankSafeKldPredictionService
 
             fitRows.Add(new FitObservation
             {
-                Config = snapshot.Config,
+                Config = predictionConfig,
                 ActualKld = Math.Max(0d, snapshot.Kld),
                 AdditiveKld = predicted.AdditiveKld
             });
         }
 
+        if (skippedFitReasons.Count > 0)
+            context.Notes = context.Notes.Concat(skippedFitReasons.OrderBy(x => x, StringComparer.Ordinal)).ToList();
+
         return fitRows;
+    }
+
+    private static bool TryCanonicalizeBenchmarkSnapshotConfigForPrediction(
+        TensorConfig config,
+        RankSafePredictionModel context,
+        out TensorConfig predictionConfig,
+        out string? skipReason)
+    {
+        predictionConfig = config;
+        skipReason = null;
+
+        if (context.BaseOnlySnapshotsByBaselineId.ContainsKey(config.BaseQuant))
+            return true;
+
+        if (!TensorConfigIdentity.IsPureBaseline(config))
+        {
+            skipReason =
+                $"Skipped non-canonical rank-safe fit row with base baseline {FormatBaselineForNote(config.BaseQuant)} (id '{config.BaseQuant}'). " +
+                "DuckDB prediction-space rows use the Q8_0 carrier plus isolated group truth; this real benchmark row is not a fit observation for that synthetic coordinate system.";
+            return false;
+        }
+
+        var baseline = BaselineQuants.FromId(config.BaseQuant);
+        if (BaselineQuants.IsNativeExactAlias(baseline.UniqueId))
+            return true;
+
+        if (!context.PureSnapshotsByBaselineId.ContainsKey(baseline.UniqueId))
+        {
+            throw new InvalidOperationException(
+                $"Rank-safe prediction fit encountered pure baseline {baseline.Names[0]} (id '{baseline.UniqueId}'), but the pure benchmark snapshot was not loaded into context. " +
+                "This is a critical truth-loading error, not a soft warning.");
+        }
+
+        var nativeExactScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+        var predictionQuant = HybridQuant.CreateExactBlanket(
+            baseQuant: BaselineQuants.Q8_0,
+            groups: context.ActiveGroups,
+            exactScheme: nativeExactScheme);
+
+        foreach (var group in context.ActiveGroups)
+            predictionQuant.SetLearnedCandidateOverride(group, baseline);
+
+        predictionConfig = (TensorConfig)predictionQuant;
+        return true;
     }
 
     private RankSafePredictionFit FitInteractionModel(
@@ -577,6 +669,100 @@ public sealed class RankSafeKldPredictionService
         return (ulong)total;
     }
 
+    private static Dictionary<(byte GroupId, byte BaselineId), double> BuildIsolationDominanceBitTruthOverrides(
+        IReadOnlyList<TensorGroup> activeGroups,
+        Dictionary<(byte GroupId, byte BaselineId), BenchmarkSnapshotRecord> isolationByGroupAndBaseline,
+        List<string> notes)
+    {
+        const double kldEpsilon = 1e-12;
+
+        var result = new Dictionary<(byte GroupId, byte BaselineId), double>();
+        var detailNotes = new List<string>();
+        var baselinesById = BaselineQuants.GetAllRecognizedBaselines()
+            .Where(x => !BaselineQuants.IsNativeExactAlias(x.UniqueId))
+            .GroupBy(x => x.UniqueId)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        foreach (var group in activeGroups.OrderBy(x => x.UniqueId))
+        {
+            var entries = isolationByGroupAndBaseline
+                .Where(x => x.Key.GroupId == group.UniqueId && baselinesById.ContainsKey(x.Key.BaselineId))
+                .Select(x => new IsolationBitTruthEntry(
+                    Baseline: baselinesById[x.Key.BaselineId],
+                    Snapshot: x.Value,
+                    DeclaredBitRange: (double)baselinesById[x.Key.BaselineId].BitRange))
+                .OrderByDescending(x => x.DeclaredBitRange)
+                .ThenBy(x => x.Snapshot.Kld)
+                .ThenBy(x => x.Snapshot.SizeBytes)
+                .ToList();
+
+            foreach (var candidate in entries)
+            {
+                double inheritedBitTruth = candidate.DeclaredBitRange;
+                IsolationBitTruthEntry? strongestVictim = null;
+
+                foreach (var victim in entries)
+                {
+                    if (victim.DeclaredBitRange <= candidate.DeclaredBitRange)
+                        continue;
+
+                    bool sameSizeOrSmaller = candidate.Snapshot.SizeBytes <= victim.Snapshot.SizeBytes;
+                    bool lowerKld = candidate.Snapshot.Kld < victim.Snapshot.Kld - kldEpsilon;
+                    if (!sameSizeOrSmaller || !lowerKld)
+                        continue;
+
+                    if (victim.DeclaredBitRange > inheritedBitTruth)
+                    {
+                        inheritedBitTruth = victim.DeclaredBitRange;
+                        strongestVictim = victim;
+                    }
+                }
+
+                if (inheritedBitTruth <= candidate.DeclaredBitRange)
+                    continue;
+
+                result[(group.UniqueId, candidate.Baseline.UniqueId)] = inheritedBitTruth;
+
+                if (strongestVictim != null && detailNotes.Count < 32)
+                {
+                    detailNotes.Add(
+                        $"Isolation bit-truth override: group '{group.Name}' treats {candidate.Baseline.Names[0]} as {inheritedBitTruth:G4}b stress truth instead of {candidate.DeclaredBitRange:G4}b because it isolated-dominated higher-fidelity {strongestVictim.Baseline.Names[0]} (candidate size={candidate.Snapshot.SizeBytes:N0}, kld={candidate.Snapshot.Kld:0.######}; victim size={strongestVictim.Snapshot.SizeBytes:N0}, kld={strongestVictim.Snapshot.Kld:0.######}).");
+                }
+            }
+        }
+
+        if (result.Count == 0)
+        {
+            notes.Add("Isolation bit-truth overrides: none. Declared quant bit ranges will drive bit-stress interaction correction.");
+            return result;
+        }
+
+        notes.Add(
+            $"Isolation bit-truth overrides active: {result.Count:N0} group/baseline state(s) inherit higher-fidelity stress truth because isolated sampling showed same-size-or-smaller lower-KLD dominance.");
+
+        foreach (var detail in detailNotes)
+            notes.Add(detail);
+
+        if (result.Count > detailNotes.Count)
+            notes.Add($"Isolation bit-truth overrides: {result.Count - detailNotes.Count:N0} additional override(s) omitted from diagnostics.");
+
+        return result;
+    }
+
+    internal static double GetStressBitRangeForPrediction(
+        TensorGroup group,
+        byte baselineId,
+        RankSafePredictionModel context)
+    {
+        if (IsZeroDamageAlias(baselineId))
+            return 99d;
+
+        double declared = BaselineQuants.FromId(baselineId).BitRange;
+        return context.IsolationDominanceBitTruthByGroupAndBaseline.TryGetValue((group.UniqueId, baselineId), out var inherited)
+            ? Math.Max(declared, inherited)
+            : declared;
+    }
+
     private double ComputeCrossTerm(TensorConfig config, RankSafePredictionModel context, double threshold)
     {
         var contributions = new List<(double Kld, double Bits)>();
@@ -589,8 +775,8 @@ public sealed class RankSafeKldPredictionService
             if (!TryResolveIsolationBaselineForPrediction(group, effectiveBaselineId, context, notes: null, out var resolved))
                 continue;
 
-            var baseline = BaselineQuants.FromId(resolved.BaselineId);
-            contributions.Add((Math.Max(0d, resolved.Snapshot.Kld), baseline.BitRange));
+            double stressBitRange = GetStressBitRangeForPrediction(group, resolved.BaselineId, context);
+            contributions.Add((Math.Max(0d, resolved.Snapshot.Kld), stressBitRange));
         }
 
         double cross = 0d;
@@ -713,7 +899,7 @@ public sealed class RankSafeKldPredictionService
              * notes?.Add($"External baseline {FormatBaselineForNote(baselineId)} used surrogate base-only size {FormatBaselineForNote(disabledSurrogateId)}.");
              * return true;
              *
-             * Base-only size anchors must preserve the exact runtime baseline id. Falling back
+             * Base-only anchors must preserve the exact runtime baseline id. Falling back
              * here makes UD-Q4_K_XL and Q4_K_M look byte-identical before selection even starts.
              */
             ThrowExternalBaseOnlySurrogateFallbackDisabled(baselineId, disabledSurrogateId);
@@ -721,8 +907,9 @@ public sealed class RankSafeKldPredictionService
 
         if (IsExternalRepositoryBaseline(baselineId))
             throw new InvalidOperationException(
-                $"Missing exact base-only anchor for external baseline {FormatBaselineForNote(baselineId)} (id '{baselineId}'). " +
-                "Surrogate base-only fallback is disabled because every external/custom baseline should have exact isolated truth before prediction.");
+                $"Missing exact synthetic base-only anchor for external baseline {FormatBaselineForNote(baselineId)} (id '{baselineId}'). " +
+                "The rank-safe predictor must not use real pure baseline snapshots as base-only prediction anchors. " +
+                "Pure baselines are canonicalized to Q8_0-carrier virtual blankets before prediction; reaching size prediction with an external/custom BaseQuant means a non-canonical config escaped normalization.");
 
         snapshot = default!;
         return false;
@@ -809,6 +996,7 @@ public sealed class RankSafeKldPredictionService
     private static void AppendExternalCoverageDiagnostics(
         List<string> notes,
         IReadOnlyList<TensorGroup> activeGroups,
+        Dictionary<byte, BenchmarkSnapshotRecord> pureByBaselineId,
         Dictionary<byte, BenchmarkSnapshotRecord> baseOnlyByBaselineId,
         Dictionary<(byte GroupId, byte BaselineId), BenchmarkSnapshotRecord> isolationByGroupAndBaseline)
     {
@@ -826,14 +1014,25 @@ public sealed class RankSafeKldPredictionService
         {
             int exactIsolation = activeGroups.Count(group => isolationByGroupAndBaseline.ContainsKey((group.UniqueId, baseline.UniqueId)));
             bool exactBaseOnly = baseOnlyByBaselineId.ContainsKey(baseline.UniqueId);
+            bool exactPure = pureByBaselineId.ContainsKey(baseline.UniqueId);
+            string baseAnchorText = exactBaseOnly
+                ? "base-only=exact"
+                : exactPure
+                    ? "base-only=missing; pure-anchor=exact"
+                    : "base-only=missing; pure-anchor=missing";
             string fallbackText = TryGetDisabledSurrogateBaselineId(baseline.UniqueId, out var fallbackId)
                 ? $"; disabled fallback target would have been {FormatBaselineForNote(fallbackId)}:{fallbackId}"
                 : string.Empty;
 
             notes.Add(
-                $"External isolation exact coverage: {baseline.Names[0]}:{baseline.UniqueId} exact={exactIsolation}/{activeGroups.Count} groups; base-only={(exactBaseOnly ? "exact" : "missing")}{fallbackText}.");
+                $"External isolation exact coverage: {baseline.Names[0]}:{baseline.UniqueId} exact={exactIsolation}/{activeGroups.Count} groups; {baseAnchorText}{fallbackText}.");
         }
     }
+
+    private sealed record IsolationBitTruthEntry(
+        BaselineQuants Baseline,
+        BenchmarkSnapshotRecord Snapshot,
+        double DeclaredBitRange);
 
     internal readonly record struct IsolationBaselineResolution(
         byte BaselineId,
@@ -908,6 +1107,7 @@ public sealed class RankSafeKldPredictionService
             Dictionary<byte, BenchmarkSnapshotRecord> pureSnapshotsByBaselineId,
             Dictionary<byte, BenchmarkSnapshotRecord> baseOnlySnapshotsByBaselineId,
             Dictionary<(byte GroupId, byte BaselineId), BenchmarkSnapshotRecord> isolationByGroupAndBaseline,
+            Dictionary<(byte GroupId, byte BaselineId), double> isolationDominanceBitTruthByGroupAndBaseline,
             IReadOnlyList<string> notes)
         {
             ActiveGroups = activeGroups;
@@ -916,6 +1116,7 @@ public sealed class RankSafeKldPredictionService
             PureSnapshotsByBaselineId = pureSnapshotsByBaselineId;
             BaseOnlySnapshotsByBaselineId = baseOnlySnapshotsByBaselineId;
             IsolationByGroupAndBaseline = isolationByGroupAndBaseline;
+            IsolationDominanceBitTruthByGroupAndBaseline = isolationDominanceBitTruthByGroupAndBaseline;
             Notes = notes;
         }
 
@@ -925,6 +1126,7 @@ public sealed class RankSafeKldPredictionService
         public Dictionary<byte, BenchmarkSnapshotRecord> PureSnapshotsByBaselineId { get; }
         public Dictionary<byte, BenchmarkSnapshotRecord> BaseOnlySnapshotsByBaselineId { get; }
         public Dictionary<(byte GroupId, byte BaselineId), BenchmarkSnapshotRecord> IsolationByGroupAndBaseline { get; }
+        public Dictionary<(byte GroupId, byte BaselineId), double> IsolationDominanceBitTruthByGroupAndBaseline { get; }
         public IReadOnlyList<string> Notes { get; set; }
         public RankSafePredictionFit Fit { get; set; } = new();
     }

@@ -208,7 +208,10 @@ CREATE TEMP TABLE temp_group_size_delta (
                         }
                     }
 
-                    double bitRange = zeroDamage ? 99d : GetBitRange(resolvedBaselineId);
+                    double bitRange = RankSafeKldPredictionService.GetStressBitRangeForPrediction(
+                        slot.Group,
+                        resolvedBaselineId,
+                        model);
 
                     await ExecuteAsync(c, $@"
 INSERT INTO temp_effective_group_prediction VALUES (

@@ -366,6 +366,7 @@ public sealed class SmartBaselineTuningFallbackService
             pureSnapshotsByBaselineId: pureByBaselineId,
             baseOnlySnapshotsByBaselineId: baseOnlyByBaselineId,
             isolationByGroupAndBaseline: isolationByGroupAndBaseline,
+            isolationDominanceBitTruthByGroupAndBaseline: new Dictionary<(byte GroupId, byte BaselineId), double>(),
             notes: notes);
 
         return _context;
