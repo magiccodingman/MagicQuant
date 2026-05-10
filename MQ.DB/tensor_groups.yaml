@@ -143,6 +143,27 @@ groups:
       #   blk.N.ffn_up_shexp.weight
       #   blk.N.ffn_gate_shexp.weight
       # are MoE expert-path tensors and belong to moe_experts.
+      # GGUF MoE routed/shared expert FFN up/gate payloads.
+      - "^blk\\..*\\.ffn_up_exps\\.weight$"
+      - "^blk\\..*\\.ffn_gate_exps\\.weight$"
+      - "^blk\\..*\\.ffn_up_shexp\\.weight$"
+      - "^blk\\..*\\.ffn_gate_shexp\\.weight$"
+      
+      # HF / framework expert forms.
+      - ".*experts?\\..*wi_0.*"
+      - ".*experts?\\..*wi_1.*"
+      - ".*experts?\\..*fc1.*"
+      - ".*experts?\\..*dense_h_to_4h.*"
+      - ".*experts?\\..*up_proj.*"
+      - ".*experts?\\..*gate_proj.*"
+      - ".*mlp\\.experts\\.gate_up_proj.*"
+      - ".*mlp\\.experts\\.gate_proj.*"
+      - ".*mlp\\.experts\\.up_proj.*"
+      - ".*mlp\\.shared_expert\\.gate_proj\\.weight$"
+      - ".*mlp\\.shared_expert\\.up_proj\\.weight$"
+      - ".*layers\\..*\\.experts\\.gate_up_proj.*"
+      - ".*layers\\..*\\.experts\\.gate_proj.*"
+      - ".*layers\\..*\\.experts\\.up_proj.*"
 
   ffn_down:
     description: "Dense FFN down-projection tensors only. Expert-path tensors are intentionally excluded and should be owned by moe_experts."
@@ -177,53 +198,66 @@ groups:
       #   blk.N.ffn_down_exps.weight
       #   blk.N.ffn_down_shexp.weight
       # are MoE expert-path tensors and belong to moe_experts.
+      # GGUF MoE routed/shared expert FFN down payloads.
+      - "^blk\\..*\\.ffn_down_exps\\.weight$"
+      - "^blk\\..*\\.ffn_down_shexp\\.weight$"
+      
+      # HF / framework expert forms.
+      - ".*experts?\\..*wo.*"
+      - ".*experts?\\..*fc2.*"
+      - ".*experts?\\..*dense_4h_to_h.*"
+      - ".*experts?\\..*down_proj.*"
+      - ".*mlp\\.experts\\.down_proj.*"
+      - ".*mlp\\.shared_expert\\.down_proj\\.weight$"
+      - ".*layers\\..*\\.experts\\.down_proj.*"
 
   moe_experts:
     description: "MoE expert-path tensors, including routed experts and shared experts. These own *_exps and *_shexp forms so they do not collide with dense FFN groups."
     patterns:
+      - ".*experts?\\..*"
       # llama.cpp GGUF MoE routed expert tensors.
-      - "^blk\\..*\\.ffn_.*expert.*$"
-      - "^blk\\..*\\.ffn_.*exps.*$"
-      - "^blk\\..*\\.ffn_up_exps\\.weight$"
-      - "^blk\\..*\\.ffn_gate_exps\\.weight$"
-      - "^blk\\..*\\.ffn_down_exps\\.weight$"
+      #- "^blk\\..*\\.ffn_.*expert.*$"
+      #- "^blk\\..*\\.ffn_.*exps.*$"
+      #- "^blk\\..*\\.ffn_up_exps\\.weight$"
+      #- "^blk\\..*\\.ffn_gate_exps\\.weight$"
+      #- "^blk\\..*\\.ffn_down_exps\\.weight$"
 
       # Qwen3.6 shared-expert GGUF tensors.
       # These are material expert-path matrices and should not fall back through
       # base_quant_exceptions.
-      - "^blk\\..*\\.ffn_up_shexp\\.weight$"
-      - "^blk\\..*\\.ffn_gate_shexp\\.weight$"
-      - "^blk\\..*\\.ffn_down_shexp\\.weight$"
+      #- "^blk\\..*\\.ffn_up_shexp\\.weight$"
+      #- "^blk\\..*\\.ffn_gate_shexp\\.weight$"
+      #- "^blk\\..*\\.ffn_down_shexp\\.weight$"
 
       # Generic expert container forms used by several HF architectures.
-      - ".*experts?\\..*wi_0.*"
-      - ".*experts?\\..*wi_1.*"
-      - ".*experts?\\..*wo.*"
-      - ".*experts?\\..*fc1.*"
-      - ".*experts?\\..*fc2.*"
-      - ".*experts?\\..*dense_h_to_4h.*"
-      - ".*experts?\\..*dense_4h_to_h.*"
-      - ".*experts?\\..*up_proj.*"
-      - ".*experts?\\..*gate_proj.*"
-      - ".*experts?\\..*down_proj.*"
+      #- ".*experts?\\..*wi_0.*"
+      #- ".*experts?\\..*wi_1.*"
+      #- ".*experts?\\..*wo.*"
+      #- ".*experts?\\..*fc1.*"
+      #- ".*experts?\\..*fc2.*"
+      #- ".*experts?\\..*dense_h_to_4h.*"
+      #- ".*experts?\\..*dense_4h_to_h.*"
+      #- ".*experts?\\..*up_proj.*"
+      #- ".*experts?\\..*gate_proj.*"
+      #- ".*experts?\\..*down_proj.*"
 
       # Qwen3.5 / Qwen3.6 / modern HF MoE forms.
-      - ".*mlp\\.experts\\.gate_up_proj.*"
-      - ".*mlp\\.experts\\.gate_proj.*"
-      - ".*mlp\\.experts\\.up_proj.*"
-      - ".*mlp\\.experts\\.down_proj.*"
+      #- ".*mlp\\.experts\\.gate_up_proj.*"
+      #- ".*mlp\\.experts\\.gate_proj.*"
+      #- ".*mlp\\.experts\\.up_proj.*"
+      #- ".*mlp\\.experts\\.down_proj.*"
 
       # Shared experts are still MoE expert-path tensors, not normal dense FFN.
       # Keeping them here prevents them from double-counting as generic FFN.
-      - ".*mlp\\.shared_expert\\.gate_proj\\.weight$"
-      - ".*mlp\\.shared_expert\\.up_proj\\.weight$"
-      - ".*mlp\\.shared_expert\\.down_proj\\.weight$"
+      #- ".*mlp\\.shared_expert\\.gate_proj\\.weight$"
+      #- ".*mlp\\.shared_expert\\.up_proj\\.weight$"
+      #- ".*mlp\\.shared_expert\\.down_proj\\.weight$"
 
       # Gemma-style MoE forms.
-      - ".*layers\\..*\\.experts\\.gate_up_proj.*"
-      - ".*layers\\..*\\.experts\\.gate_proj.*"
-      - ".*layers\\..*\\.experts\\.up_proj.*"
-      - ".*layers\\..*\\.experts\\.down_proj.*"
+      #- ".*layers\\..*\\.experts\\.gate_up_proj.*"
+      #- ".*layers\\..*\\.experts\\.gate_proj.*"
+      #- ".*layers\\..*\\.experts\\.up_proj.*"
+      #- ".*layers\\..*\\.experts\\.down_proj.*"
 
   moe_router:
     description: "MoE router/gating tensors. Keep this MoE-specific so dense FFN gates, attention gates, and Qwen3.6 hybrid/SSM gates do not masquerade as routers."

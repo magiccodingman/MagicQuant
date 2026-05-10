@@ -7,7 +7,8 @@ namespace MagicQuant.Helpers;
 
 public static class TensorConfigGenerator
 {
-    public static RequiredSampleGenerationResult GenerateInitialIsolationSamplePlan(List<TensorGroup>? missingTensorGroups = null)
+    public static RequiredSampleGenerationResult GenerateInitialIsolationSamplePlan(
+        List<TensorGroup>? missingTensorGroups = null)
     {
         if (missingTensorGroups != null && !missingTensorGroups.Any())
             missingTensorGroups = null;
@@ -53,7 +54,8 @@ public static class TensorConfigGenerator
             {
                 Kind = RequiredSampleKind.BaseOnlyIsolation,
                 Key = $"baseonly:{baseline.UniqueId}",
-                Description = $"Base-only isolation for {string.Join("/", baseline.Names)} with all active groups forced native.",
+                Description =
+                    $"Base-only isolation for {string.Join("/", baseline.Names)} with all active groups forced native.",
                 Quant = HybridQuant.CreateExactBlanket(
                     baseQuant: baseline,
                     groups: activeGroups,
@@ -113,8 +115,10 @@ public static class TensorConfigGenerator
         }
 
         AnsiConsole.MarkupLine($"[bold green]Pure baselines required:[/] {result.PureBaselineCount:N0}");
-        AnsiConsole.MarkupLine($"[bold green]Base-only isolation samples required:[/] {result.BaseOnlyIsolationCount:N0}");
-        AnsiConsole.MarkupLine($"[bold green]Smallest-probe isolation samples required:[/] {result.GroupIsolationCount:N0}");
+        AnsiConsole.MarkupLine(
+            $"[bold green]Base-only isolation samples required:[/] {result.BaseOnlyIsolationCount:N0}");
+        AnsiConsole.MarkupLine(
+            $"[bold green]Smallest-probe isolation samples required:[/] {result.GroupIsolationCount:N0}");
         AnsiConsole.MarkupLine($"[bold green]Total initial startup samples:[/] {result.TotalCount:N0}");
         EmitSamplePlanDiagnostics("initial", result.Plans);
 
@@ -139,7 +143,8 @@ public static class TensorConfigGenerator
 
         var result = BuildIsolationCoverageContinuationPlan(activeGroups, missingIds);
 
-        AnsiConsole.MarkupLine($"[bold green]Continuation isolation samples required:[/] {result.GroupIsolationCount:N0}");
+        AnsiConsole.MarkupLine(
+            $"[bold green]Continuation isolation samples required:[/] {result.GroupIsolationCount:N0}");
         EmitSamplePlanDiagnostics("continuation", result.Plans);
         return result;
     }
@@ -160,14 +165,14 @@ public static class TensorConfigGenerator
 
         var missingIds = missingTensorGroups?.Select(x => x.UniqueId).ToHashSet() ?? new HashSet<byte>();
         var archiveIds = groupIdsToArchive?
-            .Distinct()
-            .ToHashSet()
-            ?? new HashSet<byte>();
+                             .Distinct()
+                             .ToHashSet()
+                         ?? new HashSet<byte>();
 
         var existingKeys = existingPlanKeys?
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .ToHashSet(StringComparer.Ordinal)
-            ?? new HashSet<string>(StringComparer.Ordinal);
+                               .Where(x => !string.IsNullOrWhiteSpace(x))
+                               .ToHashSet(StringComparer.Ordinal)
+                           ?? new HashSet<string>(StringComparer.Ordinal);
 
         var activeGroups = TReg.All
             .Where(x => !missingIds.Contains(x.UniqueId))
@@ -201,16 +206,26 @@ public static class TensorConfigGenerator
 
         var carrier = BaselineQuants.Q8_0;
         var nativeExactScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
         var blanketGroups = TReg.All
             .Where(x => !missingIds.Contains(x.UniqueId))
             .ToList();
 
-        var candidates = BaselineQuants.GetGroupCombinationCandidatesSmallestFirst(
-                RuntimeSearchSpace.HasUsableImatrix(),
-                allowHighPrecisionHybrids: false)
+        // IMPORTANT:
+        // Isolation coverage is NOT the same thing as runtime search-space eligibility.
+        //
+        // Prediction/RankSafe can reference external/custom/virtual anchor baseline ids
+        // for any active tensor group. Therefore every candidate identity needs a logical
+        // isolation snapshot for every active group.
+        //
+        // Physical work is still protected by isolation dedupe. If moe_router + UD-Q5_K_XL
+        // materializes to the same tensor->quant map as moe_router + Q8_0/F32, the artifact
+        // benchmark may be cloned/reused. But the duplicate TensorConfig identity must still
+        // exist in SQLite so RankSafe can resolve it exactly.
+        var candidates = GetIsolationCoverageCandidates()
             .ToList();
 
-        foreach (var group in activeGroups)
+        foreach (var group in activeGroups.OrderBy(x => x.UniqueId))
         {
             var smallest = GetSmallestAllowedProbeCandidateForGroup(group);
 
@@ -230,7 +245,8 @@ public static class TensorConfigGenerator
                 {
                     Kind = RequiredSampleKind.GroupIsolationContinuation,
                     Key = $"cont:{carrier.UniqueId}:{group.UniqueId}:{candidate.UniqueId}",
-                    Description = $"Continuation isolation for group '{group.Name}' using '{candidate.Names[0]}'.",
+                    Description =
+                        $"Continuation isolation coverage for group '{group.Name}' using '{candidate.Names[0]}'.",
                     Quant = quant,
                     TargetGroupId = group.UniqueId,
                     TestedCandidateId = candidate.UniqueId,
@@ -244,6 +260,30 @@ public static class TensorConfigGenerator
         }
 
         return result;
+    }
+
+    private static BaselineQuants? GetSmallestAllowedProbeCandidateForGroup(TensorGroup group)
+    {
+        return GetIsolationCoverageCandidates()
+            .Where(x => !x.BannedGroupIds.Contains(group.UniqueId))
+            .FirstOrDefault();
+    }
+
+    private static IEnumerable<BaselineQuants> GetIsolationCoverageCandidates()
+    {
+        var hasUsableImatrix = RuntimeSearchSpace.HasUsableImatrix();
+
+        // This is intentionally broad. It is the identity universe RankSafe / virtual
+        // anchors may need exact snapshots for, not the narrowed per-group search space.
+        return BaselineQuants
+            .GetGroupCombinationCandidatesSmallestFirst(
+                hasUsableImatrix,
+                allowHighPrecisionHybrids: RuntimeSearchSpace.AllowHighPrecisionHybrids)
+            .Where(x => !BaselineQuants.IsNativeExactAlias(x.UniqueId))
+            .GroupBy(x => x.UniqueId)
+            .Select(g => g.First())
+            .OrderBy(x => x.ExplicitCandidateSortOrder)
+            .ThenBy(x => x.UniqueId);
     }
 
     private static void EmitSamplePlanDiagnostics(string phase, IReadOnlyCollection<RequiredSamplePlan> plans)
@@ -261,16 +301,24 @@ public static class TensorConfigGenerator
             var smallest = GetSmallestAllowedProbeCandidateForGroup(group);
             var allowed = RuntimeSearchSpace.GetAllowedRealExplicitCombinationCandidatesForGroup(group);
             var raw = RuntimeSearchSpace.GetRealExplicitCombinationCandidatesForGroup(group);
-            var staticBanned = BaselineQuants.GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), false)
+            var staticBanned = BaselineQuants
+                .GetGroupCombinationCandidates(RuntimeSearchSpace.HasUsableImatrix(), false)
                 .Where(x => x.BannedGroupIds.Contains(group.UniqueId)).ToList();
-            var runtimeBanned = raw.Where(x => RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x)).ToList();
+            var runtimeBanned = raw.Where(x => RuntimeSearchSpace.IsCombinationCandidateRuntimeBannedForGroup(group, x))
+                .ToList();
             var notAllowed = planned.Where(x => allowed.All(a => a.UniqueId != x.UniqueId)).ToList();
-            MagicQuantDiagnostics.Log("sample-plan", $"phase={phase} group={group.Name}(id={group.UniqueId}) plannedCount={planned.Count} smallestProbe={(smallest == null ? "<none>" : MagicQuantDiagnostics.CandidateLabel(smallest))}");
-            MagicQuantDiagnostics.Log("sample-plan", $"planned={string.Join(", ", planned.Select(MagicQuantDiagnostics.CandidateLabel))}");
-            MagicQuantDiagnostics.Log("sample-plan", $"allowedAtPlan={string.Join(", ", allowed.Select(MagicQuantDiagnostics.CandidateLabel))}");
-            MagicQuantDiagnostics.Log("sample-plan", $"staticBanned={string.Join(", ", staticBanned.Select(MagicQuantDiagnostics.CandidateLabel))}");
-            MagicQuantDiagnostics.Log("sample-plan", $"runtimeBanned={string.Join(", ", runtimeBanned.Select(MagicQuantDiagnostics.CandidateLabel))}");
-            MagicQuantDiagnostics.Log("sample-plan", $"plannedButNotAllowed={string.Join(", ", notAllowed.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan",
+                $"phase={phase} group={group.Name}(id={group.UniqueId}) plannedCount={planned.Count} smallestProbe={(smallest == null ? "<none>" : MagicQuantDiagnostics.CandidateLabel(smallest))}");
+            MagicQuantDiagnostics.Log("sample-plan",
+                $"planned={string.Join(", ", planned.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan",
+                $"allowedAtPlan={string.Join(", ", allowed.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan",
+                $"staticBanned={string.Join(", ", staticBanned.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan",
+                $"runtimeBanned={string.Join(", ", runtimeBanned.Select(MagicQuantDiagnostics.CandidateLabel))}");
+            MagicQuantDiagnostics.Log("sample-plan",
+                $"plannedButNotAllowed={string.Join(", ", notAllowed.Select(MagicQuantDiagnostics.CandidateLabel))}");
         }
     }
 
@@ -304,10 +352,12 @@ public static class TensorConfigGenerator
         for (int i = 0; i < allowed.Length; i++)
         {
             if (allowed[i] == null)
-                throw new InvalidOperationException($"Allowed[{i}] is null for base {string.Join("/", baseQuant.Names)}.");
+                throw new InvalidOperationException(
+                    $"Allowed[{i}] is null for base {string.Join("/", baseQuant.Names)}.");
 
             if (allowed[i].Length == 0)
-                throw new InvalidOperationException($"Allowed[{i}] is empty for base {string.Join("/", baseQuant.Names)}.");
+                throw new InvalidOperationException(
+                    $"Allowed[{i}] is empty for base {string.Join("/", baseQuant.Names)}.");
         }
 
         int dims = allowed.Length;
@@ -390,17 +440,6 @@ public static class TensorConfigGenerator
         producer.GetAwaiter().GetResult();
     }
 
-    private static BaselineQuants? GetSmallestAllowedProbeCandidateForGroup(TensorGroup group)
-    {
-        foreach (var candidate in BaselineQuants.GetGroupCombinationCandidatesSmallestFirst(
-                     RuntimeSearchSpace.HasUsableImatrix(),
-                     allowHighPrecisionHybrids: false))
-        {
-            return candidate;
-        }
-
-        return null;
-    }
 
     private static int GetThreadCountSafe()
     {
