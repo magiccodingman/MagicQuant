@@ -192,6 +192,14 @@ ORDER BY PredictedKld ASC,
         ct.ThrowIfCancellationRequested();
 
         var sourceBaseline = HybridBenchmarkRepository.ResolveSourceBaselineForProvider(realAnchor.Quant);
+        var predictionSpaceConfig = CanonicalizeConfigForPredictionSpace(realAnchor.Config);
+        string predictionSpaceKey = TensorConfigIdentity.ToKey(predictionSpaceConfig);
+
+        var byConfig = predictedAnchors.FirstOrDefault(x =>
+            string.Equals(x.ConfigKey, predictionSpaceKey, StringComparison.Ordinal));
+        if (byConfig != null)
+            return byConfig;
+
         if (HybridBenchmarkRepository.IsTrueMagicQuantHybrid(realAnchor.Quant))
             return await QueryPredictedAnchorForConfigAsync(realAnchor, sourceBaseline, ct);
 
@@ -230,6 +238,8 @@ ORDER BY PredictedKld ASC,
         BaselineQuants sourceBaseline,
         CancellationToken ct)
     {
+        var predictionSpaceConfig = CanonicalizeConfigForPredictionSpace(realAnchor.Config);
+
         string sql = $@"
 SELECT {CombinationDuckDbSchema.SlotColumnList},
        {CombinationDuckDbSchema.EffectivePredictedKldSql} AS PredictedKld,
@@ -241,7 +251,7 @@ FROM {TableName}
 WHERE COALESCE(FinalPredictedKld, PredictedKld) IS NOT NULL
   AND PredictedSizeBytes IS NOT NULL
   AND PredictionRank IS NOT NULL
-  AND {BuildSlotPredicateSql(realAnchor.Config)}
+  AND {BuildSlotPredicateSql(predictionSpaceConfig)}
 LIMIT 1;";
 
         using var c = new DuckDBConnection(ConnectionString);
@@ -671,6 +681,37 @@ LIMIT ?;";
             cmd.Parameters.Add(new DuckDBParameter { Value = arg });
 
         return ToInt64(await cmd.ExecuteScalarAsync(ct));
+    }
+
+    private static TensorConfig CanonicalizeConfigForPredictionSpace(TensorConfig config)
+    {
+        if (config.BaseQuant == BaselineQuants.Q8_0.UniqueId)
+            return config;
+
+        var baseBaseline = BaselineQuants.FromId(config.BaseQuant);
+        byte inheritedBaseSlot = BaselineQuants.EncodeTensorConfigGroupSlot(baseBaseline);
+
+        return new TensorConfig(
+            baseQuant: BaselineQuants.Q8_0.UniqueId,
+            embeddings: CanonicalizePredictionSlot(TReg.Embeddings, config.Embeddings, inheritedBaseSlot),
+            lmHead: CanonicalizePredictionSlot(TReg.LmHead, config.LmHead, inheritedBaseSlot),
+            attnQ: CanonicalizePredictionSlot(TReg.AttnQ, config.AttnQ, inheritedBaseSlot),
+            attnKV: CanonicalizePredictionSlot(TReg.AttnKV, config.AttnKV, inheritedBaseSlot),
+            attnOutput: CanonicalizePredictionSlot(TReg.AttnOutput, config.AttnOutput, inheritedBaseSlot),
+            ffnUpGate: CanonicalizePredictionSlot(TReg.FfnUpGate, config.FfnUpGate, inheritedBaseSlot),
+            ffnDown: CanonicalizePredictionSlot(TReg.FfnDown, config.FfnDown, inheritedBaseSlot),
+            moeExperts: CanonicalizePredictionSlot(TReg.MoeExperts, config.MoeExperts, inheritedBaseSlot),
+            moeRouter: CanonicalizePredictionSlot(TReg.MoeRouter, config.MoeRouter, inheritedBaseSlot));
+    }
+
+    private static byte CanonicalizePredictionSlot(TensorGroup group, byte storedValue, byte inheritedBaseSlot)
+    {
+        if (Cache.UnusedTensorGroups.Any(x => x.UniqueId == group.UniqueId))
+            return BaselineQuants.TensorConfigNullSlotValue;
+
+        return BaselineQuants.IsNullTensorConfigGroupSlot(storedValue)
+            ? inheritedBaseSlot
+            : storedValue;
     }
 
     private static string BuildSlotPredicateSql(TensorConfig config)

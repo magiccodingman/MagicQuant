@@ -68,8 +68,12 @@ public sealed class PredictionGuidedHybridSelectionService
         var strict = await RunStrictDominanceReplacementAsync(current, predictedAnchors, eliminationRecords, validationFailures, validationAttempts, phaseDiagnostics, ct);
         current = MergeAndDominanceFilter(current, strict.AcceptedSnapshots, eliminationRecords, "strict predicted hybrid dominance validated by real benchmark");
 
+        predictedAnchors = AugmentPredictedAnchorsWithAcceptedValidationRows(predictedAnchors, validationAttempts);
+
         var near = await RunNearBaselineReplacementAsync(current, predictedAnchors, eliminationRecords, validationFailures, validationAttempts, phaseDiagnostics, ct);
         current = MergeAndDominanceFilter(current, near.AcceptedSnapshots, eliminationRecords, "near-baseline size-premium replacement validated by real benchmark");
+
+        predictedAnchors = AugmentPredictedAnchorsWithAcceptedValidationRows(predictedAnchors, validationAttempts);
 
         var interior = await RunInteriorSubspaceDiscoveryAsync(current, predictedAnchors, validationFailures, validationAttempts, phaseDiagnostics, ct);
         current = MergeAndDominanceFilter(current, interior.AcceptedSnapshots, eliminationRecords, "interior subspace discovery dominated by real benchmark truth");
@@ -542,6 +546,94 @@ public sealed class PredictionGuidedHybridSelectionService
         {
             return anchor.DisplayName.Contains("Q8", StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    private static IReadOnlyList<PredictedAnchorRow> AugmentPredictedAnchorsWithAcceptedValidationRows(
+        IReadOnlyList<PredictedAnchorRow> predictedAnchors,
+        IReadOnlyList<CandidateValidationResult> validationAttempts)
+    {
+        if (validationAttempts.Count == 0)
+            return predictedAnchors;
+
+        var result = new List<PredictedAnchorRow>(predictedAnchors);
+        var knownKeys = result
+            .Select(x => x.ConfigKey)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToHashSet(StringComparer.Ordinal);
+
+        int added = 0;
+
+        foreach (var validation in validationAttempts)
+        {
+            if (!validation.Accepted || validation.Snapshot == null)
+                continue;
+
+            var prediction = validation.Candidate.Prediction;
+            if (!prediction.IsPredictable || !prediction.IsSizePredictable)
+                continue;
+
+            var predictionSpaceConfig = CanonicalizeSelectionConfigForPredictionSpace(prediction.Config);
+            string key = TensorConfigIdentity.ToKey(predictionSpaceConfig);
+            if (!knownKeys.Add(key))
+                continue;
+
+            var sourceBaseline = HybridBenchmarkRepository.ResolveSourceBaselineForProvider(validation.Snapshot.Quant);
+
+            result.Add(new PredictedAnchorRow
+            {
+                Config = predictionSpaceConfig,
+                ConfigKey = key,
+                DisplayName = validation.Snapshot.DisplayName,
+                BaselineCanonicalKey = sourceBaseline.CanonicalKey,
+                RuntimeBaselineId = sourceBaseline.UniqueId,
+                PredictedKld = prediction.PredictedKld,
+                PredictedSizeBytes = prediction.PredictedSizeBytes,
+                PredictionConfidence = prediction.PredictionConfidence,
+                PredictionRank = prediction.PredictedRank ?? ulong.MaxValue,
+                IsVirtualPredictionAnchor = false
+            });
+
+            added++;
+        }
+
+        if (added > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]Prediction anchor frontier augmented from accepted validation rows:[/] [cyan]{added:N0}[/] phase-local anchor(s) added for smart-fallback / accepted hybrid coordinates outside the pruned DuckDB row set.");
+        }
+
+        return added == 0 ? predictedAnchors : result;
+    }
+
+    private static TensorConfig CanonicalizeSelectionConfigForPredictionSpace(TensorConfig config)
+    {
+        if (config.BaseQuant == BaselineQuants.Q8_0.UniqueId)
+            return config;
+
+        var baseBaseline = BaselineQuants.FromId(config.BaseQuant);
+        byte inheritedBaseSlot = BaselineQuants.EncodeTensorConfigGroupSlot(baseBaseline);
+
+        return new TensorConfig(
+            baseQuant: BaselineQuants.Q8_0.UniqueId,
+            embeddings: CanonicalizeSelectionPredictionSlot(TReg.Embeddings, config.Embeddings, inheritedBaseSlot),
+            lmHead: CanonicalizeSelectionPredictionSlot(TReg.LmHead, config.LmHead, inheritedBaseSlot),
+            attnQ: CanonicalizeSelectionPredictionSlot(TReg.AttnQ, config.AttnQ, inheritedBaseSlot),
+            attnKV: CanonicalizeSelectionPredictionSlot(TReg.AttnKV, config.AttnKV, inheritedBaseSlot),
+            attnOutput: CanonicalizeSelectionPredictionSlot(TReg.AttnOutput, config.AttnOutput, inheritedBaseSlot),
+            ffnUpGate: CanonicalizeSelectionPredictionSlot(TReg.FfnUpGate, config.FfnUpGate, inheritedBaseSlot),
+            ffnDown: CanonicalizeSelectionPredictionSlot(TReg.FfnDown, config.FfnDown, inheritedBaseSlot),
+            moeExperts: CanonicalizeSelectionPredictionSlot(TReg.MoeExperts, config.MoeExperts, inheritedBaseSlot),
+            moeRouter: CanonicalizeSelectionPredictionSlot(TReg.MoeRouter, config.MoeRouter, inheritedBaseSlot));
+    }
+
+    private static byte CanonicalizeSelectionPredictionSlot(TensorGroup group, byte storedValue, byte inheritedBaseSlot)
+    {
+        if (Cache.UnusedTensorGroups.Any(x => x.UniqueId == group.UniqueId))
+            return BaselineQuants.TensorConfigNullSlotValue;
+
+        return BaselineQuants.IsNullTensorConfigGroupSlot(storedValue)
+            ? inheritedBaseSlot
+            : storedValue;
     }
 
     private static CandidateValidationResult ChooseBestStrictDominanceCandidate(

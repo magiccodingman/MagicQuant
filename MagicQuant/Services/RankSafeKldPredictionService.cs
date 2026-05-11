@@ -373,39 +373,50 @@ public sealed class RankSafeKldPredictionService
         predictionConfig = config;
         skipReason = null;
 
-        if (context.BaseOnlySnapshotsByBaselineId.ContainsKey(config.BaseQuant))
+        if (config.BaseQuant == BaselineQuants.Q8_0.UniqueId)
             return true;
-
-        if (!TensorConfigIdentity.IsPureBaseline(config))
-        {
-            skipReason =
-                $"Skipped non-canonical rank-safe fit row with base baseline {FormatBaselineForNote(config.BaseQuant)} (id '{config.BaseQuant}'). " +
-                "DuckDB prediction-space rows use the Q8_0 carrier plus isolated group truth; this real benchmark row is not a fit observation for that synthetic coordinate system.";
-            return false;
-        }
 
         var baseline = BaselineQuants.FromId(config.BaseQuant);
         if (BaselineQuants.IsNativeExactAlias(baseline.UniqueId))
             return true;
 
-        if (!context.PureSnapshotsByBaselineId.ContainsKey(baseline.UniqueId))
+        if (TensorConfigIdentity.IsPureBaseline(config) &&
+            !context.PureSnapshotsByBaselineId.ContainsKey(baseline.UniqueId))
         {
             throw new InvalidOperationException(
                 $"Rank-safe prediction fit encountered pure baseline {baseline.Names[0]} (id '{baseline.UniqueId}'), but the pure benchmark snapshot was not loaded into context. " +
                 "This is a critical truth-loading error, not a soft warning.");
         }
 
-        var nativeExactScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
-        var predictionQuant = HybridQuant.CreateExactBlanket(
-            baseQuant: BaselineQuants.Q8_0,
-            groups: context.ActiveGroups,
-            exactScheme: nativeExactScheme);
+        byte inheritedBaseSlot = BaselineQuants.EncodeTensorConfigGroupSlot(baseline);
 
-        foreach (var group in context.ActiveGroups)
-            predictionQuant.SetLearnedCandidateOverride(group, baseline);
+        predictionConfig = new TensorConfig(
+            baseQuant: BaselineQuants.Q8_0.UniqueId,
+            embeddings: CanonicalizePredictionSlot(TReg.Embeddings, config.Embeddings, inheritedBaseSlot, context),
+            lmHead: CanonicalizePredictionSlot(TReg.LmHead, config.LmHead, inheritedBaseSlot, context),
+            attnQ: CanonicalizePredictionSlot(TReg.AttnQ, config.AttnQ, inheritedBaseSlot, context),
+            attnKV: CanonicalizePredictionSlot(TReg.AttnKV, config.AttnKV, inheritedBaseSlot, context),
+            attnOutput: CanonicalizePredictionSlot(TReg.AttnOutput, config.AttnOutput, inheritedBaseSlot, context),
+            ffnUpGate: CanonicalizePredictionSlot(TReg.FfnUpGate, config.FfnUpGate, inheritedBaseSlot, context),
+            ffnDown: CanonicalizePredictionSlot(TReg.FfnDown, config.FfnDown, inheritedBaseSlot, context),
+            moeExperts: CanonicalizePredictionSlot(TReg.MoeExperts, config.MoeExperts, inheritedBaseSlot, context),
+            moeRouter: CanonicalizePredictionSlot(TReg.MoeRouter, config.MoeRouter, inheritedBaseSlot, context));
 
-        predictionConfig = (TensorConfig)predictionQuant;
         return true;
+    }
+
+    private static byte CanonicalizePredictionSlot(
+        TensorGroup group,
+        byte storedValue,
+        byte inheritedBaseSlot,
+        RankSafePredictionModel context)
+    {
+        if (!context.ActiveGroups.Any(x => x.UniqueId == group.UniqueId))
+            return BaselineQuants.TensorConfigNullSlotValue;
+
+        return BaselineQuants.IsNullTensorConfigGroupSlot(storedValue)
+            ? inheritedBaseSlot
+            : storedValue;
     }
 
     private RankSafePredictionFit FitInteractionModel(
