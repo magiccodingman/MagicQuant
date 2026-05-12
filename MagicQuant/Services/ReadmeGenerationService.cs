@@ -384,6 +384,7 @@ public sealed class ReadmeGenerationService
             sb.AppendLine(
                 $"- [Replacement details]({MagicQuantManifestPathService.HuggingFaceResolvePath(MagicQuantManifestPathService.ReplacementsFileName)}) — structured details for baselines or anchors removed from the final download table, including reason codes, KLD deltas, PPL delta %, and size deltas.");
 
+            sb.AppendLine();
             AppendReasonCodeDetails(sb);
             sb.AppendLine();
         }
@@ -548,21 +549,21 @@ public sealed class ReadmeGenerationService
 
     private static void AppendDownloadTable(StringBuilder sb, IReadOnlyCollection<ReadmeArtifactRow> rows)
     {
-        sb.AppendLine("| Name | Provider | Quant Family | KLD | PPL | PPL Δ % | Size (GB) | Download |");
-        sb.AppendLine("|---|---|---|---:|---:|---:|---:|---|");
+        sb.AppendLine("| Name | Provider | Quant Family | KLD | Size (GB) | Download |");
+        sb.AppendLine("|---|---|---|---:|---:|---|");
 
         foreach (var row in rows.OrderBy(x => x.Kld ?? double.MaxValue).ThenBy(x => x.SizeBytes))
         {
             string kld = row.Kld.HasValue ? row.Kld.Value.ToString("0.000000", CultureInfo.InvariantCulture) : "n/a";
-            string ppl = row.Ppl.HasValue ? row.Ppl.Value.ToString("0.000000", CultureInfo.InvariantCulture) : "n/a";
-            string pplDelta = row.PplDeltaPercent.HasValue
+            //string ppl = row.Ppl.HasValue ? row.Ppl.Value.ToString("0.000000", CultureInfo.InvariantCulture) : "n/a";
+            /*string pplDelta = row.PplDeltaPercent.HasValue
                 ? row.PplDeltaPercent.Value.ToString("0.000", CultureInfo.InvariantCulture) + "%"
-                : "n/a";
+                : "n/a";*/
             string sizeGb = ToGB(row.SizeBytes);
             string download = string.IsNullOrWhiteSpace(row.DownloadTarget) ? "n/a" : $"[Link]({row.DownloadTarget})";
 
             sb.AppendLine(
-                $"| {row.NameCell} | {EscapePipe(row.Provider)} | {EscapePipe(row.QuantFamily)} | {kld} | {ppl} | {pplDelta} | {sizeGb} | {download} |");
+                $"| {row.NameCell} | {EscapePipe(row.Provider)} | {EscapePipe(row.QuantFamily)} | {kld} | {sizeGb} | {download} |");
         }
     }
 
