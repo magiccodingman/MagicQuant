@@ -1,6 +1,6 @@
 paths:
   magic_quant_root:
-  model_dir: /mnt/world8/AI/Models/Qwen3.6-35B-A3B-Qwen/
+  model_dir: /mnt/world8/AI/Models/Qwen3.6-35B-A3B-uncensored-heretic-llmfan46/
   llama_root:
   llama_bin:
   convert_script:
@@ -86,7 +86,7 @@ readme:
       - magicquant
       - conversational
     base_model:
-      - Qwen/Qwen3.6-35B-A3B
+      - llmfan46/Qwen3.6-35B-A3B-uncensored-heretic
 
 hardware:
   gpu_memory_limits_gb:
@@ -260,7 +260,7 @@ output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
   output_dir:
   output_name_prefix: Qwen3.6-27B
-  export_external_learned_baselines: true
+  export_external_learned_baselines: false
 
   # false = normal behavior; delete/rebuild final outputs from scratch.
   # true = preserve valid existing GGUFs and skip rebuilding them only when
