@@ -549,8 +549,8 @@ public sealed class ReadmeGenerationService
 
     private static void AppendDownloadTable(StringBuilder sb, IReadOnlyCollection<ReadmeArtifactRow> rows)
     {
-        sb.AppendLine("| Name | Provider | Quant Family | KLD | Size (GB) | Download |");
-        sb.AppendLine("|---|---|---|---:|---:|---|");
+        sb.AppendLine("| Name | Provider | KLD | Size (GB) | Download |");
+        sb.AppendLine("|---|---|---:|---:|---|");
 
         foreach (var row in rows.OrderBy(x => x.Kld ?? double.MaxValue).ThenBy(x => x.SizeBytes))
         {
@@ -563,7 +563,7 @@ public sealed class ReadmeGenerationService
             string download = string.IsNullOrWhiteSpace(row.DownloadTarget) ? "n/a" : $"[Link]({row.DownloadTarget})";
 
             sb.AppendLine(
-                $"| {row.NameCell} | {EscapePipe(row.Provider)} | {EscapePipe(row.QuantFamily)} | {kld} | {sizeGb} | {download} |");
+                $"| {row.NameCell} | {EscapePipe(row.Provider)} | {kld} | {sizeGb} | {download} |");
         }
     }
 
