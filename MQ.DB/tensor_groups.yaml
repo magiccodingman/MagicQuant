@@ -365,3 +365,15 @@ base_quant_exceptions:
     # This is not a dense FFN gate and not an MoE router. If ssm is not active,
     # allow it to fallback rather than being misclassified.
     - "^blk\\..*\\.attn_gate\\.weight$"
+    
+    # Qwen3.5 / Qwen3.6 MTP / NEXTN speculative decoding tensors.
+    # Keep these protected. They should not be assigned to embeddings,
+    # lm_head, FFN, attention, SSM, or MoE groups.
+    - "^blk\\..*\\.nextn\\..*$"
+    - ".*nextn.*"
+    - ".*mtp.*"
+    - ".*eh_proj.*"
+    - ".*shared_head.*"
+    - ".*shared_head_norm.*"
+    - ".*pre_fc_norm.*"
+  
