@@ -67,7 +67,7 @@ readme:
   # Optional title model name override used in:
   #   # MagicQuant Hybrids (v2.0) - <name>
   # If blank, MagicQuant uses identity.architecture_family_name.
-  title_model_name_override: Qwen3.6-35B-A3B
+  title_model_name_override: Qwen3.6-35B-A3B (By llmfan46)
 
   # Hugging Face README frontmatter.
   # Scalars render as:
@@ -259,7 +259,7 @@ anomaly_detection:
 output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
   output_dir:
-  output_name_prefix: Qwen3.6-27B
+  output_name_prefix: Qwen3.6-35B-A3B
   export_external_learned_baselines: false
 
   # false = normal behavior; delete/rebuild final outputs from scratch.
