@@ -45,6 +45,8 @@ public sealed class CloneRepositoryQuants : ICommand
             return;
         }
 
+        bool allowMissingManifestTensors = args.Any(a => string.Equals(a.Name, CloneManifestTensorMapBuildService.AllowMissingManifestTensorsFlag, StringComparison.OrdinalIgnoreCase));
+
         string? modelDirRaw = Get(args, "model-dir");
         if (string.IsNullOrWhiteSpace(modelDirRaw))
             modelDirRaw = Config.Current.Paths.ModelDir;
@@ -83,6 +85,7 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine($"Work Path:    [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
         AnsiConsole.MarkupLine($"Export Path:  [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
         AnsiConsole.MarkupLine($"Reuse final artifacts: {(Config.ReuseExistingFinalArtifacts ? "[green]yes[/]" : "[grey]no[/]")}");
+        AnsiConsole.MarkupLine($"Allow missing manifest tensors: {(allowMissingManifestTensors ? "[yellow]yes[/]" : "[grey]no[/]")}");
 
         AnsiConsole.MarkupLine("Getting safetensors hash. This may take a bit, please wait...");
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
@@ -106,6 +109,7 @@ public sealed class CloneRepositoryQuants : ICommand
         var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
         var imatrixService = new ImatrixService();
+        var cloneBuildService = new CloneManifestTensorMapBuildService(quantizationService, imatrixService);
 
         string baseModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
@@ -241,10 +245,11 @@ public sealed class CloneRepositoryQuants : ICommand
                 }
                 else
                 {
-                    await quantizationService.BuildExportArtifactFromExactTensorMapAsync(
+                    await cloneBuildService.BuildAsync(
                         tensorTypes: artifact.TensorTypes,
                         outputPath: outputFile,
                         baseQuantName: baseQuantName,
+                        allowMissingManifestTensors: allowMissingManifestTensors,
                         forceRebuild: true);
                 }
 
@@ -870,6 +875,7 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine("  --source-json       Local or http(s) path to magicquant.clone-configs.json");
         AnsiConsole.MarkupLine("  --use-imatrix       Use configured/provided imatrix for the cloned model");
         AnsiConsole.MarkupLine("  --reuse-existing-final-artifacts  Reuse matching existing GGUFs and matching clone benchmark JSON rows");
+        AnsiConsole.MarkupLine("  --allow-missing-manifest-tensors  Allow clone manifests that are strict subsets of the current model tensor list; extra source tensors receive no explicit --tensor-type override and fall through to base quantization");
         AnsiConsole.MarkupLine("  --recheck-hardware-probe / --force-refresh-hardware-probe  Force Q8/native hardware probe and refresh the SQLite execution-plan cache");
     }
 
