@@ -15,12 +15,15 @@ namespace MagicQuant.Services;
 /// Normal exact-map builds remain strict. Clone mode can optionally allow a source model
 /// to contain extra tensors that are absent from an older manifest. In that case, only the
 /// manifest tensors receive explicit --tensor-type overrides; the extra source tensors are
-/// intentionally left to llama.cpp's normal base-quant behavior.
+/// intentionally left to llama.cpp's normal base-quant behavior unless a clone-specific
+/// missing-manifest base-quant override is provided.
 /// </summary>
 public sealed class CloneManifestTensorMapBuildService
 {
     public const string AllowMissingManifestTensorsFlag = "allow-missing-manifest-tensors";
     public const string AllowMissingManifestTensorsCliSwitch = "--" + AllowMissingManifestTensorsFlag;
+    public const string MissingManifestBaseQuantFlag = "missing-manifest-base-quant";
+    public const string MissingManifestBaseQuantCliSwitch = "--" + MissingManifestBaseQuantFlag;
 
     private readonly QuantizationService _quantizationService;
     private readonly ImatrixService _imatrixService;
@@ -38,6 +41,7 @@ public sealed class CloneManifestTensorMapBuildService
         string outputPath,
         string baseQuantName,
         bool allowMissingManifestTensors,
+        string? missingManifestBaseQuantName = null,
         bool forceRebuild = false,
         CancellationToken ct = default)
     {
@@ -46,6 +50,9 @@ public sealed class CloneManifestTensorMapBuildService
 
         if (string.IsNullOrWhiteSpace(outputPath))
             throw new InvalidOperationException("Export output path is required.");
+
+        bool hasMissingManifestBaseQuantOverride = !string.IsNullOrWhiteSpace(missingManifestBaseQuantName);
+        bool allowManifestSubset = allowMissingManifestTensors || hasMissingManifestBaseQuantOverride;
 
         string nativeBasePath = await _quantizationService.EnsureBaseModelFileAsync();
         var sourceTensorTypes = await _quantizationService.ReadExactTensorTypesAsync(nativeBasePath, ct);
@@ -70,13 +77,13 @@ public sealed class CloneManifestTensorMapBuildService
             return await _quantizationService.BuildExportArtifactFromExactTensorMapAsync(
                 tensorTypes: tensorTypes,
                 outputPath: outputPath,
-                baseQuantName: baseQuantName,
+                baseQuantName: hasMissingManifestBaseQuantOverride ? missingManifestBaseQuantName! : baseQuantName,
                 forceRebuild: forceRebuild,
                 ct: ct);
         }
 
         bool sourceModelIsManifestSuperset = missingInManifest.Count > 0 && unexpectedInManifest.Count == 0;
-        if (!allowMissingManifestTensors || !sourceModelIsManifestSuperset)
+        if (!allowManifestSubset || !sourceModelIsManifestSuperset)
         {
             throw new InvalidOperationException(BuildManifestMismatchError(
                 missingInManifest,
@@ -91,6 +98,7 @@ public sealed class CloneManifestTensorMapBuildService
             outputFile: outputPath,
             tensorTypes: tensorTypes,
             baseQuantName: baseQuantName,
+            missingManifestBaseQuantName: missingManifestBaseQuantName,
             missingInManifest: missingInManifest,
             forceRebuild: forceRebuild,
             ct: ct);
@@ -101,12 +109,13 @@ public sealed class CloneManifestTensorMapBuildService
         string outputFile,
         IReadOnlyDictionary<string, string> tensorTypes,
         string baseQuantName,
+        string? missingManifestBaseQuantName,
         IReadOnlyList<string> missingInManifest,
         bool forceRebuild,
         CancellationToken ct)
     {
-        var baseQuant = BaselineQuants.ResolveBuiltInStandardBaseline(baseQuantName)
-                        ?? BaselineQuants.Q8_0;
+        var baseQuant = ResolveCloneBaseQuantOrThrow(baseQuantName, missingManifestBaseQuantName);
+        bool hasMissingManifestBaseQuantOverride = !string.IsNullOrWhiteSpace(missingManifestBaseQuantName);
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
 
@@ -121,6 +130,10 @@ public sealed class CloneManifestTensorMapBuildService
 
         AnsiConsole.MarkupLine(
             $"[yellow]Clone manifest subset allowed:[/] [cyan]{missingInManifest.Count:N0}[/] source tensor(s) are absent from the manifest and will receive no explicit --tensor-type override.");
+
+        AnsiConsole.MarkupLine(hasMissingManifestBaseQuantOverride
+            ? $"[yellow]Missing-manifest base quant override:[/] [cyan]{Markup.Escape(baseQuant.Names[0])}[/] will be used for source tensors absent from the manifest."
+            : $"[grey]Missing-manifest tensors will use artifact base quant:[/] {Markup.Escape(baseQuant.Names[0])}");
 
         foreach (var tensorName in missingInManifest.Take(15))
             AnsiConsole.MarkupLine($"[grey]  basequant fallback tensor:[/] {Markup.Escape(tensorName)}");
@@ -166,7 +179,7 @@ public sealed class CloneManifestTensorMapBuildService
             psi.ArgumentList.Add(arg);
 
         AnsiConsole.MarkupLine(
-            $"[cyan]Quantizing clone artifact from manifest subset:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
+            $"[cyan]Quantizing clone artifact from manifest subset:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](base quant: {Markup.Escape(baseQuant.Names[0])}; log: {Markup.Escape(quantizeLogPath)})[/]");
 
         var result = await RunLoggedProcessAsync(psi, quantizeLogPath, ct);
         if (result.ExitCode != 0)
@@ -188,6 +201,25 @@ public sealed class CloneManifestTensorMapBuildService
         return outputFile;
     }
 
+    private static BaselineQuants ResolveCloneBaseQuantOrThrow(string baseQuantName, string? missingManifestBaseQuantName)
+    {
+        bool hasOverride = !string.IsNullOrWhiteSpace(missingManifestBaseQuantName);
+        string quantName = hasOverride ? missingManifestBaseQuantName!.Trim() : baseQuantName;
+
+        var resolved = BaselineQuants.ResolveBuiltInStandardBaseline(quantName);
+        if (resolved != null)
+            return resolved;
+
+        if (hasOverride)
+        {
+            throw new InvalidOperationException(
+                $"Unknown {MissingManifestBaseQuantCliSwitch} value '{missingManifestBaseQuantName}'. " +
+                "Use a built-in llama.cpp base quant name such as Q8_0, Q6_K, Q5_K_M, or Q4_K_M.");
+        }
+
+        return BaselineQuants.Q8_0;
+    }
+
     private static string BuildManifestMismatchError(
         IReadOnlyList<string> missingInManifest,
         IReadOnlyList<string> unexpectedInManifest,
@@ -205,9 +237,11 @@ public sealed class CloneManifestTensorMapBuildService
         {
             builder.AppendLine();
             builder.Append("This looks like a clone manifest subset: every manifest tensor exists in the current model, ");
-            builder.Append("but the current model has extra tensors. To let those extra tensors fall through to llama.cpp/base-quant behavior, rerun clone mode with ");
+            builder.Append("but the current model has extra tensors. To let those extra tensors fall through to the artifact base quant, rerun clone mode with ");
             builder.Append(AllowMissingManifestTensorsCliSwitch);
-            builder.Append('.');
+            builder.Append(". To force those extra tensors to a specific base quant, use ");
+            builder.Append(MissingManifestBaseQuantCliSwitch);
+            builder.Append(" Q8_0.");
         }
 
         return builder.ToString();
