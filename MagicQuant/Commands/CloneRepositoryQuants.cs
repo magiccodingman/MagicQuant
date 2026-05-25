@@ -46,6 +46,8 @@ public sealed class CloneRepositoryQuants : ICommand
         }
 
         bool allowMissingManifestTensors = args.Any(a => string.Equals(a.Name, CloneManifestTensorMapBuildService.AllowMissingManifestTensorsFlag, StringComparison.OrdinalIgnoreCase));
+        string? missingManifestBaseQuantName = Get(args, CloneManifestTensorMapBuildService.MissingManifestBaseQuantFlag);
+        bool hasMissingManifestBaseQuantOverride = !string.IsNullOrWhiteSpace(missingManifestBaseQuantName);
 
         string? modelDirRaw = Get(args, "model-dir");
         if (string.IsNullOrWhiteSpace(modelDirRaw))
@@ -85,7 +87,10 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine($"Work Path:    [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
         AnsiConsole.MarkupLine($"Export Path:  [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
         AnsiConsole.MarkupLine($"Reuse final artifacts: {(Config.ReuseExistingFinalArtifacts ? "[green]yes[/]" : "[grey]no[/]")}");
-        AnsiConsole.MarkupLine($"Allow missing manifest tensors: {(allowMissingManifestTensors ? "[yellow]yes[/]" : "[grey]no[/]")}");
+        AnsiConsole.MarkupLine($"Allow missing manifest tensors: {(allowMissingManifestTensors || hasMissingManifestBaseQuantOverride ? "[yellow]yes[/]" : "[grey]no[/]")}");
+        AnsiConsole.MarkupLine(hasMissingManifestBaseQuantOverride
+            ? $"Missing-manifest base quant override: [yellow]{Markup.Escape(missingManifestBaseQuantName!)}[/]"
+            : "Missing-manifest base quant override: [grey]none[/]");
 
         AnsiConsole.MarkupLine("Getting safetensors hash. This may take a bit, please wait...");
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
@@ -250,6 +255,7 @@ public sealed class CloneRepositoryQuants : ICommand
                         outputPath: outputFile,
                         baseQuantName: baseQuantName,
                         allowMissingManifestTensors: allowMissingManifestTensors,
+                        missingManifestBaseQuantName: missingManifestBaseQuantName,
                         forceRebuild: true);
                 }
 
@@ -876,6 +882,7 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine("  --use-imatrix       Use configured/provided imatrix for the cloned model");
         AnsiConsole.MarkupLine("  --reuse-existing-final-artifacts  Reuse matching existing GGUFs and matching clone benchmark JSON rows");
         AnsiConsole.MarkupLine("  --allow-missing-manifest-tensors  Allow clone manifests that are strict subsets of the current model tensor list; extra source tensors receive no explicit --tensor-type override and fall through to base quantization");
+        AnsiConsole.MarkupLine("  --missing-manifest-base-quant <quant>  Allow strict-subset clone manifests and use this llama.cpp base quant for tensors absent from the manifest, e.g. Q8_0");
         AnsiConsole.MarkupLine("  --recheck-hardware-probe / --force-refresh-hardware-probe  Force Q8/native hardware probe and refresh the SQLite execution-plan cache");
     }
 
