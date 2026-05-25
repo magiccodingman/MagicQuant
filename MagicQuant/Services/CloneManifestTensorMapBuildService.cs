@@ -13,7 +13,8 @@ public sealed record CloneManifestTensorMapBuildResult(
     string OutputPath,
     bool UsedManifestSubset,
     string EffectiveBaseQuantName,
-    IReadOnlyList<string> MissingInManifest);
+    IReadOnlyList<string> MissingInManifest,
+    IReadOnlyDictionary<string, string> ResolvedTensorTypes);
 
 /// <summary>
 /// Clone-mode exact tensor-map builder.
@@ -23,6 +24,11 @@ public sealed record CloneManifestTensorMapBuildResult(
 /// manifest tensors receive explicit --tensor-type overrides; the extra source tensors are
 /// intentionally left to llama.cpp's normal base-quant behavior unless a clone-specific
 /// missing-manifest base-quant override is provided.
+///
+/// After a clone artifact is produced, the service re-reads the output GGUF and returns the
+/// actual emitted tensor qtypes. That lets the generated clone manifest become the next run's
+/// exact recipe without inventing missing tensor overrides before llama.cpp has decided how
+/// to store norms and other special tensors.
 /// </summary>
 public sealed class CloneManifestTensorMapBuildService
 {
@@ -87,11 +93,14 @@ public sealed class CloneManifestTensorMapBuildService
                 forceRebuild: forceRebuild,
                 ct: ct);
 
+            var resolvedTensorTypes = await CaptureResolvedTensorTypesAsync(exactOutputPath, tensorTypes, ct);
+
             return new CloneManifestTensorMapBuildResult(
                 OutputPath: exactOutputPath,
                 UsedManifestSubset: false,
                 EffectiveBaseQuantName: baseQuantName,
-                MissingInManifest: Array.Empty<string>());
+                MissingInManifest: Array.Empty<string>(),
+                ResolvedTensorTypes: resolvedTensorTypes);
         }
 
         bool sourceModelIsManifestSuperset = missingInManifest.Count > 0 && unexpectedInManifest.Count == 0;
@@ -133,11 +142,14 @@ public sealed class CloneManifestTensorMapBuildService
 
         if (!forceRebuild && File.Exists(outputFile) && new FileInfo(outputFile).Length > 0)
         {
+            var reusedResolvedTensorTypes = await CaptureResolvedTensorTypesAsync(outputFile, tensorTypes, ct);
+
             return new CloneManifestTensorMapBuildResult(
                 OutputPath: outputFile,
                 UsedManifestSubset: true,
                 EffectiveBaseQuantName: baseQuant.Names[0],
-                MissingInManifest: missingInManifest.ToArray());
+                MissingInManifest: missingInManifest.ToArray(),
+                ResolvedTensorTypes: reusedResolvedTensorTypes);
         }
 
         if (forceRebuild)
@@ -217,11 +229,40 @@ public sealed class CloneManifestTensorMapBuildService
         await File.WriteAllTextAsync(outputFile + ".success.json", "{\"status\":\"success\"}", ct);
         AnsiConsole.MarkupLine($"[green]Clone quantized model ready:[/] {Markup.Escape(outputFile)}");
 
+        var resolvedTensorTypes = await CaptureResolvedTensorTypesAsync(outputFile, tensorTypes, ct);
+
         return new CloneManifestTensorMapBuildResult(
             OutputPath: outputFile,
             UsedManifestSubset: true,
             EffectiveBaseQuantName: baseQuant.Names[0],
-            MissingInManifest: missingInManifest.ToArray());
+            MissingInManifest: missingInManifest.ToArray(),
+            ResolvedTensorTypes: resolvedTensorTypes);
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> CaptureResolvedTensorTypesAsync(
+        string outputFile,
+        IReadOnlyDictionary<string, string> fallbackTensorTypes,
+        CancellationToken ct)
+    {
+        try
+        {
+            var resolved = await _quantizationService.ReadExactTensorTypesAsync(outputFile, ct);
+            if (resolved.Count > 0)
+            {
+                AnsiConsole.MarkupLine($"[green]Captured resolved clone tensor map from GGUF:[/] {resolved.Count:N0} tensor(s)");
+                return resolved
+                    .OrderBy(x => x.Key, StringComparer.Ordinal)
+                    .ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+            }
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Could not capture resolved tensor map from clone GGUF; preserving manifest tensor map:[/] {Markup.Escape(ex.Message)}");
+        }
+
+        return fallbackTensorTypes
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
     }
 
     private static BaselineQuants ResolveCloneBaseQuantOrThrow(string baseQuantName, string? missingManifestBaseQuantName)
