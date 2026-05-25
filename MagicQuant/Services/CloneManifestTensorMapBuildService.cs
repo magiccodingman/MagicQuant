@@ -77,7 +77,7 @@ public sealed class CloneManifestTensorMapBuildService
             return await _quantizationService.BuildExportArtifactFromExactTensorMapAsync(
                 tensorTypes: tensorTypes,
                 outputPath: outputPath,
-                baseQuantName: hasMissingManifestBaseQuantOverride ? missingManifestBaseQuantName! : baseQuantName,
+                baseQuantName: baseQuantName,
                 forceRebuild: forceRebuild,
                 ct: ct);
         }
