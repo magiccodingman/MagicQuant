@@ -9,6 +9,12 @@ using Spectre.Console;
 
 namespace MagicQuant.Services;
 
+public sealed record CloneManifestTensorMapBuildResult(
+    string OutputPath,
+    bool UsedManifestSubset,
+    string EffectiveBaseQuantName,
+    IReadOnlyList<string> MissingInManifest);
+
 /// <summary>
 /// Clone-mode exact tensor-map builder.
 ///
@@ -36,7 +42,7 @@ public sealed class CloneManifestTensorMapBuildService
         _imatrixService = imatrixService ?? throw new ArgumentNullException(nameof(imatrixService));
     }
 
-    public async Task<string> BuildAsync(
+    public async Task<CloneManifestTensorMapBuildResult> BuildAsync(
         IReadOnlyDictionary<string, string> tensorTypes,
         string outputPath,
         string baseQuantName,
@@ -74,12 +80,18 @@ public sealed class CloneManifestTensorMapBuildService
 
         if (exactMatch)
         {
-            return await _quantizationService.BuildExportArtifactFromExactTensorMapAsync(
+            var exactOutputPath = await _quantizationService.BuildExportArtifactFromExactTensorMapAsync(
                 tensorTypes: tensorTypes,
                 outputPath: outputPath,
                 baseQuantName: baseQuantName,
                 forceRebuild: forceRebuild,
                 ct: ct);
+
+            return new CloneManifestTensorMapBuildResult(
+                OutputPath: exactOutputPath,
+                UsedManifestSubset: false,
+                EffectiveBaseQuantName: baseQuantName,
+                MissingInManifest: Array.Empty<string>());
         }
 
         bool sourceModelIsManifestSuperset = missingInManifest.Count > 0 && unexpectedInManifest.Count == 0;
@@ -104,7 +116,7 @@ public sealed class CloneManifestTensorMapBuildService
             ct: ct);
     }
 
-    private async Task<string> BuildSubsetOverrideCloneAsync(
+    private async Task<CloneManifestTensorMapBuildResult> BuildSubsetOverrideCloneAsync(
         string inputFile,
         string outputFile,
         IReadOnlyDictionary<string, string> tensorTypes,
@@ -120,7 +132,13 @@ public sealed class CloneManifestTensorMapBuildService
         Directory.CreateDirectory(Path.GetDirectoryName(outputFile)!);
 
         if (!forceRebuild && File.Exists(outputFile) && new FileInfo(outputFile).Length > 0)
-            return outputFile;
+        {
+            return new CloneManifestTensorMapBuildResult(
+                OutputPath: outputFile,
+                UsedManifestSubset: true,
+                EffectiveBaseQuantName: baseQuant.Names[0],
+                MissingInManifest: missingInManifest.ToArray());
+        }
 
         if (forceRebuild)
         {
@@ -198,7 +216,12 @@ public sealed class CloneManifestTensorMapBuildService
 
         await File.WriteAllTextAsync(outputFile + ".success.json", "{\"status\":\"success\"}", ct);
         AnsiConsole.MarkupLine($"[green]Clone quantized model ready:[/] {Markup.Escape(outputFile)}");
-        return outputFile;
+
+        return new CloneManifestTensorMapBuildResult(
+            OutputPath: outputFile,
+            UsedManifestSubset: true,
+            EffectiveBaseQuantName: baseQuant.Names[0],
+            MissingInManifest: missingInManifest.ToArray());
     }
 
     private static BaselineQuants ResolveCloneBaseQuantOrThrow(string baseQuantName, string? missingManifestBaseQuantName)
