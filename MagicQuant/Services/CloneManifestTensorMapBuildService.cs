@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
@@ -36,6 +38,14 @@ public sealed class CloneManifestTensorMapBuildService
     public const string AllowMissingManifestTensorsCliSwitch = "--" + AllowMissingManifestTensorsFlag;
     public const string MissingManifestBaseQuantFlag = "missing-manifest-base-quant";
     public const string MissingManifestBaseQuantCliSwitch = "--" + MissingManifestBaseQuantFlag;
+
+    private static readonly JsonSerializerOptions ManifestJsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true
+    };
 
     private readonly QuantizationService _quantizationService;
     private readonly ImatrixService _imatrixService;
@@ -94,6 +104,7 @@ public sealed class CloneManifestTensorMapBuildService
                 ct: ct);
 
             var resolvedTensorTypes = await CaptureResolvedTensorTypesAsync(exactOutputPath, tensorTypes, ct);
+            await PersistResolvedTensorTypesToOutputManifestAsync(exactOutputPath, resolvedTensorTypes, ct);
 
             return new CloneManifestTensorMapBuildResult(
                 OutputPath: exactOutputPath,
@@ -143,6 +154,7 @@ public sealed class CloneManifestTensorMapBuildService
         if (!forceRebuild && File.Exists(outputFile) && new FileInfo(outputFile).Length > 0)
         {
             var reusedResolvedTensorTypes = await CaptureResolvedTensorTypesAsync(outputFile, tensorTypes, ct);
+            await PersistResolvedTensorTypesToOutputManifestAsync(outputFile, reusedResolvedTensorTypes, ct);
 
             return new CloneManifestTensorMapBuildResult(
                 OutputPath: outputFile,
@@ -230,6 +242,7 @@ public sealed class CloneManifestTensorMapBuildService
         AnsiConsole.MarkupLine($"[green]Clone quantized model ready:[/] {Markup.Escape(outputFile)}");
 
         var resolvedTensorTypes = await CaptureResolvedTensorTypesAsync(outputFile, tensorTypes, ct);
+        await PersistResolvedTensorTypesToOutputManifestAsync(outputFile, resolvedTensorTypes, ct);
 
         return new CloneManifestTensorMapBuildResult(
             OutputPath: outputFile,
@@ -264,6 +277,80 @@ public sealed class CloneManifestTensorMapBuildService
             .OrderBy(x => x.Key, StringComparer.Ordinal)
             .ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
     }
+
+    private static async Task PersistResolvedTensorTypesToOutputManifestAsync(
+        string outputFile,
+        IReadOnlyDictionary<string, string> resolvedTensorTypes,
+        CancellationToken ct)
+    {
+        if (resolvedTensorTypes.Count == 0)
+            return;
+
+        string? outputDirectory = Path.GetDirectoryName(outputFile);
+        if (string.IsNullOrWhiteSpace(outputDirectory))
+            return;
+
+        string manifestPath = MagicQuantManifestPathService.GetManifestFilePath(outputDirectory, MagicQuantManifestPathService.CloneConfigsFileName);
+        if (!File.Exists(manifestPath))
+            return;
+
+        try
+        {
+            var root = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath, ct)) as JsonObject;
+            var artifacts = TryGetProperty(root, "artifacts") as JsonArray;
+            if (root == null || artifacts == null)
+                return;
+
+            string fileName = Path.GetFileName(outputFile);
+            JsonObject? matchingArtifact = null;
+            foreach (var node in artifacts.OfType<JsonObject>())
+            {
+                string? artifactFileName = TryGetString(node, "fileName");
+                if (string.Equals(artifactFileName, fileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchingArtifact = node;
+                    break;
+                }
+            }
+
+            if (matchingArtifact == null)
+                return;
+
+            var tensorTypesNode = new JsonObject();
+            foreach (var kv in resolvedTensorTypes.OrderBy(x => x.Key, StringComparer.Ordinal))
+                tensorTypesNode[kv.Key] = kv.Value;
+
+            matchingArtifact["tensorTypes"] = tensorTypesNode;
+            matchingArtifact["resolvedTensorTypeCount"] = resolvedTensorTypes.Count;
+            matchingArtifact["resolvedTensorTypesGeneratedAtUtc"] = DateTimeOffset.UtcNow.ToString("O");
+
+            await File.WriteAllTextAsync(manifestPath, root.ToJsonString(ManifestJsonOptions), ct);
+            AnsiConsole.MarkupLine(
+                $"[green]Resolved tensorTypes persisted to clone manifest:[/] {Markup.Escape(fileName)} [grey]({resolvedTensorTypes.Count:N0} tensor(s))[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Could not persist resolved tensorTypes to clone manifest; build output is still valid:[/] {Markup.Escape(ex.Message)}");
+        }
+    }
+
+    private static JsonNode? TryGetProperty(JsonObject? obj, string name)
+    {
+        if (obj == null)
+            return null;
+
+        foreach (var kv in obj)
+        {
+            if (string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase))
+                return kv.Value;
+        }
+
+        return null;
+    }
+
+    private static string? TryGetString(JsonObject obj, string name)
+        => TryGetProperty(obj, name)?.GetValue<string>();
 
     private static BaselineQuants ResolveCloneBaseQuantOrThrow(string baseQuantName, string? missingManifestBaseQuantName)
     {
