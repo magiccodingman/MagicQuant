@@ -11,17 +11,18 @@ using Spectre.Console;
 if (args.Length == 0)
 {
     // Use: "clone" or "evolution"
-    const string debugMode = "evolution"; // switch to "evolution" to use the full learning/search pipeline again. Or use "Clone" for cloning mode.
+    const string debugMode = "clone"; // switch to "evolution" to use the full learning/search pipeline again. Or use "Clone" for cloning mode.
 
     if (string.Equals(debugMode, "clone", StringComparison.OrdinalIgnoreCase))
     {
         args =
         [
             "clone-repository-quants",
-            "--architecture-family", @"""Qwen3.6-35B-A3B""",
-            "--source-repo", @"""magiccodingman/Qwen3.6-35B-A3B-MagicQuant-GGUF"""
+            "--architecture-family", @"""Qwen3.6-27B-Uncensored""",
+            "--source-repo", @"""magiccodingman/Qwen3.6-27B-MagicQuant-GGUF"""
             ,"--allow-architecture-family-alias-override"
-            //, "--reuse-existing-final-artifacts"
+            ,"--missing-manifest-base-quant Q8_0"
+            , "--reuse-existing-final-artifacts"
         ];
     }
     else

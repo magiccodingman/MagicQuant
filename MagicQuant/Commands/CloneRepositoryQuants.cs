@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using MagicQuant.Configuration;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
@@ -28,6 +29,7 @@ public sealed class CloneRepositoryQuants : ICommand
     ];
 
     private static readonly string[] CloneBenchmarkDomains = ["general"];
+    private const string CloneTensorPolicyPropertyName = "cloneTensorPolicy";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -44,6 +46,10 @@ public sealed class CloneRepositoryQuants : ICommand
             ShowHelp();
             return;
         }
+
+        bool allowMissingManifestTensors = args.Any(a => string.Equals(a.Name, CloneManifestTensorMapBuildService.AllowMissingManifestTensorsFlag, StringComparison.OrdinalIgnoreCase));
+        string? missingManifestBaseQuantName = Get(args, CloneManifestTensorMapBuildService.MissingManifestBaseQuantFlag);
+        bool hasMissingManifestBaseQuantOverride = !string.IsNullOrWhiteSpace(missingManifestBaseQuantName);
 
         string? modelDirRaw = Get(args, "model-dir");
         if (string.IsNullOrWhiteSpace(modelDirRaw))
@@ -83,6 +89,10 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine($"Work Path:    [blue]{Markup.Escape(Cache.ModelMagicQuantDirectory)}[/]");
         AnsiConsole.MarkupLine($"Export Path:  [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");
         AnsiConsole.MarkupLine($"Reuse final artifacts: {(Config.ReuseExistingFinalArtifacts ? "[green]yes[/]" : "[grey]no[/]")}");
+        AnsiConsole.MarkupLine($"Allow missing manifest tensors: {(allowMissingManifestTensors || hasMissingManifestBaseQuantOverride ? "[yellow]yes[/]" : "[grey]no[/]")}");
+        AnsiConsole.MarkupLine(hasMissingManifestBaseQuantOverride
+            ? $"Missing-manifest base quant override: [yellow]{Markup.Escape(missingManifestBaseQuantName!)}[/]"
+            : "Missing-manifest base quant override: [grey]none[/]");
 
         AnsiConsole.MarkupLine("Getting safetensors hash. This may take a bit, please wait...");
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
@@ -103,9 +113,12 @@ public sealed class CloneRepositoryQuants : ICommand
             Cache.ModelMagicQuantDirectory!,
             CancellationToken.None);
 
+        var sourceClonePolicies = LoadCloneArtifactPolicies(manifestLocalPath);
+
         var benchmarkService = new BenchmarkService(pyManager);
         var quantizationService = new QuantizationService(benchmarkService);
         var imatrixService = new ImatrixService();
+        var cloneBuildService = new CloneManifestTensorMapBuildService(quantizationService, imatrixService);
 
         string baseModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
@@ -163,6 +176,8 @@ public sealed class CloneRepositoryQuants : ICommand
         string outputCloneManifestPath = MagicQuantManifestPathService.GetManifestFilePath(Cache.OutputDirectory!, MagicQuantManifestPathService.CloneConfigsFileName);
         await File.WriteAllTextAsync(outputCloneManifestPath, JsonSerializer.Serialize(manifest, JsonOptions));
         archivedManifestFiles.Add(MagicQuantManifestPathService.CloneConfigsFileName);
+
+        var cloneBuildResults = new Dictionary<string, CloneManifestTensorMapBuildResult>(StringComparer.OrdinalIgnoreCase);
 
         var records = canReuseEverything
             ? reusableRecords
@@ -225,6 +240,15 @@ public sealed class CloneRepositoryQuants : ICommand
                     ? artifact.QuantFamily
                     : artifact.BaseQuant;
 
+                var sourcePolicy = sourceClonePolicies.GetValueOrDefault(artifact.FileName);
+                string? artifactMissingManifestBaseQuantName = hasMissingManifestBaseQuantOverride
+                    ? missingManifestBaseQuantName
+                    : sourcePolicy?.MissingManifestBaseQuantName;
+                bool artifactAllowMissingManifestTensors = allowMissingManifestTensors ||
+                                                           hasMissingManifestBaseQuantOverride ||
+                                                           sourcePolicy?.AllowMissingManifestTensors == true ||
+                                                           !string.IsNullOrWhiteSpace(artifactMissingManifestBaseQuantName);
+
                 AnsiConsole.Write(new Rule($"[yellow]Clone Artifact: {Markup.Escape(artifact.FileName)}[/]") { Justification = Justify.Left });
 
                 if (TryReuseExistingCloneArtifactAndBenchmark(outputFile, artifact, benchmarkCache, out var cachedRecord))
@@ -241,11 +265,15 @@ public sealed class CloneRepositoryQuants : ICommand
                 }
                 else
                 {
-                    await quantizationService.BuildExportArtifactFromExactTensorMapAsync(
+                    var cloneBuildResult = await cloneBuildService.BuildAsync(
                         tensorTypes: artifact.TensorTypes,
                         outputPath: outputFile,
                         baseQuantName: baseQuantName,
+                        allowMissingManifestTensors: artifactAllowMissingManifestTensors,
+                        missingManifestBaseQuantName: artifactMissingManifestBaseQuantName,
                         forceRebuild: true);
+
+                    cloneBuildResults[artifact.FileName] = cloneBuildResult;
                 }
 
                 var benchmarkBaseline = ResolveCloneBenchmarkBaseline(baseQuantName, artifact.QuantFamily);
@@ -280,6 +308,13 @@ public sealed class CloneRepositoryQuants : ICommand
         await sidecarService.CopyMmprojArtifactsAsync(Cache.OutputDirectory!);
 
         await WriteCloneBenchmarkSummaryAsync(Cache.OutputDirectory!, records);
+        await WriteResolvedCloneConfigManifestAsync(
+            outputCloneManifestPath,
+            records,
+            sourceClonePolicies,
+            cloneBuildResults,
+            missingManifestBaseQuantName,
+            hasMissingManifestBaseQuantOverride);
         archivedManifestFiles.Add(MagicQuantManifestPathService.CloneBenchmarksFileName);
 
         await new CloneReadmeGenerationService().GenerateAsync(
@@ -654,6 +689,155 @@ public sealed class CloneRepositoryQuants : ICommand
         }
     }
 
+    private static Dictionary<string, CloneArtifactPolicy> LoadCloneArtifactPolicies(string manifestPath)
+    {
+        var policies = new Dictionary<string, CloneArtifactPolicy>(StringComparer.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(manifestPath) || !File.Exists(manifestPath))
+            return policies;
+
+        try
+        {
+            var root = JsonNode.Parse(File.ReadAllText(manifestPath)) as JsonObject;
+            var artifacts = TryGetProperty(root, "artifacts") as JsonArray;
+            if (artifacts == null)
+                return policies;
+
+            foreach (var node in artifacts.OfType<JsonObject>())
+            {
+                string? fileName = TryGetString(node, "fileName");
+                if (string.IsNullOrWhiteSpace(fileName))
+                    continue;
+
+                var policyNode = TryGetProperty(node, CloneTensorPolicyPropertyName) as JsonObject;
+                if (policyNode == null)
+                    continue;
+
+                policies[fileName] = new CloneArtifactPolicy(
+                    AllowMissingManifestTensors: TryGetBool(policyNode, "allowMissingManifestTensors"),
+                    MissingManifestBaseQuantName: TryGetString(policyNode, "missingManifestBaseQuant"));
+            }
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Clone tensor policy metadata could not be read from source manifest:[/] {Markup.Escape(ex.Message)}");
+        }
+
+        return policies;
+    }
+
+    private static async Task WriteResolvedCloneConfigManifestAsync(
+        string outputCloneManifestPath,
+        IReadOnlyCollection<CloneArtifactBuildRecord> records,
+        IReadOnlyDictionary<string, CloneArtifactPolicy> sourcePolicies,
+        IReadOnlyDictionary<string, CloneManifestTensorMapBuildResult> cloneBuildResults,
+        string? cliMissingManifestBaseQuantName,
+        bool hasCliMissingManifestBaseQuantOverride)
+    {
+        if (!File.Exists(outputCloneManifestPath))
+            return;
+
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(outputCloneManifestPath)) as JsonObject;
+        var artifacts = TryGetProperty(root, "artifacts") as JsonArray;
+        if (root == null || artifacts == null)
+            return;
+
+        int policiesWritten = 0;
+        var recordByFileName = records
+            .Where(x => !string.IsNullOrWhiteSpace(x.ManifestArtifact.FileName))
+            .GroupBy(x => x.ManifestArtifact.FileName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var artifactNode in artifacts.OfType<JsonObject>())
+        {
+            string? fileName = TryGetString(artifactNode, "fileName");
+            if (string.IsNullOrWhiteSpace(fileName))
+                continue;
+
+            recordByFileName.TryGetValue(fileName, out var record);
+            cloneBuildResults.TryGetValue(fileName, out var buildResult);
+            sourcePolicies.TryGetValue(fileName, out var sourcePolicy);
+
+            bool allowMissing = buildResult?.UsedManifestSubset == true ||
+                                sourcePolicy?.AllowMissingManifestTensors == true ||
+                                hasCliMissingManifestBaseQuantOverride;
+            string? missingBaseQuant = buildResult?.UsedManifestSubset == true
+                ? buildResult.EffectiveBaseQuantName
+                : hasCliMissingManifestBaseQuantOverride
+                    ? cliMissingManifestBaseQuantName
+                    : sourcePolicy?.MissingManifestBaseQuantName;
+
+            if (!allowMissing && string.IsNullOrWhiteSpace(missingBaseQuant))
+            {
+                artifactNode.Remove(CloneTensorPolicyPropertyName);
+                continue;
+            }
+
+            var policyNode = new JsonObject
+            {
+                ["allowMissingManifestTensors"] = allowMissing,
+                ["missingManifestBaseQuant"] = string.IsNullOrWhiteSpace(missingBaseQuant) ? null : missingBaseQuant,
+                ["generatedAtUtc"] = DateTimeOffset.UtcNow.ToString("O")
+            };
+
+            if (record?.ActualSizeBytes > 0)
+                policyNode["actualSizeBytes"] = (long)Math.Min(record.ActualSizeBytes, long.MaxValue);
+
+            if (buildResult?.UsedManifestSubset == true)
+            {
+                policyNode["missingManifestTensorCount"] = buildResult.MissingInManifest.Count;
+                policyNode["missingManifestTensors"] = new JsonArray(buildResult.MissingInManifest.Select(x => JsonValue.Create(x)).ToArray<JsonNode?>());
+            }
+            else if (sourcePolicy?.AllowMissingManifestTensors == true || !string.IsNullOrWhiteSpace(sourcePolicy?.MissingManifestBaseQuantName))
+            {
+                policyNode["inheritedFromSourceManifest"] = true;
+            }
+            else if (hasCliMissingManifestBaseQuantOverride)
+            {
+                policyNode["createdFromCliOverride"] = true;
+            }
+
+            artifactNode[CloneTensorPolicyPropertyName] = policyNode;
+            policiesWritten++;
+        }
+
+        await File.WriteAllTextAsync(outputCloneManifestPath, root.ToJsonString(JsonOptions));
+        AnsiConsole.MarkupLine($"[green]Resolved clone config manifest updated:[/] {Markup.Escape(outputCloneManifestPath)} [grey](policies={policiesWritten:N0})[/]");
+    }
+
+    private static JsonNode? TryGetProperty(JsonObject? obj, string name)
+    {
+        if (obj == null)
+            return null;
+
+        foreach (var kv in obj)
+        {
+            if (string.Equals(kv.Key, name, StringComparison.OrdinalIgnoreCase))
+                return kv.Value;
+        }
+
+        return null;
+    }
+
+    private static string? TryGetString(JsonObject obj, string name)
+        => TryGetProperty(obj, name)?.GetValue<string>();
+
+    private static bool TryGetBool(JsonObject obj, string name)
+    {
+        var node = TryGetProperty(obj, name);
+        if (node == null)
+            return false;
+
+        try
+        {
+            return node.GetValue<bool>();
+        }
+        catch
+        {
+            return bool.TryParse(node.ToString(), out var value) && value;
+        }
+    }
+
     private static async Task<HashSet<string>> CopySourceManifestFilesAsync(
         string outputDirectory,
         string sourceManifestLocalPath,
@@ -870,12 +1054,18 @@ public sealed class CloneRepositoryQuants : ICommand
         AnsiConsole.MarkupLine("  --source-json       Local or http(s) path to magicquant.clone-configs.json");
         AnsiConsole.MarkupLine("  --use-imatrix       Use configured/provided imatrix for the cloned model");
         AnsiConsole.MarkupLine("  --reuse-existing-final-artifacts  Reuse matching existing GGUFs and matching clone benchmark JSON rows");
+        AnsiConsole.MarkupLine("  --allow-missing-manifest-tensors  Allow clone manifests that are strict subsets of the current model tensor list; extra source tensors receive no explicit --tensor-type override and fall through to base quantization");
+        AnsiConsole.MarkupLine("  --missing-manifest-base-quant <quant>  Allow strict-subset clone manifests and use this llama.cpp base quant for tensors absent from the manifest, e.g. Q8_0");
         AnsiConsole.MarkupLine("  --recheck-hardware-probe / --force-refresh-hardware-probe  Force Q8/native hardware probe and refresh the SQLite execution-plan cache");
     }
 
     private sealed record CloneNativeBenchmarkEnvironmentStatus(
         bool IsValid,
         IReadOnlyList<string> MissingOrInvalidArtifacts);
+
+    private sealed record CloneArtifactPolicy(
+        bool AllowMissingManifestTensors,
+        string? MissingManifestBaseQuantName);
 
     private sealed class CloneBenchmarkCacheRow
     {

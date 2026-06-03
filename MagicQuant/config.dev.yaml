@@ -1,6 +1,6 @@
 paths:
   magic_quant_root:
-  model_dir: /mnt/world8/AI/Models/Qwen3.6-27B-Qwen/
+  model_dir: /mnt/world8/AI/Models/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-llmfan46/
   llama_root:
   llama_bin:
   convert_script:
@@ -67,7 +67,7 @@ readme:
   # Optional title model name override used in:
   #   # MagicQuant Hybrids (v2.0) - <name>
   # If blank, MagicQuant uses identity.architecture_family_name.
-  title_model_name_override: Qwen3.6-27B
+  title_model_name_override: Qwen3.6-27B Uncensored (By llmfan46)
 
   # Hugging Face README frontmatter.
   # Scalars render as:
@@ -85,8 +85,9 @@ readme:
       - text-generation
       - magicquant
       - conversational
+      - mtp
     base_model:
-      - Qwen/Qwen3.6-27B
+      - llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved
 
 hardware:
   gpu_memory_limits_gb:
