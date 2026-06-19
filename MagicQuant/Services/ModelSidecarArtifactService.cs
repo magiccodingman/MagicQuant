@@ -233,10 +233,18 @@ public sealed class ModelSidecarArtifactService
         psi.ArgumentList.Add("--outfile");
         psi.ArgumentList.Add(targetPath);
 
-        using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start mmproj conversion process.");
-        string stdout = await proc.StandardOutput.ReadToEndAsync();
-        string stderr = await proc.StandardError.ReadToEndAsync();
-        await proc.WaitForExitAsync(ct);
+        using var proc = Process.Start(psi) 
+                         ?? throw new InvalidOperationException("Failed to start mmproj conversion process.");
+
+        Task<string> stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+        Task<string> stderrTask = proc.StandardError.ReadToEndAsync(ct);
+        Task waitTask = proc.WaitForExitAsync(ct);
+
+        await Task.WhenAll(stdoutTask, stderrTask, waitTask);
+
+        string stdout = await stdoutTask;
+        string stderr = await stderrTask;
+
         await File.WriteAllTextAsync(logPath, stdout + Environment.NewLine + stderr, ct);
 
         if (proc.ExitCode != 0 || !File.Exists(targetPath) || new FileInfo(targetPath).Length == 0)
