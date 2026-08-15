@@ -11,7 +11,7 @@ using Spectre.Console;
 if (args.Length == 0)
 {
     // Use: "clone" or "evolution"
-    const string debugMode = "clone"; // switch to "evolution" to use the full learning/search pipeline again. Or use "Clone" for cloning mode.
+    const string debugMode = "evolution"; // switch to "evolution" to use the full learning/search pipeline again. Or use "Clone" for cloning mode.
 
     if (string.Equals(debugMode, "clone", StringComparison.OrdinalIgnoreCase))
     {
@@ -34,8 +34,9 @@ if (args.Length == 0)
         args =
         [
             "evolution",
-            "--architecture-family", @"""Qwen3.6-27B"""
+            "--architecture-family", @"""Qwen3.8-27B"""
             ,"--reuse-existing-final-artifacts"
+            ,"--allow-architecture-family-alias-override"
         ];
     }
 }

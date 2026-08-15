@@ -366,6 +366,19 @@ base_quant_exceptions:
     # allow it to fallback rather than being misclassified.
     - "^blk\\..*\\.attn_gate\\.weight$"
     
+    # Gemma 4 / AltUp-style architecture-helper tensors.
+    # These are not attention projections, dense FFN matrices, MoE routers, or
+    # MoE expert payloads. Keep them in BaseQuant unless MagicQuant later gains
+    # explicit architecture-aware handling for this Gemma helper path.
+    # Important: do NOT add broad patterns such as .*gate\.weight$ or
+    # .*proj\.weight$ to semantic groups; those would collide with dense MLP,
+    # attention, MoE router, and miscellaneous projection tensors.
+    - "^blk\\..*\\.inp_gate\\.weight$"
+    - "^blk\\..*\\.proj\\.weight$"
+    - "^per_layer_model_proj\\.weight$"
+    - "^per_layer_token_embd\\.weight$"
+    - "^rope_freqs\\.weight$"
+    
     # Qwen3.5 / Qwen3.6 MTP / NEXTN speculative decoding tensors.
     # Keep these protected. They should not be assigned to embeddings,
     # lm_head, FFN, attention, SSM, or MoE groups.

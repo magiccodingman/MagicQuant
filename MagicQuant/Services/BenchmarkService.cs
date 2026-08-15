@@ -33,7 +33,12 @@ public class BenchmarkService
     };
 
     private static readonly int[] NglCandidates = { 35, 30, 24, 20, 16, 12, 8, 4 };
-    private const int DynamicProbeSchemaVersion = 2;
+    // Version 3 invalidates plans discovered with the legacy root-level dataset IDs,
+    // which could silently create an empty corpus and cache an incorrect CPU fallback.
+    private const int DynamicProbeSchemaVersion = 3;
+    private const int PplCharsPerTokenEstimate = 4;
+    internal const string GeneralPplDatasetId = "Salesforce/wikitext";
+    internal const string MathPplDatasetId = "openai/gsm8k";
 
     // ----------------------------------------------------------------
     // Static execution-plan state
@@ -2403,7 +2408,10 @@ public class BenchmarkService
 
     private async Task PreparePplCorpusAsync(string domain, string outPath, int tokenTarget)
     {
-        if (File.Exists(outPath) && new FileInfo(outPath).Length > 0)
+        if (tokenTarget <= 0)
+            throw new ArgumentOutOfRangeException(nameof(tokenTarget), "Token target must be greater than zero.");
+
+        if (IsPplCorpusUsable(outPath, tokenTarget))
             return;
 
         AnsiConsole.MarkupLine($"[grey]Generating corpus for domain: {domain}[/]");
@@ -2414,20 +2422,23 @@ from datasets import load_dataset
 
 domain = '{domain}'
 out_path = r'{outPath}'
-max_chars = {tokenTarget} * 4
+max_chars = {tokenTarget} * {PplCharsPerTokenEstimate}
 
 def get_sources(d):
-    if d == 'general': return [('wikitext', 'wikitext-103-raw-v1', 'test', 'text'), ('wikitext', 'wikitext-2-raw-v1', 'test', 'text')]
+    if d == 'general': return [('{GeneralPplDatasetId}', 'wikitext-103-raw-v1', 'test', 'text'), ('{GeneralPplDatasetId}', 'wikitext-2-raw-v1', 'test', 'text')]
     if d == 'code': return [('codeparrot/codeparrot-clean', None, 'train', 'content')]
-    if d == 'math': return [('gsm8k', 'main', 'test', 'question')]
+    if d == 'math': return [('{MathPplDatasetId}', 'main', 'test', 'question')]
     return []
 
 parts = []
 total = 0
+source_errors = []
 for ds, conf, split, field in get_sources(domain):
     try:
-        d = load_dataset(ds, conf) if conf else load_dataset(ds)
-        for text in d[split][field]:
+        load_args = {{'split': split, 'streaming': True}}
+        d = load_dataset(ds, conf, **load_args) if conf else load_dataset(ds, **load_args)
+        for row in d:
+            text = row.get(field)
             if not text or not isinstance(text, str):
                 continue
             chunk = text.strip() + '\n'
@@ -2436,9 +2447,18 @@ for ds, conf, split, field in get_sources(domain):
             if total >= max_chars:
                 break
     except Exception as e:
-        print(f'Error loading {{ds}}: {{e}}')
+        message = f'Error loading {{ds}}: {{e}}'
+        source_errors.append(message)
+        print(message, file=sys.stderr)
     if total >= max_chars:
         break
+
+if total < max_chars:
+    details = '; '.join(source_errors) or 'dataset sources returned insufficient text'
+    raise RuntimeError(
+        f'Failed to build corpus for domain {{domain!r}}: collected '
+        f'{{total}} of {{max_chars}} required characters. {{details}}'
+    )
 
 with open(out_path, 'w', encoding='utf-8') as f:
     f.write(''.join(parts))
@@ -2453,14 +2473,58 @@ with open(out_path, 'w', encoding='utf-8') as f:
             : $"\"{scriptPath}\"";
 
         string runner = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd.exe" : pythonExe;
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            args = scriptPath;
 
         await _pyManager.RunPipInstallAsync("datasets");
-        await RunShellCommandAsync(runner + " " + args, null);
+        var generationResult = await RunShellCommandAsync(runner + " " + args, null);
 
         if (File.Exists(scriptPath))
             File.Delete(scriptPath);
+
+        if (!generationResult.Success)
+        {
+            throw new InvalidOperationException(
+                $"Failed to generate perplexity corpus for domain '{domain}'.\n\n{generationResult.LogOutput}");
+        }
+
+        if (!IsPplCorpusUsable(outPath, tokenTarget))
+        {
+            throw new InvalidOperationException(
+                $"Generated perplexity corpus for domain '{domain}' did not contain the required " +
+                $"{(long)tokenTarget * PplCharsPerTokenEstimate:N0} characters: {outPath}");
+        }
+    }
+
+    internal static bool IsPplCorpusUsable(string path, int tokenTarget)
+    {
+        if (tokenTarget <= 0 || !File.Exists(path))
+            return false;
+
+        try
+        {
+            long minimumCharacters = (long)tokenTarget * PplCharsPerTokenEstimate;
+            using var reader = new StreamReader(path);
+            var buffer = new char[4096];
+            long totalCharacters = 0;
+
+            while (totalCharacters < minimumCharacters)
+            {
+                int read = reader.Read(buffer, 0, buffer.Length);
+                if (read == 0)
+                    break;
+
+                totalCharacters += read;
+            }
+
+            return totalCharacters >= minimumCharacters;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     // ----------------------------------------------------------------

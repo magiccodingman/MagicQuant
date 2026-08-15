@@ -1,6 +1,6 @@
 paths:
   magic_quant_root:
-  model_dir: /mnt/world8/AI/Models/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-llmfan46/
+  model_dir: /mnt/world8/AI/Models/Qwen3.8-27B-Qwen/
   llama_root:
   llama_bin:
   convert_script:
@@ -67,7 +67,7 @@ readme:
   # Optional title model name override used in:
   #   # MagicQuant Hybrids (v2.0) - <name>
   # If blank, MagicQuant uses identity.architecture_family_name.
-  title_model_name_override: Qwen3.6-27B Uncensored (By llmfan46)
+  title_model_name_override: Qwen3.8-27B
 
   # Hugging Face README frontmatter.
   # Scalars render as:
@@ -85,9 +85,8 @@ readme:
       - text-generation
       - magicquant
       - conversational
-      - mtp
     base_model:
-      - llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved
+      - Qwen/Qwen3.8-27B
 
 hardware:
   gpu_memory_limits_gb:
@@ -145,12 +144,9 @@ prediction:
   minimum_fit_rows: 12
 
 candidate_selection:
-  
-  validate_all_anomaly_strict_candidates_after_success: false
-  
   # Phase 2: a hybrid can replace the smaller/higher-damage anchor when it fits
   # inside this size premium and beats the real linear KLD improvement line.
-  near_baseline_max_size_growth_percent: 1.0
+  near_baseline_max_size_growth_percent: 1.5
 
   # Phase 3: interior windows between adjacent final anchors.
   # [0.35, 0.35] means test the first 35% of the size span, then the next 35%.
@@ -163,15 +159,6 @@ candidate_selection:
 
   # If the first predicted candidate fails real validation, try this many fallbacks.
   max_fallback_attempts_per_anchor: 5
-  
-  # Conservative SQLite/isolation-truth fallback. This runs only after the
-  # normal DuckDB prediction-guided attempts fail for a strict/premium/interior
-  # phase window. It starts from the anchor baseline blanket and only swaps
-  # tensor groups using surviving isolated group candidates, plus the baseline
-  # itself as the blanket state.
-  smart_fallback_enabled: true
-  smart_fallback_attempts_per_failure: 3
-  smart_fallback_max_higher_fidelity_steps: 2
 
   # Strict epsilon for lower-KLD comparisons after real benchmark validation.
   minimum_kld_improvement_epsilon: 1.0e-9
@@ -221,13 +208,13 @@ anomaly_detection:
   prediction_space_violation_margin: 0.00005
 
   # Shrink applied to prediction-space adjustment after a rule is confirmed.
-  anomaly_adjustment_shrink_factor: 1.00
+  anomaly_adjustment_shrink_factor: 0.50
 
   # Minimum confidence required before applying a confirmed anomaly rule.
   min_rule_confidence_to_apply: 0.50
 
   # Absolute cap on total negative anomaly adjustment in prediction-space KLD units.
-  max_negative_adjustment_kld: 0.00400
+  max_negative_adjustment_kld: 0.00075
 
   # Absolute cap on positive harmful interaction adjustment in prediction-space KLD units.
   max_positive_adjustment_kld: 0.00075
@@ -260,7 +247,7 @@ anomaly_detection:
 output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
   output_dir:
-  output_name_prefix: Qwen3.6-27B
+  output_name_prefix: Qwen3.8-27B
   export_external_learned_baselines: true
 
   # false = normal behavior; delete/rebuild final outputs from scratch.
@@ -273,17 +260,19 @@ output:
 # See candidate_selection above for the active final chooser settings.
 
 identity:
-  architecture_family_name: Qwen3.6-27B
+  architecture_family_name: Qwen3.8-27B
   allow_architecture_family_alias_override: false
 
 baselines:
-  standard_baselines_mode: all
-  enabled_standard_learning_baselines: []
-  enabled_standard_combination_carriers: []
-  enabled_standard_explicit_group_candidates: []
+  # Use Unsloth GGUFs for dynamic learning/search while retaining the built-in
+  # Q8 anchor required by the execution-plan and baseline pipeline.
+  standard_baselines_mode: selected
+  enabled_standard_learning_baselines: [Q8_0]
+  enabled_standard_combination_carriers: [Q8_0]
+  enabled_standard_explicit_group_candidates: [Q8_0]
 
   custom_repositories:
-    - repo_id: unsloth/Qwen3.6-27B-GGUF
+    - repo_id: unsloth/Qwen3.8-27B-GGUF
       enabled: true
       short_source_name: Unsloth
       source_kind: huggingface_gguf_repository
@@ -298,73 +287,164 @@ baselines:
 
       includes:
 
-        - file_name: Qwen3.6-27B-UD-IQ2_M.gguf
-          baseline_family: IQ2_M
-          quantize_base_name: IQ2_M
-          display_name: UD-IQ2_M
-          force_relearn: false
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
-          allow_as_explicit_group_candidate: true
+        # 2-bit
 
-        - file_name: Qwen3.6-27B-UD-IQ2_XXS.gguf
+        - file_name: Qwen3.8-27B-UD-IQ2_XXS.gguf
           baseline_family: IQ2_XXS
           quantize_base_name: IQ2_XXS
-          display_name: UD-IQ2_XXS
+          display_name: Unsloth-UD-IQ2_XXS
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.6-27B-UD-IQ3_XXS.gguf
-          baseline_family: IQ3_XXS
-          quantize_base_name: IQ3_XXS
-          display_name: UD-IQ3_XXS
-          force_relearn: false
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
-          allow_as_explicit_group_candidate: true
-
-        - file_name: Qwen3.6-27B-UD-Q2_K_XL.gguf
+        - file_name: Qwen3.8-27B-UD-IQ2_M.gguf
           baseline_family: IQ2_M
           quantize_base_name: IQ2_M
-          display_name: UD-Q2_K_XL
+          display_name: Unsloth-UD-IQ2_M
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.6-27B-UD-Q3_K_XL.gguf
+        - file_name: Qwen3.8-27B-UD-Q2_K_XL.gguf
+          baseline_family: IQ2_M
+          quantize_base_name: IQ2_M
+          display_name: Unsloth-UD-Q2_K_XL
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        # 3-bit
+
+        - file_name: Qwen3.8-27B-UD-IQ3_XXS.gguf
+          baseline_family: IQ3_XXS
+          quantize_base_name: IQ3_XXS
+          display_name: Unsloth-UD-IQ3_XXS
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q3_K_S.gguf
+          baseline_family: IQ3_S
+          quantize_base_name: IQ3_S
+          display_name: Unsloth-Q3_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q3_K_M.gguf
           baseline_family: IQ3_M
           quantize_base_name: IQ3_M
-          display_name: UD-Q3_K_XL
+          display_name: Unsloth-Q3_K_M
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.6-27B-UD-Q4_K_XL.gguf
+        - file_name: Qwen3.8-27B-UD-Q3_K_XL.gguf
+          baseline_family: IQ3_M
+          quantize_base_name: IQ3_M
+          display_name: Unsloth-UD-Q3_K_XL
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        # 4-bit
+
+        - file_name: Qwen3.8-27B-IQ4_XS.gguf
+          baseline_family: IQ4_XS
+          quantize_base_name: IQ4_XS
+          display_name: Unsloth-IQ4_XS
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q4_K_S.gguf
+          baseline_family: Q4_K_S
+          quantize_base_name: Q4_K_S
+          display_name: Unsloth-Q4_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-IQ4_NL.gguf
+          baseline_family: IQ4_NL
+          quantize_base_name: IQ4_NL
+          display_name: Unsloth-IQ4_NL
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q4_K_M.gguf
           baseline_family: Q4_K_M
           quantize_base_name: Q4_K_M
-          display_name: UD-Q4_K_XL
+          display_name: Unsloth-Q4_K_M
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.6-27B-UD-Q5_K_XL.gguf
+        - file_name: Qwen3.8-27B-UD-Q4_K_XL.gguf
+          baseline_family: Q4_K_M
+          quantize_base_name: Q4_K_M
+          display_name: Unsloth-UD-Q4_K_XL
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        # 5-bit
+
+        - file_name: Qwen3.8-27B-Q5_K_S.gguf
+          baseline_family: Q5_K_S
+          quantize_base_name: Q5_K_S
+          display_name: Unsloth-Q5_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q5_K_M.gguf
           baseline_family: Q5_K
           quantize_base_name: Q5_K
-          display_name: UD-Q5_K_XL
+          display_name: Unsloth-Q5_K_M
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.6-27B-UD-Q6_K_XL.gguf
+        - file_name: Qwen3.8-27B-UD-Q5_K_XL.gguf
+          baseline_family: Q5_K
+          quantize_base_name: Q5_K
+          display_name: Unsloth-UD-Q5_K_XL
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        # 6-bit
+
+        - file_name: Qwen3.8-27B-Q6_K.gguf
           baseline_family: Q6_K
           quantize_base_name: Q6_K
-          display_name: UD-Q6_K_XL
+          display_name: Unsloth-Q6_K
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-UD-Q6_K_XL.gguf
+          baseline_family: Q6_K
+          quantize_base_name: Q6_K
+          display_name: Unsloth-UD-Q6_K_XL
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
