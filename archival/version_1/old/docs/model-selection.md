@@ -6,25 +6,25 @@
 > MagicQuant is the verdict.
 
 MagicQuant isn’t just a quantizer.
-It’s a **belief system** about how quantization *should* be done—and a giant middle finger to the idea of “blindly posting GGUF models because that’s just what people do.”
+It’s a **philosophy** about how quantization should be evaluated—and a rejection of blindly posting GGUF models simply because those are the standard variants people expect.
 
 Every upload has a reason.
 And every omission?
 That’s intentional too.
 
-MagicQuant posts only **what deserves to survive.** Nothing more, nothing less.
+MagicQuant posts only **what its measurements suggest is worth keeping.** Nothing more, nothing less.
 
 ---
 
 # **Why Not All Models Work With MagicQuant**
 
-Not every model bends the knee to hybrid quantization.
+Not every model benefits from hybrid quantization.
 
 Some architectures quantize beautifully with standard baselines and leave very little frontier to push.
 Some models have quirks—activation distribution weirdness, MoE gating sensitivity, KV bottlenecks—that make hybrids either unhelpful or flat-out worse.
 
 And sometimes?
-The model is simply *already so good* at standard quantization that any attempt to push further produces a downgrade instead of a breakthrough.
+The model is simply *already so good* at standard quantization that any attempt to push further produces a downgrade instead of an improvement.
 
 MagicQuant will never upload something that is:
 
@@ -35,7 +35,7 @@ MagicQuant will never upload something that is:
 
 Because that defeats the entire purpose of the project.
 
-MagicQuant exists to **surface the strongest quantizations each model can offer**, not to spam every combination under the sun.
+MagicQuant exists to **surface the strongest quantizations each model appears to offer under its measurements**, not to publish every combination under the sun.
 
 ---
 
@@ -44,7 +44,7 @@ MagicQuant exists to **surface the strongest quantizations each model can offer*
 📌 Model link:
 [https://huggingface.co/magiccodingman/Qwen3-30B-A3B-Instruct-2507-unsloth-MagicQuant-Hybrid-GGUF](https://huggingface.co/magiccodingman/Qwen3-30B-A3B-Instruct-2507-unsloth-MagicQuant-Hybrid-GGUF)
 
-This model is a perfect showcase of the MagicQuant philosophy.
+This model is a useful example of the MagicQuant philosophy.
 Here were the produced models:
 
 | model                                   | size  | TPS    | loss    |
@@ -71,16 +71,16 @@ MagicQuant only posts hybrids worth considering—and the baselines below explai
 
 * Q6_K loses to Q5_K
 * Q4_K_M loses to IQ4_NL
-* IQ4_NL beats Q4_K_M *even though it "shouldn’t"*
-* MXFP4 baseline is unusable here (~9% loss)
+* IQ4_NL beats Q4_K_M *even though the usual ordering might suggest otherwise*
+* MXFP4 baseline performs poorly here (~9% loss)
 
 This is why MagicQuant never blindly posts:
 
 ❌ “Q6_K is always better than Q5_K”
 ❌ “Q4_K_M is always better than IQ4_NL”
-❌ “MXFP4_MOE is always magical”
+❌ “MXFP4_MOE is always the best base”
 
-Because those rules break constantly in the real world.
+Because those rules do not hold consistently in these measurements.
 
 In this model?
 
@@ -88,7 +88,7 @@ In this model?
 * The best balanced baselines are **Q5_K** and **IQ4_NL**
 * The other hybrids exist for niche use but are not recommended as defaults
 
-MagicQuant uploads *only what’s meaningful*—not every Frankenstein experiment.
+MagicQuant uploads *only what appears meaningful in the measured trade-off space*—not every experimental combination.
 
 ---
 
@@ -123,18 +123,18 @@ And the baselines:
 | Q4_K_M    | 2.33 | 377.19 | 0.9376% |
 | MXFP4_MOE | 2.00 | 467.13 | 8.2231% |
 
-### **This model was almost entirely conquered**
+### **This model produced useful hybrids across most tiers**
 
-MagicQuant hybrids surpassed or matched:
+In the V1 measurements, MagicQuant hybrids surpassed or matched:
 
 * Q8_0 in loss
 * Q6_K in loss and TPS
 * Q5_K in TPS
 * IQ4_NL in both directions
-* MXFP4 baseline by orders of magnitude
+* MXFP4 baseline by a large margin in measured loss
 
-This is MagicQuant’s sweet spot:
-**Hybrids that genuinely expand the frontier over all baseline quantizations.**
+This was the kind of result MagicQuant was designed to search for:
+**hybrids that appeared to expand the measured trade-off frontier over standard baseline quantizations.**
 
 ---
 
@@ -147,7 +147,7 @@ MagicQuant is built on three guiding principles:
 ### **1. Numbers Over Hype**
 
 No quant is “better” because someone said so.
-Only the data matters:
+The measured data matters:
 
 * TPS
 * file size
@@ -159,7 +159,7 @@ If a quant loses in all three categories, it does not get published, period.
 
 ### **2. The Model Decides the Rules**
 
-Every architecture is a chaotic little gremlin with its own personality.
+Every architecture has its own behavior under quantization.
 
 Some trends hold:
 
@@ -169,21 +169,21 @@ Some trends hold:
 
 …until they don’t.
 
-MagicQuant exists to *discover when the rules break*—and then publish only the winners.
+MagicQuant exists to *discover when the expected ordering breaks*—and then publish the useful results.
 
 ---
 
-### **3. MagicQuant’s Promise: Only Post What Deserves to Survive**
+### **3. MagicQuant’s Promise: Publish Only Meaningful Candidates**
 
-You will never find:
+You should not find:
 
-* a worse Q4_K_M than IQ4_NL
-* a Q6_K that loses to Q5_K (unless MagicQuant warns you)
-* an MXFP4 with catastrophic loss
-* a hybrid that is strictly inferior to a baseline
+* a worse Q4_K_M than IQ4_NL presented as preferable
+* a Q6_K that loses to Q5_K without that being called out
+* an MXFP4 with catastrophic measured loss presented as a good default
+* a hybrid that is strictly inferior to a baseline presented as an improvement
 
-MagicQuant is not a dumping ground.
-It is a **curated** repository of quantizations that earned the right to exist.
+MagicQuant is not intended as a dump of every generated combination.
+It is a **curated** repository of quantizations that performed well enough in the project’s measurements to justify publishing.
 
 ---
 
@@ -191,7 +191,7 @@ It is a **curated** repository of quantizations that earned the right to exist.
 
 MagicQuant is not a “hybrid-only” project.
 
-MagicQuant is a **best-of-the-best** project.
+MagicQuant is a **best-candidate** project.
 
 If a baseline wins, it gets published.
 If a hybrid wins, it gets published.
@@ -202,6 +202,6 @@ MagicQuant is here to:
 * push quantization knowledge forward
 * reveal model quirks
 * challenge assumptions
-* and give users the **strongest possible quantized versions** of any model that passes through the system
+* and give users the **strongest measured quantized versions** of any model that passes through the system
 
-Whether that’s one model or twenty, the output will always reflect *quality, not quantity*.
+Whether that’s one model or twenty, the output should reflect *quality, not quantity*.
