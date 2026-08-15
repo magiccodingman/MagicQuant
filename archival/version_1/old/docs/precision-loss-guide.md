@@ -4,216 +4,195 @@
 
 Quantization is a powerful way to shrink and accelerate large language models, but it always comes at a cost. That cost is **precision loss**: a measurable drift between how a quantized model behaves compared to its original BF16/F16 version.
 
-> "Precision Loss" is the referred statement for the the perplexity drift % (aka: PPL Delta percentage) which utilizes the llama.cpp tool for measurement.
+> "Precision Loss" is the referred statement for the perplexity drift % (aka: PPL Delta percentage) which utilizes the llama.cpp tool for measurement.
 
-**MagicQuant rejects any quantization with more than 5% precision loss.**
-This does *not* mean >5% loss is useless. What it means is: it no longer meets the quality guarantees this project exists to provide.
+**MagicQuant rejects any quantization with more than 5% measured precision loss.**
+This does *not* mean >5% loss is useless. What it means is: it no longer meets the quality threshold this project was designed around.
 
-MagicQuant isn’t about “making toys.” It’s about producing **small, fast models that preserve the original model’s intelligence**, especially for trustworthy or agentic automation.
+MagicQuant is about producing **small, fast models that stay as close as possible to the original model under the project’s measurements**, especially for trustworthy or agentic automation.
 
 ---
 
 # **What Is Precision Loss?**
 
-Quantization does not remove knowledge; it compresses it. But in compression, weights shift. When enough weights shift, the model’s behavior drifts from the original.
+Quantization does not remove knowledge directly; it changes the numerical representation of the model’s weights. As those weights shift, the model’s behavior can drift from the original.
 
-Precision loss captures that drift numerically.
+In V1, MagicQuant used PPL delta as its primary numerical measure of that drift.
 
-* **0% precision loss** → output is identical to the base model
-* **higher precision loss** → more drift, more instability, more hallucination
+* **0% measured precision loss** → no PPL drift from the base model in the tested benchmark
+* **higher measured precision loss** → greater PPL drift from the base model
 
-A “better” answer from a quantized model is *not* evidence that it improved. It's almost always an **accidental correct hallucination**, not a fidelity gain.
-
-The goal is not to make the model *different*. The goal is to keep it **as close as possible** to the BF16/F16 original.
+A “better” answer from a quantized model is not evidence by itself that the quantization improved the model. The goal here is not to make the model *different*. The goal is to keep it **as close as possible** to the BF16/F16 original while reducing size and potentially improving speed.
 
 ---
 
-# **Precision Loss Tiers (MagicQuant Philosophy)**
+# **Precision Loss Tiers (MagicQuant V1 Philosophy)**
 
 You will see quantization discussed in terms like Q8, Q6_K, Q5, Q4.
-Those labels are not enough. They’re vague, inconsistent, and misleading—because different architectures react differently to the same quant.
+Those labels are not enough on their own because different architectures can react differently to the same quantization scheme.
 
-MagicQuant evaluates quantization by **precision loss percentage**, not by bit-width mythologies.
+MagicQuant V1 therefore evaluated quantization primarily by **measured PPL delta**, rather than assuming quality strictly from bit width or quant name.
 
-Below is the practical breakdown.
+Below is the practical breakdown used by V1.
 
 ---
 
 ## **0.0% – 0.1%
 
-“Scientific Exactness” | Functionally Identical**
+Very Low Measured Drift**
 
-This is the **god-tier** zone.
+This was the strictest V1 tier.
 
-* Indistinguishable from BF16/F16
-* Used when you need scientific reproducibility or ultra-deterministic agent behavior
-* Necessary only for very tiny models (350M–1B) where micro-drift has outsized impact
-* Overkill for most real applications, but still beautiful when achievable
+* Extremely small PPL delta from BF16/F16 in the tested benchmark
+* Useful when the goal is to minimize measurable drift as much as possible
+* Particularly interesting for very small models where quantization effects can be more visible
+* Often more precision than most applications require
 
-This level of precision loss is so tiny it often exceeds the precision of your evaluation methods themselves.
+At this level, the measured PPL difference can become small relative to the resolution and noise of the evaluation itself.
 
 ---
 
 ## **0.1% – 1%
 
-“Near-Lossless” | Production-Grade Fidelity**
+Low Measured Drift**
 
-This is where *serious* work happens.
+This was V1’s preferred range for serious use.
 
-Models in this range retain **99–99.9%** of their “brain.”
-They handle:
+Models in this range showed only a small PPL delta from the original model under the V1 benchmark setup.
 
-* complex reasoning
+V1 treated this range as especially desirable for:
+
+* complex reasoning workloads
 * long-form tasks
 * multi-step agentic workflows
 * repeatable automation
-* semantic fidelity across thousands of queries
+* applications where fidelity to the original model matters
 
-If you’re doing agentic work, *especially* agentic work, this is your sweet spot.
-
-> For automation that must run cleanly for thousands of cycles,
-> **0.1% to 1% precision loss is the only safe range.**
+> For automation that must run cleanly for many cycles,
+> **V1 preferred the 0.1% to 1% measured-loss range.**
 
 ---
 
 ## **1% – 3%**
 
-“Minimal Loss” | High-Quality Personal Use**
+Moderate Measured Drift**
 
-Once you cross 1%, you’re no longer in near-lossless territory.
-You’re entering the “minimal loss” range:
+Once the measured PPL delta crossed 1%, V1 treated the quantization as no longer near-lossless, but still potentially useful.
 
-* still solid
-* still coherent
-* rarely derails
-* great for personal chatbot usage
-* still acceptable for many dev workflows
+This range was considered:
 
-But subtle degradations begin appearing:
+* still solid for many workloads
+* still coherent in testing
+* appropriate for personal use and many development workflows
+* a reasonable trade-off when size matters more
 
-* coherence cracks
-* semantic drift
-* rare-but-annoying hallucinations
-* degradation during long chains of reasoning
-* higher instability in agent loops
+V1’s concern was that subtle degradation could become more noticeable as measured drift increased, especially during longer or more demanding tasks.
 
-**MagicCodingMan's personal limit:** *2–2.5% preferred, 3% absolute maximum.*
-This is where quality and stability start slipping perceptibly, even if still usable.
+**MagicCodingMan's personal V1 limit:** *2–2.5% preferred, 3% absolute maximum.*
 
 ---
 
 ## **3% – 5%
 
-“Borderline” | Usable But Noticeably Weaker**
+High but Accepted Measured Drift**
 
-This is the upper limit allowed by MagicQuant.
+This was the upper range allowed by MagicQuant V1.
 
-Why?
+The project treated this range as increasingly compromised relative to the base model and generally reserved it for cases where the size or speed trade-off justified the additional measured drift.
 
-Because past this point:
-
-* hallucination increases sharply
-* logical consistency decays
-* long-context coherence becomes unreliable
-* small drift becomes visible drift
-* agentic stability drops off a cliff
-
-This range might still be fine for:
+This range could still be useful for:
 
 * tinkering
 * casual chatting
-* personal local LLM fun
+* personal local LLM use
+* situations where smaller size matters more than maximum fidelity
 
-…but it no longer aligns fully with the quality expectations of MagicQuant.
+…but it no longer aligned with the project’s preferred quality target.
 
 ---
 
 # **5%+ Precision Loss
 
-“Toy Zone” | Outside MagicQuant’s Philosophy**
+Outside the V1 Release Target**
 
-Some people in the community will tell you:
+Some users are comfortable with much larger measured loss when the goal is simply to fit a larger model into limited hardware.
 
-> “Oh yeah, Q3 or 10–20% precision loss still works fine for chatting!”
+MagicQuant V1 took a stricter approach.
 
-And sure.
-If your model’s job is to entertain you and occasionally say something funny, then maybe it’s “fine.”
+In the V1 philosophy:
 
-But in MagicQuant’s philosophy:
+* **Past 5% measured PPL loss** was outside the project’s preferred quality range
+* **Double-digit measured loss** was considered too far from the original for the project’s intended use
+* Very aggressive low-bit quantizations were treated primarily as experimental options rather than dependable defaults
 
-* **Past 5% = noticeable brain damage**
-* **Past 10% = major brain damage**
-* **Q3 = toy territory**
-* **Usable for curiosity, not reliability**
+MagicQuant V1 did *not* focus on optimizing or recommending:
 
-MagicQuant does *not* support, optimize, or endorse:
+* Q3 as a default target
+* double-digit measured PPL loss
+* quantizations that fit only by accepting substantial measured drift
 
-* Q3
-* double-digit precision loss
-* “it kinda works if you squint” quantizations
-
-That’s not the purpose of this project.
+That was not the purpose of the project.
 
 ---
 
-# **Why MagicQuant Uses a 5% Hard Limit**
+# **Why MagicQuant Used a 5% Hard Limit**
 
-MagicQuant exists to find the **smallest, fastest models that remain trustworthy**.
+MagicQuant V1 existed to find **small, fast models while keeping measured drift low**.
 
-That means:
+The project cared about:
 
 * agentic consistency
 * semantic fidelity
 * repeatable automation
-* reproducible reasoning
-* minimal hallucination
-* stability under long inference sessions
+* reproducible behavior
+* minimal degradation during long inference sessions
 
-If a quantization drifts more than 5% from the base model, these qualities collapse.
+V1 used PPL delta as its primary proxy for those goals and drew a practical line at 5% measured loss.
 
-So the project draws a line:
+So the project rule was:
 
-> **If it’s above 5% loss, it doesn’t belong in MagicQuant.
-> Not because it’s useless, because it’s untrustworthy.**
+> **If it’s above 5% measured loss, it doesn’t belong in MagicQuant V1’s recommended set.**
+
+That does not mean the quantization is useless. It means it fell outside the quality target V1 was built around.
 
 ---
 
-# **The Reality: “Q8 > Q6” Is Wrong 30–40% of the Time**
+# **V1 Data Did Not Always Follow the Expected Quant Ordering**
 
-People love talking about quants in terms of “Q8 = best, Q6 = slightly worse, Q4 = lower, Q3 = junk.”
+People often talk about quants in terms of a simple ordering such as “Q8 = best, Q6 = slightly worse, Q4 = lower, Q3 = lowest.”
 
-That myth holds true…
-**about 60–70% of the time.**
+MagicQuant V1 repeatedly observed cases where the measured ordering was not that simple.
 
-MagicQuant’s data shows:
+Its data included examples where:
 
-* Some models prefer Q6 over Q8
-* Some prefer hybrid patterns
-* Some quantization schemes damage FFNs more than self-attention blocks
-* Some MoE models survive Q4 where dense models die
-* Some weight groups tolerate lower precision far better than others
+* some models measured better with Q6 than Q8 under the tested metric
+* some preferred hybrid patterns
+* some quantization schemes affected FFNs differently from self-attention blocks
+* some MoE models tolerated aggressive quantization differently from dense models
+* some weight groups tolerated lower precision far better than others
 
-This is why MagicQuant evaluates all quantizations based on:
+This is why MagicQuant evaluated quantizations based on:
 
-**precision loss percentage, not quant scheme**
-**real-world benchmark drift, not bit-width hype**
-**actual reasoning fidelity, not theoretical assumptions**
+**measured precision loss, not quant scheme alone**
+**benchmark drift, not bit-width assumptions**
+**the actual measured model, not a fixed expected ordering**
 
-This is the heart of the project.
+This was central to the V1 project philosophy.
 
 ---
 
 # **Final Philosophy Summary**
 
-* **0–0.1%** → God-tier, scientifically exact
-* **0.1–1%** → True near-lossless, agent-ready
-* **1–3%** → Minimal loss, great for personal use
-* **3–5%** → Borderline, but still functional
-* **5%+** → Toys, not tools, outside MagicQuant’s scope
+Under the V1 PPL-based framework:
 
-MagicQuant is fundamentally about **trustworthy downsizing**.
-If a downsized model cannot retain fidelity, it doesn’t matter that it’s small.
-It matters that it’s no longer the model.
+* **0–0.1%** → Very low measured drift
+* **0.1–1%** → Low measured drift; preferred V1 production range
+* **1–3%** → Moderate measured drift; acceptable for many uses
+* **3–5%** → High but still accepted by the V1 release policy
+* **5%+** → Outside MagicQuant V1’s recommended target
+
+MagicQuant V1 was fundamentally about **trustworthy downsizing as V1 knew how to measure it**.
+If a downsized model drifted too far from the original under the project’s benchmark, the size savings were not considered worth the trade-off.
 
 ---
 
@@ -221,111 +200,97 @@ It matters that it’s no longer the model.
 
 ## **If I can’t fit a low-precision-loss quant on my GPU, should I switch to a smaller model instead?**
 
-**Yes. Nearly 99.99% of the time, yes.**
+**In V1’s philosophy, usually yes.**
 
-If your GPU can only fit a large model by using something like **Q3 (10–20% precision loss)**, that model is already deep in “toy” territory. Nearly any smaller model with *good* precision loss will outperform it in coherence, reliability, and reasoning.
+If a larger model only fits by accepting substantial measured PPL drift, V1 generally preferred a smaller model that retained a closer benchmark result to its original weights.
 
 Examples:
 
-* If a **20B** only fits at *10% precision loss*, but a **14B** fits at **Q4 (~3–5%)**, choose the 14B.
-* If an **14B** fits at **Q6_K (~1–3%)**, and you want a reliable chat bot, this would be a great pick!
-* If a **8B** fits at **Q8 (<1% loss)** and if you need high-fidelity agentic work, this might even be the best pick.
+* If a **20B** only fits at *10% measured loss*, but a **14B** fits around **3–5%**, V1 would generally favor the 14B.
+* If a **14B** fits at **Q6_K** with relatively low measured loss, V1 would consider that a strong option.
+* If an **8B** fits at **Q8** with very low measured loss and the workload prioritizes fidelity, V1 might prefer that instead.
 
-This also assumes models perform “linearly” with size (which hint hint, they do not).
-Some 4B models hit *way above their weight class* for example.
+This also assumes models perform “linearly” with size, which they do not always do.
+Some smaller models perform extremely well relative to their parameter count.
 
-**Quality beats quantity every time.**
-
----
-
-## **Why do you call 5%+ precision loss an “experimental toy”?**
-
-It’s not an insult and I’m not judging anyone’s preferences.
-It’s dramatic phrasing for a simple truth:
-
-> If I cannot trust the model to respond accurately, maintain coherence, or avoid hallucinations,
-> then I personally cannot treat it as a serious tool.
-
-Past ~5% loss, drift compounds, reliability decreases, and reasoning consistency cracks.
-For **exploration, tinkering, or fun**, that’s fine.
-For **real work**? It’s no longer trustworthy.
-
-MagicQuant exists to produce **trustworthy, dependable quants**, so anything over 5% sits outside that mission.
+**Quality mattered more to V1 than parameter count alone.**
 
 ---
 
-## **If you personally prefer <3% loss, why does MagicQuant allow models up to 5% loss?**
+## **Why did V1 call 5%+ precision loss experimental?**
+
+Because the project’s intended use emphasized reliability and fidelity to the original model.
+
+V1 treated larger PPL drift as increasing evidence that the quantized model was moving away from the behavior of the base model. For **exploration, tinkering, or fun**, that could still be acceptable. For the project’s recommended releases, it was outside the preferred range.
+
+MagicQuant existed to produce **dependable quants according to its evaluation framework**, so anything over 5% sat outside that mission.
+
+---
+
+## **If you personally preferred <3% loss, why did MagicQuant allow models up to 5% loss?**
 
 Because not everyone has the same needs or the same tolerance.
 
-I’m picky. Painfully picky.
-I can feel the degradation at 3% the same way an audio engineer hears a bad bitrate.
+My personal preference was stricter than the project-wide release threshold.
 
-But MagicQuant isn’t about *my* personal threshold.
-It’s about providing **high-quality models for a wide range of users**.
+So the V1 limits were:
 
-So the limit is:
+* **3%** → my personal maximum for serious use
+* **5%** → the project’s maximum accepted measured loss for public release
 
-* **3%** → my personal “maximum for serious use”
-* **5%** → the project’s “maximum acceptable loss for public release”
-
-Anything above that no longer meets the reliability standards that MagicQuant promises.
+Anything above that fell outside the reliability target MagicQuant V1 was trying to provide.
 
 ---
 
-## **Why is MagicQuant so strict about precision loss anyway?**
+## **Why was MagicQuant so strict about precision loss anyway?**
 
-Because **trust is everything**.
+Because the project was built around measurable justification for every release.
 
-MagicQuant’s goal is to ensure:
+MagicQuant’s goal was to ensure:
 
-* every release is benchmarked
-* every quant is justified
-* no model is included “just because it fits”
-* Baselines are only included if they prove they're worthy to exist
-* hybrids aren’t included unless they outperform standard quants
-* every upload meets a strict fidelity standard
+* every release was benchmarked
+* every quant had a reason to exist
+* no model was included merely because it fit
+* baselines were included when their measurements justified them
+* hybrids were included when they improved the measured trade-off space
+* every upload met the project’s fidelity threshold
 
-Other repos often upload Q8, Q6, Q5, Q4 simply because that’s “what people expect.”
+Other repositories often upload Q8, Q6, Q5, Q4 simply because those are the variants users expect.
 
-MagicQuant uploads a quant **only** when the numbers prove it deserves to exist.
+MagicQuant instead tried to publish a quant **only when the V1 measurements justified it**.
 
-You can always have faith that:
+The intended promise was:
 
-* the quant represents the best possible tradeoff
-* precision loss is within acceptable bounds
-* drift is measured, not guessed
-* you’re getting a *known-good* version
-* nothing is half-tested or blindly exported
+* the quant represented a measured trade-off
+* measured loss stayed within the project’s accepted bounds
+* drift was benchmarked rather than guessed
+* the uploaded model had been evaluated against alternatives
 
-This is why MagicQuant’s benchmark sheets and testing pipeline exist.
+This is why MagicQuant’s benchmark sheets and testing pipeline existed.
 
 ---
 
-## **Why didn’t you cover the “1% to 2%” precision loss range in detail? Is that range bad?**
+## **Why didn’t V1 cover the “1% to 2%” precision loss range in detail? Is that range bad?**
 
-Not bad, just *awkward*.
+Not bad, just an awkward middle range in the way V1 categorized results.
 
 Here’s why:
 
 ### 0.1% – 1%
 
-This is the **near-lossless** zone.
-Perfect for agentic workflows, tools, reasoning, long chains, etc.
+This was the preferred low-drift range.
 
 ### 1% – 2%
 
-This zone is still excellent, but…
+This range was still considered very good, but many users tended to fall into two buckets:
 
-Most users fall into two buckets:
+1. **They wanted the lowest measured drift possible**
+   → so they aimed for <1%
 
-1. **They need near-lossless fidelity**
-   → so they aim for <1%
+2. **They wanted the smallest practical model**
+   → so they were willing to accept 2–5% measured loss for the size/TPS gains
 
-2. **They want the smallest model possible**
-   → so they’re fine going to 2–5% loss for the size/TPS gains
+That left the 1–2% tier in a somewhat awkward middle ground in V1’s release philosophy.
 
-That leaves the 1–2% tier in a weird middle-ground that doesn’t have strong demand.
-
-It’s not that this range is *bad*.
-It’s just rarely the optimal choice for most people’s goals.
+It was not considered bad.
+It simply was not treated as a distinct target tier.
