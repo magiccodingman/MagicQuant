@@ -26,7 +26,9 @@ learning:
   # and execution probe cache rows scoped to the active architecture family.
   # Does not delete AiModelHash, ArchitectureFamily, ImatrixDefinition,
   # TensorCombo, or BaselineQuantDefinition rows.
-  force_relearn_architecture_family: false
+  # ONE-SHOT for the Unsloth Dynamic 3.0 refresh. Set back to false after the
+  # successful run or every later run will request the same destructive relearn.
+  force_relearn_architecture_family: true
 
   # Relearn built-in/standard baselines by display/canonical name for the current
   # architecture family and active tensor group profile.
@@ -289,19 +291,19 @@ baselines:
 
         # 2-bit
 
-        - file_name: Qwen3.8-27B-UD-IQ2_XXS.gguf
-          baseline_family: IQ2_XXS
-          quantize_base_name: IQ2_XXS
-          display_name: Unsloth-UD-IQ2_XXS
+        - file_name: Qwen3.8-27B-UD-IQ2_S.gguf
+          baseline_family: IQ2_S
+          quantize_base_name: IQ2_S
+          display_name: Unsloth-UD-IQ2_S
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.8-27B-UD-IQ2_M.gguf
-          baseline_family: IQ2_M
-          quantize_base_name: IQ2_M
-          display_name: Unsloth-UD-IQ2_M
+        - file_name: Qwen3.8-27B-UD-IQ2_XXS.gguf
+          baseline_family: IQ2_XXS
+          quantize_base_name: IQ2_XXS
+          display_name: Unsloth-UD-IQ2_XXS
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
@@ -318,28 +320,19 @@ baselines:
 
         # 3-bit
 
+        - file_name: Qwen3.8-27B-UD-IQ3_S.gguf
+          baseline_family: IQ3_S
+          quantize_base_name: IQ3_S
+          display_name: Unsloth-UD-IQ3_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
         - file_name: Qwen3.8-27B-UD-IQ3_XXS.gguf
           baseline_family: IQ3_XXS
           quantize_base_name: IQ3_XXS
           display_name: Unsloth-UD-IQ3_XXS
-          force_relearn: false
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
-          allow_as_explicit_group_candidate: true
-
-        - file_name: Qwen3.8-27B-Q3_K_S.gguf
-          baseline_family: IQ3_S
-          quantize_base_name: IQ3_S
-          display_name: Unsloth-Q3_K_S
-          force_relearn: false
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
-          allow_as_explicit_group_candidate: true
-
-        - file_name: Qwen3.8-27B-Q3_K_M.gguf
-          baseline_family: IQ3_M
-          quantize_base_name: IQ3_M
-          display_name: Unsloth-Q3_K_M
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
@@ -356,37 +349,28 @@ baselines:
 
         # 4-bit
 
-        - file_name: Qwen3.8-27B-IQ4_XS.gguf
+        - file_name: Qwen3.8-27B-UD-IQ4_XS.gguf
           baseline_family: IQ4_XS
           quantize_base_name: IQ4_XS
-          display_name: Unsloth-IQ4_XS
+          display_name: Unsloth-UD-IQ4_XS
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.8-27B-Q4_K_S.gguf
+        - file_name: Qwen3.8-27B-UD-Q4_K_S.gguf
           baseline_family: Q4_K_S
           quantize_base_name: Q4_K_S
-          display_name: Unsloth-Q4_K_S
+          display_name: Unsloth-UD-Q4_K_S
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.8-27B-IQ4_NL.gguf
-          baseline_family: IQ4_NL
-          quantize_base_name: IQ4_NL
-          display_name: Unsloth-IQ4_NL
-          force_relearn: false
-          allow_as_learning_baseline: true
-          allow_as_combination_carrier: false
-          allow_as_explicit_group_candidate: true
-
-        - file_name: Qwen3.8-27B-Q4_K_M.gguf
+        - file_name: Qwen3.8-27B-UD-Q4_K_M.gguf
           baseline_family: Q4_K_M
           quantize_base_name: Q4_K_M
-          display_name: Unsloth-Q4_K_M
+          display_name: Unsloth-UD-Q4_K_M
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
@@ -403,19 +387,19 @@ baselines:
 
         # 5-bit
 
-        - file_name: Qwen3.8-27B-Q5_K_S.gguf
+        - file_name: Qwen3.8-27B-UD-Q5_K_S.gguf
           baseline_family: Q5_K_S
           quantize_base_name: Q5_K_S
-          display_name: Unsloth-Q5_K_S
+          display_name: Unsloth-UD-Q5_K_S
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
-        - file_name: Qwen3.8-27B-Q5_K_M.gguf
+        - file_name: Qwen3.8-27B-UD-Q5_K_M.gguf
           baseline_family: Q5_K
           quantize_base_name: Q5_K
-          display_name: Unsloth-Q5_K_M
+          display_name: Unsloth-UD-Q5_K_M
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false
@@ -432,10 +416,28 @@ baselines:
 
         # 6-bit
 
-        - file_name: Qwen3.8-27B-Q6_K.gguf
+        - file_name: Qwen3.8-27B-UD-Q6_K.gguf
           baseline_family: Q6_K
           quantize_base_name: Q6_K
-          display_name: Unsloth-Q6_K
+          display_name: Unsloth-UD-Q6_K
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-UD-Q6_K_M.gguf
+          baseline_family: Q6_K
+          quantize_base_name: Q6_K
+          display_name: Unsloth-UD-Q6_K_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-UD-Q6_K_L.gguf
+          baseline_family: Q6_K
+          quantize_base_name: Q6_K
+          display_name: Unsloth-UD-Q6_K_L
           force_relearn: false
           allow_as_learning_baseline: true
           allow_as_combination_carrier: false

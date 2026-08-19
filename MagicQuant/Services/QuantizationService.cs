@@ -485,11 +485,11 @@ public class QuantizationService
         string baseLogitsDir = GetBaseLogitsDirectory();
 
         DateTime startedUtc = DateTime.UtcNow;
-        const bool forceBaselineRelearn = false;
+        bool forceBaselineRelearn = ShouldForceBaselineRelearn(quant.BaseQuant);
         bool pureExternalBaseline = ShouldDownloadExternalBaselineInsteadOfQuantizing(quant);
         bool baselineLearnedTruthExists = await HasLearnedTruthForBaselineAsync(quant.BaseQuant, ct);
 
-        if (baselineLearnedTruthExists && await _benchmarker.TryReuseExistingBenchmarksAsync(
+        if (!forceBaselineRelearn && baselineLearnedTruthExists && await _benchmarker.TryReuseExistingBenchmarksAsync(
                 quantConfig: quant,
                 modelPath: string.Empty,
                 benchDir: modelBenchDir,
@@ -500,7 +500,7 @@ public class QuantizationService
             return SampleProcessState.Skipped;
         }
 
-        if (baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
+        if (!forceBaselineRelearn && baselineLearnedTruthExists && await BenchmarkExistsAsync(quant, ct))
         {
             AnsiConsole.MarkupLine($"[grey]Skipping already completed sample:[/] {Markup.Escape(modelName)}");
             return SampleProcessState.Skipped;
@@ -638,6 +638,20 @@ public class QuantizationService
 
     private bool ShouldDownloadExternalBaselineInsteadOfQuantizing(HybridQuant quant)
         => quant.BaseQuant.IsExternalRepositoryBaseline && quant.Tensors.Count == 0;
+
+    private static bool ShouldForceBaselineRelearn(BaselineQuants baseline)
+    {
+        if (Config.Current.Learning.ForceRelearnArchitectureFamily)
+            return true;
+
+        if (baseline.IsExternalRepositoryBaseline)
+            return Config.GetResolvedCustomBaseline(baseline.CanonicalKey)?.ForceRelearn == true;
+
+        return (Config.Current.Learning.ForceRelearnStandardBaselines ?? [])
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => BaselineQuants.ResolveBuiltInStandardBaseline(x.Trim()))
+            .Any(x => x?.UniqueId == baseline.UniqueId);
+    }
 
     private async Task<string> GetEffectiveInputModelPathAsync(
         HybridQuant quant,

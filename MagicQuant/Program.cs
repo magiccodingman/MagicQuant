@@ -35,7 +35,6 @@ if (args.Length == 0)
         [
             "evolution",
             "--architecture-family", @"""Qwen3.8-27B"""
-            ,"--reuse-existing-final-artifacts"
             ,"--allow-architecture-family-alias-override"
         ];
     }
