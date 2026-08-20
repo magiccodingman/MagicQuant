@@ -299,21 +299,10 @@ private static byte ResolveDynamicBaselineId(
 
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
 
-        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length == 0)
-            File.Delete(destinationPath);
-
-        if (forceRedownload && File.Exists(destinationPath))
-            File.Delete(destinationPath);
-
-        if (File.Exists(destinationPath) && new FileInfo(destinationPath).Length > 0)
-        {
-            AnsiConsole.MarkupLine($"[grey]Reusing cached external baseline:[/] {Markup.Escape(destinationPath)}");
-            return destinationPath;
-        }
-
         string payloadPath = Path.Combine(Path.GetDirectoryName(destinationPath)!, $"hf_download_{Guid.NewGuid():N}.json");
         string scriptPath = Path.Combine(Path.GetDirectoryName(destinationPath)!, $"hf_download_{Guid.NewGuid():N}.py");
         string resultPath = Path.Combine(Path.GetDirectoryName(destinationPath)!, $"hf_download_result_{Guid.NewGuid():N}.json");
+        string atomicStagingPath = destinationPath + $".partial.{Guid.NewGuid():N}";
 
         try
         {
@@ -329,7 +318,6 @@ private static byte ResolveDynamicBaselineId(
             const string py = """
             import json
             import os
-            import shutil
             import sys
             from huggingface_hub import hf_hub_download
 
@@ -349,15 +337,10 @@ private static byte ResolveDynamicBaselineId(
                     force_download=payload.get('force_redownload', False),
                 )
 
-                if os.path.abspath(downloaded) != os.path.abspath(target_path):
-                    if os.path.exists(target_path):
-                        os.remove(target_path)
-                    shutil.copy2(downloaded, target_path)
-
                 result = {
                     'ok': True,
-                    'downloaded_path': target_path,
-                    'size_bytes': os.path.getsize(target_path) if os.path.exists(target_path) else 0,
+                    'downloaded_path': downloaded,
+                    'size_bytes': os.path.getsize(downloaded) if os.path.exists(downloaded) else 0,
                 }
             except Exception as ex:
                 result = {
@@ -376,10 +359,28 @@ private static byte ResolveDynamicBaselineId(
             if (!json.GetProperty("ok").GetBoolean())
                 throw new InvalidOperationException($"External baseline download failed: {json.GetProperty("error").GetString()}");
 
-            if (!File.Exists(destinationPath) || new FileInfo(destinationPath).Length == 0)
-                throw new InvalidOperationException($"External baseline download completed but produced no file: {destinationPath}");
+            string downloadedPath = json.GetProperty("downloaded_path").GetString()
+                ?? throw new InvalidOperationException("External baseline download did not return a source path.");
+            if (!File.Exists(downloadedPath) || new FileInfo(downloadedPath).Length == 0)
+                throw new InvalidOperationException($"External baseline download completed but produced no file: {downloadedPath}");
+            if (!HasGgufMagic(downloadedPath))
+                throw new InvalidOperationException($"Downloaded external baseline is not a GGUF file: {downloadedPath}");
 
-            AnsiConsole.MarkupLine($"[green]Downloaded external baseline:[/] {Markup.Escape(destinationPath)}");
+            bool reused = CanReuseDownloadedFile(downloadedPath, destinationPath);
+            if (!reused && !string.Equals(
+                    Path.GetFullPath(downloadedPath),
+                    Path.GetFullPath(destinationPath),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await CopyDownloadedFileAtomicallyAsync(downloadedPath, atomicStagingPath, destinationPath, ct);
+            }
+
+            if (!File.Exists(destinationPath) || new FileInfo(destinationPath).Length == 0 || !HasGgufMagic(destinationPath))
+                throw new InvalidOperationException($"External baseline staging produced no valid GGUF file: {destinationPath}");
+
+            AnsiConsole.MarkupLine(reused
+                ? $"[grey]Reusing verified cached external baseline:[/] {Markup.Escape(destinationPath)}"
+                : $"[green]Downloaded and atomically staged external baseline:[/] {Markup.Escape(destinationPath)}");
             return destinationPath;
         }
         finally
@@ -387,6 +388,65 @@ private static byte ResolveDynamicBaselineId(
             TryDelete(payloadPath);
             TryDelete(scriptPath);
             TryDelete(resultPath);
+            TryDelete(atomicStagingPath);
+        }
+    }
+
+    internal static bool CanReuseDownloadedFile(string downloadedPath, string destinationPath)
+    {
+        if (!File.Exists(downloadedPath) || !File.Exists(destinationPath) ||
+            !HasGgufMagic(downloadedPath) || !HasGgufMagic(destinationPath))
+        {
+            return false;
+        }
+
+        var downloaded = new FileInfo(downloadedPath);
+        var destination = new FileInfo(destinationPath);
+        return downloaded.Length > 0 &&
+               downloaded.Length == destination.Length &&
+               downloaded.LastWriteTimeUtc == destination.LastWriteTimeUtc;
+    }
+
+    private static bool HasGgufMagic(string path)
+    {
+        try
+        {
+            Span<byte> magic = stackalloc byte[4];
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return stream.Read(magic) == magic.Length && magic.SequenceEqual("GGUF"u8);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task CopyDownloadedFileAtomicallyAsync(
+        string sourcePath,
+        string stagingPath,
+        string destinationPath,
+        CancellationToken ct)
+    {
+        try
+        {
+            await using (var source = new FileStream(
+                             sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                             bufferSize: 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            await using (var staging = new FileStream(
+                             stagingPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                             bufferSize: 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await source.CopyToAsync(staging, 1024 * 1024, ct);
+                await staging.FlushAsync(ct);
+            }
+
+            File.SetLastWriteTimeUtc(stagingPath, File.GetLastWriteTimeUtc(sourcePath));
+            File.Move(stagingPath, destinationPath, overwrite: true);
+        }
+        catch
+        {
+            TryDelete(stagingPath);
+            throw;
         }
     }
 

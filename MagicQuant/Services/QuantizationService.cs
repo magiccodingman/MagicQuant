@@ -702,24 +702,15 @@ public class QuantizationService
         return _paths.GetExternalBaselineDurablePath(baseline);
     }
 
-    private async Task ValidateExternalBaselineTensorParityOrThrow(string baseModelPath, string externalBaselinePath)
+    private async Task<ExternalBaselineTensorParityResult> ValidateExternalBaselineTensorParityOrThrow(
+        string baseModelPath,
+        string externalBaselinePath)
     {
         var baseMeta = await ReadTensorMetadataFromGgufAsync(baseModelPath, Path.GetDirectoryName(externalBaselinePath)!);
         var externalMeta =
             await ReadTensorMetadataFromGgufAsync(externalBaselinePath, Path.GetDirectoryName(externalBaselinePath)!);
 
-        var baseNames = baseMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
-        var externalNames = externalMeta.TensorNames.OrderBy(x => x, StringComparer.Ordinal).ToList();
-
-        var missing = baseNames.Except(externalNames, StringComparer.Ordinal).Take(20).ToList();
-        var unexpected = externalNames.Except(baseNames, StringComparer.Ordinal).Take(20).ToList();
-
-        if (missing.Count > 0 || unexpected.Count > 0 || baseNames.Count != externalNames.Count)
-        {
-            throw new InvalidOperationException(
-                $"External/custom baseline tensor mismatch detected. Missing=[{string.Join(", ", missing)}] Unexpected=[{string.Join(", ", unexpected)}]. " +
-                "MagicQuant will not persist or use a custom baseline whose tensor names do not exactly match the source model.");
-        }
+        return ExternalBaselineTensorParity.ValidateOrThrow(baseMeta, externalMeta);
     }
 
     private async Task<bool> HasLearnedTruthForBaselineAsync(BaselineQuants baseline, CancellationToken ct = default)
@@ -798,10 +789,9 @@ public class QuantizationService
 
         AnsiConsole.MarkupLine(
             $"[cyan]Learning external baseline truth from downloaded artifact:[/] {Markup.Escape(quant.BaseQuant.Names[0])}");
-        await ValidateExternalBaselineTensorParityOrThrow(nativeBasePath, downloadedExternalBaselinePath);
+        var parity = await ValidateExternalBaselineTensorParityOrThrow(nativeBasePath, downloadedExternalBaselinePath);
 
-        var ggufMetadata =
-            await ReadTensorMetadataFromGgufAsync(downloadedExternalBaselinePath, Path.GetDirectoryName(rebuiltOutputPath)!);
+        var ggufMetadata = parity.ExternalMetadata;
         var ggufTruth = ggufMetadata.TensorTypes
             .ToDictionary(x => x.Key, x => NormalizeQuantName(x.Value), StringComparer.Ordinal);
 
@@ -809,12 +799,37 @@ public class QuantizationService
             throw new InvalidOperationException(
                 $"Downloaded external baseline '{quant.BaseQuant.Names[0]}' produced no readable GGUF tensor truth.");
 
-        var truth = ggufTruth
+        var truth = ggufTruth.ToDictionary(
+            x => x.Key,
+            x => new LearnedTensorTruth(x.Key, x.Value, LearningSource.GgufOnly),
+            StringComparer.Ordinal);
+
+        foreach (string tensorName in parity.InheritedOptionalTensorNames)
+        {
+            if (!parity.NativeMetadata.TensorTypes.TryGetValue(tensorName, out string? nativeType) ||
+                string.IsNullOrWhiteSpace(nativeType))
+            {
+                throw new InvalidOperationException(
+                    $"Native source did not provide tensor type metadata for omitted optional MTP tensor '{tensorName}'.");
+            }
+
+            truth[tensorName] = new LearnedTensorTruth(
+                tensorName,
+                NormalizeQuantName(nativeType),
+                LearningSource.InheritedFromNative);
+        }
+
+        if (parity.InheritedOptionalTensorNames.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]External baseline omits {parity.OmittedNextnLayerCount:N0} declared optional NextN/MTP layer(s) " +
+                $"({parity.InheritedOptionalTensorNames.Count:N0} tensors).[/] " +
+                "The normalized rebuild will inherit those optional tensors from the native source; model-trunk parity remains strict.");
+        }
+
+        truth = truth
             .OrderBy(x => x.Key, StringComparer.Ordinal)
-            .ToDictionary(
-                x => x.Key,
-                x => new LearnedTensorTruth(x.Key, x.Value, LearningSource.GgufOnly),
-                StringComparer.Ordinal);
+            .ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
 
         var verification = new TensorTruthVerificationResult
         {
@@ -870,7 +885,7 @@ public class QuantizationService
             DownloadedExternalModelPath = downloadedExternalBaselinePath,
             TruthByTensor = truth,
             GroupedByTensor = audit.GroupedByTensor,
-            AllTensorNamesInDownloadedArtifact = ggufMetadata.TensorNames,
+            AllTensorNamesInDownloadedArtifact = truth.Keys.ToList(),
             AmbiguousGroupingRows = audit.Ambiguous,
             UnresolvedTensorNames = audit.IllegalUnresolved.Select(x => x.TensorName).ToList(),
             BaseQuantExceptionRows = audit.BaseQuantExceptions,
@@ -2808,7 +2823,25 @@ public class QuantizationService
                                   reader = gguf.GGUFReader(payload["gguf_path"])
                                   tensor_names = [t.name for t in reader.tensors]
                                   tensor_types = {t.name: resolve_type_name(t) for t in reader.tensors}
-                                  result = {"TensorNames": tensor_names, "TensorTypes": tensor_types}
+
+                                  def read_scalar(key):
+                                      field = reader.fields.get(key)
+                                      if field is None:
+                                          return None
+                                      value = field.contents()
+                                      return value.item() if hasattr(value, "item") else value
+
+                                  architecture = read_scalar("general.architecture")
+                                  architecture_key = str(architecture) if architecture is not None else None
+                                  block_count = read_scalar(f"{architecture_key}.block_count") if architecture_key else None
+                                  nextn_layers = read_scalar(f"{architecture_key}.nextn_predict_layers") if architecture_key else None
+                                  result = {
+                                      "Architecture": architecture_key,
+                                      "BlockCount": int(block_count) if block_count is not None else None,
+                                      "NextnPredictLayers": int(nextn_layers) if nextn_layers is not None else None,
+                                      "TensorNames": tensor_names,
+                                      "TensorTypes": tensor_types
+                                  }
                               except Exception as e:
                                   result = {"Error": str(e), "TensorNames": [], "TensorTypes": {}}
 
@@ -3155,13 +3188,6 @@ public class QuantizationService
         public string TensorName { get; set; } = string.Empty;
         public string SchemeName { get; set; } = string.Empty;
         public string GroupName { get; set; } = string.Empty;
-    }
-
-    private sealed class GgufTensorReadResult
-    {
-        public string? Error { get; set; }
-        public List<string> TensorNames { get; set; } = new();
-        public Dictionary<string, string> TensorTypes { get; set; } = new(StringComparer.Ordinal);
     }
 
     // ----------------------------------------------------------------

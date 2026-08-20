@@ -26,9 +26,7 @@ learning:
   # and execution probe cache rows scoped to the active architecture family.
   # Does not delete AiModelHash, ArchitectureFamily, ImatrixDefinition,
   # TensorCombo, or BaselineQuantDefinition rows.
-  # ONE-SHOT for the Unsloth Dynamic 3.0 refresh. Set back to false after the
-  # successful run or every later run will request the same destructive relearn.
-  force_relearn_architecture_family: true
+  force_relearn_architecture_family: false
 
   # Relearn built-in/standard baselines by display/canonical name for the current
   # architecture family and active tensor group profile.
@@ -250,7 +248,7 @@ output:
   # Leave blank to default to <model>/MagicQuant/Final_Outputs
   output_dir:
   output_name_prefix: Qwen3.8-27B
-  export_external_learned_baselines: true
+  export_external_learned_baselines: false
 
   # false = normal behavior; delete/rebuild final outputs from scratch.
   # true = preserve valid existing GGUFs and skip rebuilding them only when
@@ -288,6 +286,26 @@ baselines:
       allow_as_explicit_group_candidate: false
 
       includes:
+
+        # 1-bit
+
+        - file_name: Qwen3.8-27B-UD-IQ1_S.gguf
+          baseline_family: IQ1_S
+          quantize_base_name: IQ1_S
+          display_name: Unsloth-UD-IQ1_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-UD-IQ1_M.gguf
+          baseline_family: IQ1_M
+          quantize_base_name: IQ1_M
+          display_name: Unsloth-UD-IQ1_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
 
         # 2-bit
 

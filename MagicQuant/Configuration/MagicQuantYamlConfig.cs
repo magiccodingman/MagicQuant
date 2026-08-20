@@ -47,6 +47,8 @@ public sealed class MagicQuantYamlConfig
 
     public List<string> CollapsePenaltySchemes { get; set; } =
     [
+        "IQ1_S",
+        "IQ1_M",
         "MXFP4",
         "IQ2_XXS",
         "IQ2_XS",

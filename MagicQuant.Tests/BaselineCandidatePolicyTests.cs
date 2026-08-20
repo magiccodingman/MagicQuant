@@ -7,6 +7,25 @@ namespace MagicQuant.Tests;
 public class BaselineCandidatePolicyTests
 {
     [Fact]
+    public void Iq1Families_AreRegisteredAsImatrixLearningAndExplicitCandidates()
+    {
+        Assert.Equal((byte)1, BaselineQuants.IQ1_S.BitRange);
+        Assert.Equal((byte)1, BaselineQuants.IQ1_M.BitRange);
+        Assert.True(BaselineQuants.IQ1_S.RequiresImatrix);
+        Assert.True(BaselineQuants.IQ1_M.RequiresImatrix);
+        Assert.True(BaselineQuants.IQ1_S.IsLearningBaseline);
+        Assert.True(BaselineQuants.IQ1_M.IsLearningBaseline);
+        Assert.True(BaselineQuants.IQ1_S.IsExplicitGroupCombinationCandidate);
+        Assert.True(BaselineQuants.IQ1_M.IsExplicitGroupCombinationCandidate);
+        Assert.False(BaselineQuants.IQ1_S.IsCombinationCarrierCandidate);
+        Assert.False(BaselineQuants.IQ1_M.IsCombinationCarrierCandidate);
+        Assert.Same(BaselineQuants.IQ1_S, BaselineQuants.ResolveBuiltInStandardBaseline("IQ1_S"));
+        Assert.Same(BaselineQuants.IQ1_M, BaselineQuants.ResolveBuiltInStandardBaseline("IQ1_M"));
+        Assert.Equal("IQ1_S", TensorWeightScheme.FromId(TensorWeightScheme.IQ1_S.UniqueId).Names[0]);
+        Assert.Equal("IQ1_M", TensorWeightScheme.FromId(TensorWeightScheme.IQ1_M.UniqueId).Names[0]);
+    }
+
+    [Fact]
     public void GetPureBaselineCandidates_NoImatrix_ReturnsExactlyIq4Xs()
     {
         var ids = BaselineQuants.GetPureBaselineCandidates(hasUsableImatrix: false)

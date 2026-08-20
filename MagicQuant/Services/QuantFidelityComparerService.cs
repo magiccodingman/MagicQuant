@@ -465,6 +465,7 @@ public sealed class QuantFidelityComparerService
         if (name.Contains("Q4") || name.Contains("IQ4") || baseline.BitRange == 4) return 40;
         if (name.Contains("Q3") || name.Contains("IQ3") || baseline.BitRange == 3) return 30;
         if (name.Contains("Q2") || name.Contains("IQ2") || baseline.BitRange == 2) return 20;
+        if (name.Contains("Q1") || name.Contains("IQ1") || baseline.BitRange == 1) return 10;
 
         return baseline.BitRange > 0 ? baseline.BitRange * 10 : -1;
     }

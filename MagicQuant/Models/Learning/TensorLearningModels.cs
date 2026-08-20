@@ -38,7 +38,8 @@ public enum LearningSource
     LogOnly = 1,
     GgufOnly = 2,
     Both = 3,
-    BothWithMismatch = 4
+    BothWithMismatch = 4,
+    InheritedFromNative = 5
 }
 
 public sealed class TensorTruthMismatch

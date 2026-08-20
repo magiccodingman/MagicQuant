@@ -187,6 +187,22 @@ public sealed class TensorWeightScheme
             32
         );
 
+    public static readonly TensorWeightScheme IQ1_S =
+        new(
+            20,
+            true,
+            ["IQ1_S"],
+            256
+        );
+
+    public static readonly TensorWeightScheme IQ1_M =
+        new(
+            21,
+            true,
+            ["IQ1_M"],
+            256
+        );
+
     public static readonly TensorWeightScheme Q4_K =
         new(
             14,
@@ -244,6 +260,8 @@ public sealed class TensorWeightScheme
         IQ2_S,
         IQ2_XS,
         IQ2_XXS,
+        IQ1_S,
+        IQ1_M,
         Q4_K,
         Q4_K_S,
         Q5_K_S
@@ -268,6 +286,8 @@ public sealed class TensorWeightScheme
         IQ2_S,
         IQ2_XS,
         IQ2_XXS,
+        IQ1_S,
+        IQ1_M,
         Q4_K,
         Q4_K_S,
         Q5_K_S

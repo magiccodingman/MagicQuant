@@ -163,6 +163,14 @@ public record BaselineQuants(
         Create(12, true, "IQ2_XXS", "IQ2_XXS", TensorWeightScheme.IQ2_XXS, [TensorWeightScheme.IQ2_XXS], [], true,
             false, true, false, 2, 0);
 
+    public static readonly BaselineQuants IQ1_S =
+        Create(18, true, "IQ1_S", "IQ1_S", TensorWeightScheme.IQ1_S, [TensorWeightScheme.IQ1_S], [], true,
+            false, true, false, 1, -2);
+
+    public static readonly BaselineQuants IQ1_M =
+        Create(19, true, "IQ1_M", "IQ1_M", TensorWeightScheme.IQ1_M, [TensorWeightScheme.IQ1_M], [], true,
+            false, true, false, 1, -1);
+
     public static readonly BaselineQuants BF16_Hybrid =
         Create(201, false, "BF16", "BF16", TensorWeightScheme.BF16, [TensorWeightScheme.BF16], [], false, false, false,
             true, 16, int.MaxValue, false, "alias:bf16", "exact_alias", null, null, null, null);
@@ -189,7 +197,9 @@ public record BaselineQuants(
         IQ2_M,
         IQ2_S,
         IQ2_XS,
-        IQ2_XXS
+        IQ2_XXS,
+        IQ1_S,
+        IQ1_M
     ];
 
     private static readonly ImmutableArray<BaselineQuants> ExactAliases =
