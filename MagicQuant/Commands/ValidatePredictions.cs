@@ -35,6 +35,7 @@ public sealed class ValidatePredictions : ICommand
         Cache.ModelDirectory = modelDir;
         Cache.ModelMagicQuantDirectory = Path.Combine(modelDir, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
+        await new ExternalBaselineCacheCleanupService().CleanupStaleArtifactsAsync();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
         Directory.CreateDirectory(Cache.ModelMagicQuantDirectory);
 

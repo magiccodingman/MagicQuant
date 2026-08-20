@@ -69,6 +69,7 @@ public sealed class CloneRepositoryQuants : ICommand
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
+        await new ExternalBaselineCacheCleanupService().CleanupStaleArtifactsAsync();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;

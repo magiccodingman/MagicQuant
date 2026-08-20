@@ -49,6 +49,18 @@ public sealed class HuggingFaceBaselineCacheTests
         Assert.False(HuggingFaceBaselineService.CanReuseDownloadedFile(files.Source, files.Destination));
     }
 
+    [Fact]
+    public void StagingCleanupPath_MustRemainInsideDestinationDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "mq-hf-path-test", Guid.NewGuid().ToString("N"));
+        string cache = Path.Combine(root, "ExternalBaselines");
+
+        Assert.True(HuggingFaceBaselineService.IsPathInsideDirectory(
+            Path.Combine(cache, "source.gguf"), cache));
+        Assert.False(HuggingFaceBaselineService.IsPathInsideDirectory(
+            Path.Combine(root, "outside.gguf"), cache));
+    }
+
     private sealed class TemporaryFiles : IDisposable
     {
         private readonly string _directory = Path.Combine(

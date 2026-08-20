@@ -62,6 +62,7 @@ public class Evolution : ICommand
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
+        await new ExternalBaselineCacheCleanupService().CleanupStaleArtifactsAsync();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;
@@ -221,7 +222,7 @@ public class Evolution : ICommand
         RuntimeSearchSpace.AllowHighPrecisionHybrids = Config.Current.Flags.AllowHighPrecisionHybrids;
 
         PrintCustomBaselineRuntimeSummary(resolvedCustomBaselines, imatrixEnsureResult.Enabled);
-        
+
         // No longer needed
         //CliHelpers.ValidateCombinationLogicWorks(true);
 

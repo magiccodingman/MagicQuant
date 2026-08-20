@@ -91,38 +91,38 @@ public class QuantizationService
 
         int threadCount = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
 
-// Minimum desired threads per llama-quantize process.
-// This is used to decide the natural concurrency first.
+        // Minimum desired threads per llama-quantize process.
+        // This is used to decide the natural concurrency first.
         const int minimumQuantThreadsPerProcess = 4;
 
-// Keep a little workstation breathing room.
+        // Keep a little workstation breathing room.
         int reservedThreads = threadCount switch
         {
             >= 16 => 2,
-            >= 8  => 2,
-            >= 4  => 1,
-            _     => 0
+            >= 8 => 2,
+            >= 4 => 1,
+            _ => 0
         };
 
         int usableThreads = Math.Max(1, threadCount - reservedThreads);
 
-// First decide how many quantization processes the CPU budget would naturally allow.
+        // First decide how many quantization processes the CPU budget would naturally allow.
         int naturalConcurrentQuantizations = Math.Max(
             1,
             usableThreads / minimumQuantThreadsPerProcess);
 
-// Then cap it to avoid hammering the output drive with too many giant writers.
+        // Then cap it to avoid hammering the output drive with too many giant writers.
         int scratchWriterCapacity = _scratchStorage.WriterCapacity;
         _maxConcurrentQuantizations = Math.Max(
             1,
             Math.Min(naturalConcurrentQuantizations, scratchWriterCapacity));
 
-// Divide the usable thread budget evenly across the allowed quantization processes.
-// Example on 7950X3D:
-// 32 total - 2 reserved = 30 usable
-// natural = 30 / 8 = 3
-// capped = min(2, 3) = 2
-// threads/process = 30 / 2 = 15
+        // Divide the usable thread budget evenly across the allowed quantization processes.
+        // Example on 7950X3D:
+        // 32 total - 2 reserved = 30 usable
+        // natural = 30 / 8 = 3
+        // capped = min(2, 3) = 2
+        // threads/process = 30 / 2 = 15
         _quantThreadsPerProcess = Math.Max(
             1,
             usableThreads / _maxConcurrentQuantizations);
@@ -512,127 +512,141 @@ public class QuantizationService
             baselineLearnedTruthExists,
             ct);
 
-        ScratchArtifactKind leaseKind = pureExternalBaseline
-            ? ScratchArtifactKind.ExternalBaselineRebuild
-            : quant.BaseQuant.IsExternalRepositoryBaseline
-                ? ScratchArtifactKind.ExternalBaselineNormalizedSample
-                : ScratchArtifactKind.QuantizedSample;
-
-        await using var lease = await _scratchStorage.AcquireAsync(leaseKind, modelName, ct: ct);
-        string benchmarkModelPath = lease.GgufPath;
+        string? disposableExternalBaselinePath = pureExternalBaseline &&
+                                                 IsPathInsideExternalBaselineCacheRoot(inputPath)
+            ? inputPath
+            : null;
 
         try
         {
-            QuantizationExecutionReport? quantizationReport = null;
-            PreparedExternalBaselineBuild? preparedExternalBaseline = null;
+            ScratchArtifactKind leaseKind = pureExternalBaseline
+                ? ScratchArtifactKind.ExternalBaselineRebuild
+                : quant.BaseQuant.IsExternalRepositoryBaseline
+                    ? ScratchArtifactKind.ExternalBaselineNormalizedSample
+                    : ScratchArtifactKind.QuantizedSample;
 
-            await _cpuQuantLock.WaitAsync(ct);
+            await using var lease = await _scratchStorage.AcquireAsync(leaseKind, modelName, ct: ct);
+            string benchmarkModelPath = lease.GgufPath;
+
             try
             {
-                if (pureExternalBaseline)
-                {
-                    preparedExternalBaseline = await PrepareExternalBaselineRebuildAsync(
-                        quant,
-                        downloadedExternalBaselinePath: inputPath,
-                        rebuiltOutputPath: lease.GgufPath,
-                        logPath: lease.PrimaryLogPath,
-                        metadataWorkingDirectory: lease.LeaseDirectory,
-                        forceBaselineRelearn: forceBaselineRelearn,
-                        ct: ct);
-                    benchmarkModelPath = preparedExternalBaseline.BenchmarkModelPath;
-                }
-                else
-                {
-                    var quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
-                        ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
-                        : quant;
+                QuantizationExecutionReport? quantizationReport = null;
+                PreparedExternalBaselineBuild? preparedExternalBaseline = null;
 
-                    IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
-
-                    if (quant.BaseQuant.IsExternalRepositoryBaseline)
+                await _cpuQuantLock.WaitAsync(ct);
+                try
+                {
+                    if (pureExternalBaseline)
                     {
-                        temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
-                            canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
-                            preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
-                            allowDominantFallback: true);
-
-                        if (temporaryCarrierOverrides.Count == 0)
-                        {
-                            throw new InvalidOperationException(
-                                $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
-                                "External baseline hybrids require learned tensor mappings before sampling. " +
-                                "Use targeted YAML relearn configuration to regenerate only the affected baseline/profile truth.");
-                        }
+                        preparedExternalBaseline = await PrepareExternalBaselineRebuildAsync(
+                            quant,
+                            downloadedExternalBaselinePath: inputPath,
+                            rebuiltOutputPath: lease.GgufPath,
+                            logPath: lease.PrimaryLogPath,
+                            metadataWorkingDirectory: lease.LeaseDirectory,
+                            forceBaselineRelearn: forceBaselineRelearn,
+                            ct: ct);
+                        benchmarkModelPath = preparedExternalBaseline.BenchmarkModelPath;
                     }
+                    else
+                    {
+                        var quantToExecute = quant.BaseQuant.IsExternalRepositoryBaseline
+                            ? CreateEquivalentStandardCarrierQuantForExternalRebuild(quant)
+                            : quant;
 
-                    var effectiveInputPath = quant.BaseQuant.IsExternalRepositoryBaseline
-                        ? await EnsureBaseModelFileAsync()
-                        : inputPath;
+                        IReadOnlyDictionary<string, string>? temporaryCarrierOverrides = null;
 
-                    quantizationReport = await RunLlamaQuantizeAsync(
-                        effectiveInputPath,
-                        lease.GgufPath,
-                        quantToExecute,
-                        temporaryCarrierOverrides: temporaryCarrierOverrides,
-                        logPath: lease.PrimaryLogPath,
-                        metadataWorkingDirectory: lease.LeaseDirectory,
-                        ct: ct);
+                        if (quant.BaseQuant.IsExternalRepositoryBaseline)
+                        {
+                            temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
+                                canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
+                                preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
+                                allowDominantFallback: true);
+
+                            if (temporaryCarrierOverrides.Count == 0)
+                            {
+                                throw new InvalidOperationException(
+                                    $"Missing blanket learned mapping for external/custom baseline '{quant.BaseQuant.Names[0]}'. " +
+                                    "External baseline hybrids require learned tensor mappings before sampling. " +
+                                    "Use targeted YAML relearn configuration to regenerate only the affected baseline/profile truth.");
+                            }
+                        }
+
+                        var effectiveInputPath = quant.BaseQuant.IsExternalRepositoryBaseline
+                            ? await EnsureBaseModelFileAsync()
+                            : inputPath;
+
+                        quantizationReport = await RunLlamaQuantizeAsync(
+                            effectiveInputPath,
+                            lease.GgufPath,
+                            quantToExecute,
+                            temporaryCarrierOverrides: temporaryCarrierOverrides,
+                            logPath: lease.PrimaryLogPath,
+                            metadataWorkingDirectory: lease.LeaseDirectory,
+                            ct: ct);
+                    }
                 }
-            }
-            finally
-            {
-                _cpuQuantLock.Release();
-            }
+                finally
+                {
+                    _cpuQuantLock.Release();
+                }
 
-            AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {Markup.Escape(modelName)}");
+                AnsiConsole.MarkupLine($"[yellow]Benchmarking:[/] {Markup.Escape(modelName)}");
 
-            await _benchmarker.RunAllBenchmarksAsync(
-                quantConfig: quant,
-                modelPath: benchmarkModelPath,
-                benchDir: modelBenchDir,
-                klLogitsDir: baseLogitsDir,
-                saveLogits: false,
-                domainsOverride: new[] { "general" });
+                await _benchmarker.RunAllBenchmarksAsync(
+                    quantConfig: quant,
+                    modelPath: benchmarkModelPath,
+                    benchDir: modelBenchDir,
+                    klLogitsDir: baseLogitsDir,
+                    saveLogits: false,
+                    domainsOverride: new[] { "general" });
 
-            if (IsLearnableBaselineRun(quant))
-            {
-                if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
-                    await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
-                else if (!baselineLearnedTruthExists || forceBaselineRelearn)
-                    await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
-            }
+                if (IsLearnableBaselineRun(quant))
+                {
+                    if (preparedExternalBaseline?.HasPreparedLearningTruth == true)
+                        await PersistLearnedBaselineTensorMapFromPreparedAsync(quant, preparedExternalBaseline, ct);
+                    else if (!baselineLearnedTruthExists || forceBaselineRelearn)
+                        await LearnAndPersistBaselineTensorMapAsync(quant, benchmarkModelPath, quantizationReport, ct);
+                }
 
-            await PersistQuantizationRunAsync(
-                quant: quant,
-                imatrixDefinitionId: null,
-                startedUtc: startedUtc,
-                completedUtc: DateTime.UtcNow,
-                succeeded: true,
-                outputModelPath: benchmarkModelPath,
-                error: null,
-                ct: ct);
-
-            return SampleProcessState.Completed;
-        }
-        catch (Exception ex)
-        {
-            try
-            {
                 await PersistQuantizationRunAsync(
                     quant: quant,
                     imatrixDefinitionId: null,
                     startedUtc: startedUtc,
                     completedUtc: DateTime.UtcNow,
-                    succeeded: false,
+                    succeeded: true,
                     outputModelPath: benchmarkModelPath,
-                    error: ex.ToString(),
+                    error: null,
                     ct: ct);
-            }
-            catch
-            {
-            }
 
-            throw;
+                return SampleProcessState.Completed;
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    await PersistQuantizationRunAsync(
+                        quant: quant,
+                        imatrixDefinitionId: null,
+                        startedUtc: startedUtc,
+                        completedUtc: DateTime.UtcNow,
+                        succeeded: false,
+                        outputModelPath: benchmarkModelPath,
+                        error: ex.ToString(),
+                        ct: ct);
+                }
+                catch
+                {
+                }
+
+                throw;
+            }
+        }
+        finally
+        {
+            await TryCleanupExternalBaselineDownloadArtifactsAsync(
+                disposableExternalBaselinePath,
+                "after digestion and benchmarking");
         }
     }
 
@@ -681,15 +695,9 @@ public class QuantizationService
         }
         catch
         {
-            try
-            {
-                await CleanupExternalBaselineDownloadArtifactsAsync(externalPath);
-            }
-            catch (Exception cleanupEx)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[yellow]Warning:[/] failed to clean external baseline staging after failed download/validation: {Markup.Escape(cleanupEx.Message)}");
-            }
+            await TryCleanupExternalBaselineDownloadArtifactsAsync(
+                externalPath,
+                "after failed download/validation");
 
             throw;
         }
@@ -905,7 +913,7 @@ public class QuantizationService
 
         var tensorScheme = quant.BaseQuant.DefaultTensorScheme!;
         var verification = prepared.Verification ?? new TensorTruthVerificationResult
-            { TruthByTensor = prepared.TruthByTensor };
+        { TruthByTensor = prepared.TruthByTensor };
         var audit = new TensorGroupingAuditResult
         {
             GroupedByTensor = prepared.GroupedByTensor,
@@ -1040,28 +1048,52 @@ public class QuantizationService
         string fullFile = Path.GetFullPath(downloadedExternalBaselinePath);
         string? root = Cache.ExternalBaselineCacheDirectory;
 
-        if (!string.IsNullOrWhiteSpace(root))
+        if (string.IsNullOrWhiteSpace(root))
+            throw new InvalidOperationException("External baseline cache root is not configured.");
+
+        string fullRoot = Path.GetFullPath(root);
+        if (!IsPathInside(fullFile, fullRoot))
         {
-            string fullRoot = Path.GetFullPath(root);
-            string? stagingDir = Path.GetDirectoryName(fullFile);
+            throw new InvalidOperationException(
+                $"Refusing to clean external baseline artifact outside configured cache root: {fullFile}");
+        }
 
-            if (!string.IsNullOrWhiteSpace(stagingDir))
+        string? stagingDir = Path.GetDirectoryName(fullFile);
+
+        if (!string.IsNullOrWhiteSpace(stagingDir))
+        {
+            string fullStagingDir = Path.GetFullPath(stagingDir);
+
+            if (IsPathInside(fullStagingDir, fullRoot) &&
+                !string.Equals(fullStagingDir, fullRoot, StringComparison.OrdinalIgnoreCase) &&
+                Directory.Exists(fullStagingDir))
             {
-                string fullStagingDir = Path.GetFullPath(stagingDir);
-
-                if (IsPathInside(fullStagingDir, fullRoot) &&
-                    !string.Equals(fullStagingDir, fullRoot, StringComparison.OrdinalIgnoreCase) &&
-                    Directory.Exists(fullStagingDir))
-                {
-                    await HardDeleteHelper.DeleteDirectoryIfExistsAsync(fullStagingDir);
-                    return;
-                }
+                await HardDeleteHelper.DeleteDirectoryIfExistsAsync(fullStagingDir);
+                return;
             }
         }
 
         await HardDeleteHelper.DeleteFileIfExistsAsync(fullFile);
         await HardDeleteHelper.DeleteFileIfExistsAsync(fullFile + ".nativecheck");
         await HardDeleteHelper.DeleteFileIfExistsAsync(fullFile + ".externalcheck");
+    }
+
+    private async Task TryCleanupExternalBaselineDownloadArtifactsAsync(string? path, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        try
+        {
+            await CleanupExternalBaselineDownloadArtifactsAsync(path);
+            AnsiConsole.MarkupLine(
+                $"[green]Cleaned disposable external baseline[/] [grey]({Markup.Escape(reason)}):[/] {Markup.Escape(path)}");
+        }
+        catch (Exception cleanupEx)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Warning:[/] failed to clean external baseline {Markup.Escape(reason)}: {Markup.Escape(cleanupEx.Message)}");
+        }
     }
 
     private bool IsPathInsideExternalBaselineCacheRoot(string path)
@@ -1079,8 +1111,8 @@ public class QuantizationService
         return child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
-// ----------------------------------------------------------------
-// Benchmark/logit helpers
+    // ----------------------------------------------------------------
+    // Benchmark/logit helpers
     // ----------------------------------------------------------------
 
     private string GetBaseLogitsDirectory() => _paths.GetBaseLogitsDirectory();
@@ -1470,13 +1502,6 @@ public class QuantizationService
 
         if (quant.BaseQuant.IsExternalRepositoryBaseline)
         {
-            string durableExternalPath = GetExternalBaselineCachePath(quant.BaseQuant);
-            await _huggingFaceBaselineService.DownloadBaselineAsync(
-                quant.BaseQuant,
-                durableExternalPath,
-                forceRedownload: false,
-                ct: ct);
-
             temporaryCarrierOverrides = TryLoadAllLearnedTensorMappings(
                 canonicalBaselineKey: quant.BaseQuant.CanonicalKey,
                 preferredSourceScheme: quant.BaseQuant.DefaultTensorScheme,
@@ -2490,67 +2515,67 @@ public class QuantizationService
             switch (hybrid.OverrideMode)
             {
                 case HybridTensorOverrideMode.ExactTensorScheme:
-                {
-                    var exactScheme = hybrid.ExactTensorScheme!;
-                    if (!quant.BaseQuant.IsExternalRepositoryBaseline && baseScheme != null &&
-                        exactScheme.UniqueId == baseScheme.UniqueId)
-                        continue;
-
-                    string schemeName = ResolveSchemeName(exactScheme);
-                    foreach (var tensorName in expectedForGroup.OrderBy(x => x, StringComparer.Ordinal))
                     {
-                        result.Add(new RequestedTensorOverride
-                        {
-                            GroupName = hybrid.TGroup.Name,
-                            TensorName = tensorName,
-                            SchemeName = schemeName
-                        });
-                    }
+                        var exactScheme = hybrid.ExactTensorScheme!;
+                        if (!quant.BaseQuant.IsExternalRepositoryBaseline && baseScheme != null &&
+                            exactScheme.UniqueId == baseScheme.UniqueId)
+                            continue;
 
-                    break;
-                }
+                        string schemeName = ResolveSchemeName(exactScheme);
+                        foreach (var tensorName in expectedForGroup.OrderBy(x => x, StringComparer.Ordinal))
+                        {
+                            result.Add(new RequestedTensorOverride
+                            {
+                                GroupName = hybrid.TGroup.Name,
+                                TensorName = tensorName,
+                                SchemeName = schemeName
+                            });
+                        }
+
+                        break;
+                    }
 
                 case HybridTensorOverrideMode.LearnedBaselineCandidate:
-                {
-                    var sourceBaseline = hybrid.CandidateBaseline!;
-                    var learned = TryLoadLearnedTensorMapping(
-                        sourceBaseline: sourceBaseline,
-                        targetGroup: hybrid.TGroup,
-                        preferredSourceScheme: sourceBaseline.DefaultTensorScheme,
-                        allowDominantFallback: false);
-
-                    if (learned.Count == 0)
-                        throw new InvalidOperationException(
-                            $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Use targeted YAML relearn configuration to regenerate only the affected baseline/profile truth.");
-
-                    var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
-                    var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
-                    var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
-
-                    if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
                     {
-                        var missingText = missingExpected.Count == 0
-                            ? "none"
-                            : string.Join(", ", missingExpected.Take(15));
-                        var unexpectedText = unexpectedLearned.Count == 0
-                            ? "none"
-                            : string.Join(", ", unexpectedLearned.Take(15));
-                        throw new InvalidOperationException(
-                            $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
-                    }
+                        var sourceBaseline = hybrid.CandidateBaseline!;
+                        var learned = TryLoadLearnedTensorMapping(
+                            sourceBaseline: sourceBaseline,
+                            targetGroup: hybrid.TGroup,
+                            preferredSourceScheme: sourceBaseline.DefaultTensorScheme,
+                            allowDominantFallback: false);
 
-                    foreach (var kv in learned.OrderBy(x => x.Key, StringComparer.Ordinal))
-                    {
-                        result.Add(new RequestedTensorOverride
+                        if (learned.Count == 0)
+                            throw new InvalidOperationException(
+                                $"Missing required learned baseline mapping for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Use targeted YAML relearn configuration to regenerate only the affected baseline/profile truth.");
+
+                        var learnedNames = learned.Keys.ToHashSet(StringComparer.Ordinal);
+                        var missingExpected = expectedForGroup.Except(learnedNames).OrderBy(x => x).ToList();
+                        var unexpectedLearned = learnedNames.Except(expectedForGroup).OrderBy(x => x).ToList();
+
+                        if (missingExpected.Count > 0 || unexpectedLearned.Count > 0)
                         {
-                            GroupName = hybrid.TGroup.Name,
-                            TensorName = kv.Key,
-                            SchemeName = kv.Value
-                        });
-                    }
+                            var missingText = missingExpected.Count == 0
+                                ? "none"
+                                : string.Join(", ", missingExpected.Take(15));
+                            var unexpectedText = unexpectedLearned.Count == 0
+                                ? "none"
+                                : string.Join(", ", unexpectedLearned.Take(15));
+                            throw new InvalidOperationException(
+                                $"Learned mapping coverage mismatch for group '{hybrid.TGroup.Name}' + baseline '{sourceBaseline.Names[0]}'. Expected={expectedForGroup.Count}, Learned={learnedNames.Count}, Missing=[{missingText}], Unexpected=[{unexpectedText}].");
+                        }
 
-                    break;
-                }
+                        foreach (var kv in learned.OrderBy(x => x.Key, StringComparer.Ordinal))
+                        {
+                            result.Add(new RequestedTensorOverride
+                            {
+                                GroupName = hybrid.TGroup.Name,
+                                TensorName = kv.Key,
+                                SchemeName = kv.Value
+                            });
+                        }
+
+                        break;
+                    }
 
                 default:
                     throw new InvalidOperationException(
