@@ -11,18 +11,23 @@ using Spectre.Console;
 if (args.Length == 0)
 {
     // Use: "clone" or "evolution"
-    const string debugMode = "evolution"; // switch to "evolution" to use the full learning/search pipeline again. Or use "Clone" for cloning mode.
+    const string debugMode = "clone"; // switch to "evolution" to use the full learning/search pipeline again.
 
     if (string.Equals(debugMode, "clone", StringComparison.OrdinalIgnoreCase))
     {
         args =
         [
             "clone-repository-quants",
-            "--architecture-family", @"""Qwen3.6-27B-Uncensored""",
-            "--source-repo", @"""magiccodingman/Qwen3.6-27B-MagicQuant-GGUF"""
-            ,"--allow-architecture-family-alias-override"
-            ,"--missing-manifest-base-quant Q8_0"
-            , "--reuse-existing-final-artifacts"
+            "--config", Path.Combine(AppContext.BaseDirectory, "config.clone-unsloth.dev.yaml"),
+            "--architecture-family", @"""Qwen3.8-27B""",
+            "--source-repo", @"""magiccodingman/Qwen3.8-27B-MagicQuant-GGUF""",
+            "--model-dir", @"""/mnt/world8/AI/Models/Qwen3.8-27B-Qwen/""",
+            "--output-dir", @"""/mnt/world8/AI/Models/Qwen3.8-27B-MagicQuant-Unsloth/""",
+            "--use-imatrix",
+            "--imatrix-url", @"""https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/imatrix_unsloth.dat?download=true""",
+            "--allow-architecture-family-alias-override",
+            "--missing-manifest-base-quant", "Q8_0",
+            "--reuse-existing-final-artifacts"
         ];
     }
     else
@@ -34,8 +39,8 @@ if (args.Length == 0)
         args =
         [
             "evolution",
-            "--architecture-family", @"""Qwen3.8-27B"""
-            ,"--allow-architecture-family-alias-override"
+            "--architecture-family", @"""Qwen3.8-27B""",
+            "--allow-architecture-family-alias-override"
         ];
     }
 }
