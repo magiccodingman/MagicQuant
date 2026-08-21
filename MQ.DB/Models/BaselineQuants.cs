@@ -452,16 +452,26 @@ public record BaselineQuants(
         if (string.IsNullOrWhiteSpace(name))
             return null;
 
-        // A canonical baseline name must win over a tensor-scheme alias. For example,
-        // IQ3_M's primary tensor scheme is IQ3_S, but a user who explicitly configures
-        // IQ3_S means the IQ3_S baseline, not the earlier IQ3_M registry entry.
+        return StandardBaselines.FirstOrDefault(x =>
+            x.Names.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) ||
+            string.Equals(x.PrimaryTensorWeightScheme.Names[0], name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Resolves user-facing standard-role configuration with canonical baseline names
+    /// taking precedence over shared tensor-scheme aliases. Keep the legacy resolver
+    /// unchanged because external baseline family normalization relies on its historical
+    /// scheme-first registry ordering.
+    /// </summary>
+    public static BaselineQuants? ResolveBuiltInStandardRoleBaseline(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
         var exactName = StandardBaselines.FirstOrDefault(x =>
             x.Names.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)));
-        if (exactName != null)
-            return exactName;
 
-        return StandardBaselines.FirstOrDefault(x =>
-            string.Equals(x.PrimaryTensorWeightScheme.Names[0], name, StringComparison.OrdinalIgnoreCase));
+        return exactName ?? ResolveBuiltInStandardBaseline(name);
     }
 
     public static IReadOnlyList<BaselineQuants> GetAllRecognizedBaselines() =>

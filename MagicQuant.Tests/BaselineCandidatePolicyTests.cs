@@ -26,10 +26,10 @@ public class BaselineCandidatePolicyTests
     }
 
     [Fact]
-    public void ResolveBuiltInStandardBaseline_PrefersCanonicalNameOverSharedTensorSchemeAlias()
+    public void ResolveBuiltInStandardRoleBaseline_PrefersCanonicalNameOverSharedTensorSchemeAlias()
     {
-        Assert.Same(BaselineQuants.IQ3_S, BaselineQuants.ResolveBuiltInStandardBaseline("IQ3_S"));
-        Assert.Same(BaselineQuants.IQ3_M, BaselineQuants.ResolveBuiltInStandardBaseline("IQ3_M"));
+        Assert.Same(BaselineQuants.IQ3_S, BaselineQuants.ResolveBuiltInStandardRoleBaseline("IQ3_S"));
+        Assert.Same(BaselineQuants.IQ3_M, BaselineQuants.ResolveBuiltInStandardRoleBaseline("IQ3_M"));
     }
 
     [Fact]

@@ -254,7 +254,7 @@ public static class MagicQuantYamlLoader
             if (string.IsNullOrWhiteSpace(raw))
                 continue;
 
-            var baseline = BaselineQuants.ResolveBuiltInStandardBaseline(raw.Trim());
+            var baseline = BaselineQuants.ResolveBuiltInStandardRoleBaseline(raw.Trim());
             if (baseline == null)
             {
                 throw new InvalidOperationException(
