@@ -67,9 +67,13 @@ public sealed class HuggingFaceBaselineService
             if (repo.Includes.Count == 0)
                 throw new InvalidOperationException($"Custom baseline repository '{repo.RepoId}' is enabled but has zero include entries.");
 
-            AnsiConsole.MarkupLine($"[cyan]Repo:[/] {Markup.Escape(repo.RepoId)} [grey](includes={repo.Includes.Count})[/]");
+            string revisionLabel = string.IsNullOrWhiteSpace(repo.Revision)
+                ? "main"
+                : repo.Revision!;
+            AnsiConsole.MarkupLine(
+                $"[cyan]Repo:[/] {Markup.Escape(repo.RepoId)} [grey](revision={Markup.Escape(revisionLabel)}, includes={repo.Includes.Count})[/]");
 
-            var repoFiles = await ListRepoFilesAsync(repo.RepoId, ct);
+            var repoFiles = await ListRepoFilesAsync(repo.RepoId, repo.Revision, ct);
             if (repoFiles.Count == 0)
                 throw new InvalidOperationException($"No files were returned from Hugging Face repo '{repo.RepoId}'.");
 
@@ -201,6 +205,7 @@ public sealed class HuggingFaceBaselineService
                     CanonicalKey = dynamicBaseline.CanonicalKey,
                     DisplayName = dynamicBaseline.Names[0],
                     RepoId = repo.RepoId,
+                    Revision = repo.Revision,
                     SourceOwner = dynamicBaseline.SourceOwner ?? string.Empty,
                     SourceFileName = dynamicBaseline.SourceFileName ?? string.Empty,
                     ShortSourceName = dynamicBaseline.ShortSourceName ?? shortSourceName,
@@ -309,6 +314,7 @@ public sealed class HuggingFaceBaselineService
             await File.WriteAllTextAsync(payloadPath, JsonSerializer.Serialize(new
             {
                 repo_id = spec.RepoId,
+                revision = spec.Revision,
                 file_name = spec.SourceFileName,
                 target_path = destinationPath,
                 force_redownload = forceRedownload,
@@ -332,6 +338,7 @@ public sealed class HuggingFaceBaselineService
             try:
                 downloaded = hf_hub_download(
                     repo_id=payload['repo_id'],
+                    revision=payload.get('revision') or None,
                     filename=payload['file_name'],
                     local_dir=os.path.dirname(target_path),
                     force_download=payload.get('force_redownload', False),
@@ -582,7 +589,10 @@ public sealed class HuggingFaceBaselineService
         await _python.RunPipInstallAsync("--upgrade huggingface_hub");
     }
 
-    private async Task<List<string>> ListRepoFilesAsync(string repoId, CancellationToken ct)
+    private async Task<List<string>> ListRepoFilesAsync(
+        string repoId,
+        string? revision,
+        CancellationToken ct)
     {
         string tempDir = Cache.ExternalBaselineCacheDirectory ?? Cache.MagicQuantDirectory ?? AppContext.BaseDirectory;
         Directory.CreateDirectory(tempDir);
@@ -593,7 +603,12 @@ public sealed class HuggingFaceBaselineService
 
         try
         {
-            await File.WriteAllTextAsync(payloadPath, JsonSerializer.Serialize(new { repo_id = repoId, result_path = resultPath }), ct);
+            await File.WriteAllTextAsync(payloadPath, JsonSerializer.Serialize(new
+            {
+                repo_id = repoId,
+                revision,
+                result_path = resultPath
+            }), ct);
 
             const string py = """
             import json
@@ -606,7 +621,10 @@ public sealed class HuggingFaceBaselineService
 
             result_path = payload['result_path']
             try:
-                files = HfApi().list_repo_files(repo_id=payload['repo_id'])
+                files = HfApi().list_repo_files(
+                    repo_id=payload['repo_id'],
+                    revision=payload.get('revision') or None,
+                )
                 result = {'success': True, 'files': files}
             except Exception as ex:
                 result = {'success': False, 'error': str(ex), 'files': []}
@@ -622,7 +640,8 @@ public sealed class HuggingFaceBaselineService
             if (!doc.RootElement.TryGetProperty("success", out var successProp) || !successProp.GetBoolean())
             {
                 string error = doc.RootElement.TryGetProperty("error", out var errProp) ? errProp.GetString() ?? "unknown error" : "unknown error";
-                throw new InvalidOperationException($"Failed listing files for Hugging Face repo '{repoId}': {error}");
+                string revisionSuffix = string.IsNullOrWhiteSpace(revision) ? string.Empty : $" at revision '{revision}'";
+                throw new InvalidOperationException($"Failed listing files for Hugging Face repo '{repoId}'{revisionSuffix}: {error}");
             }
 
             return doc.RootElement.GetProperty("files")

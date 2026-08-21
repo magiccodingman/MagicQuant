@@ -470,6 +470,114 @@ baselines:
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
+    # Unsloth replaced its dynamic-v2 files when dynamic-v3 was published. Keep
+    # the source generation explicit and reproducible instead of importing old
+    # MagicQuant winners or silently resolving these names against a moving main.
+    - repo_id: unsloth/Qwen3.8-27B-GGUF
+      revision: 313447f257f7ebde0b968e4778feef774546ed81
+      enabled: true
+      short_source_name: UnslothV2
+      source_kind: huggingface_gguf_repository
+      require_all_includes_to_resolve: true
+      validate_tensor_names_against_source_model: true
+      delete_partial_or_dirty_downloads: true
+      resume_or_retry_downloads: true
+
+      allow_as_learning_baseline: true
+      allow_as_combination_carrier: false
+      allow_as_explicit_group_candidate: false
+
+      includes:
+        - file_name: Qwen3.8-27B-UD-IQ2_M.gguf
+          baseline_family: IQ2_M
+          quantize_base_name: IQ2_M
+          display_name: Unsloth-UD-IQ2_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q3_K_S.gguf
+          baseline_family: IQ3_M
+          quantize_base_name: IQ3_S
+          display_name: Unsloth-Q3_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q3_K_M.gguf
+          baseline_family: IQ3_M
+          quantize_base_name: IQ3_M
+          display_name: Unsloth-Q3_K_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-IQ4_XS.gguf
+          baseline_family: IQ4_XS
+          quantize_base_name: IQ4_XS
+          display_name: Unsloth-IQ4_XS
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-IQ4_NL.gguf
+          baseline_family: IQ4_NL
+          quantize_base_name: IQ4_NL
+          display_name: Unsloth-IQ4_NL
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q4_K_S.gguf
+          baseline_family: Q4_K_S
+          quantize_base_name: Q4_K_S
+          display_name: Unsloth-Q4_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q4_K_M.gguf
+          baseline_family: Q4_K_M
+          quantize_base_name: Q4_K_M
+          display_name: Unsloth-Q4_K_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q5_K_S.gguf
+          baseline_family: Q5_K_S
+          quantize_base_name: Q5_K_S
+          display_name: Unsloth-Q5_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q5_K_M.gguf
+          baseline_family: Q5_K
+          quantize_base_name: Q5_K
+          display_name: Unsloth-Q5_K_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q6_K.gguf
+          baseline_family: Q6_K
+          quantize_base_name: Q6_K
+          display_name: Unsloth-Q6_K
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
 # Counterfactual synergy templates generalize confirmed contextual anomaly evidence.
 # anomaly_detection remains the low-level compatibility section; synergy_detection controls
 # template transfer, composition probes, contamination suppression, and wing diagnostics.

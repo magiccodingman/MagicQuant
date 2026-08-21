@@ -728,8 +728,9 @@ public class Evolution : ICommand
             bool inCarriers = carriers.Any(x => x.UniqueId == custom.DynamicBaselineId);
             bool inExplicit = explicitCandidates.Any(x => x.UniqueId == custom.DynamicBaselineId);
 
+            string revision = string.IsNullOrWhiteSpace(custom.Revision) ? "main" : custom.Revision;
             AnsiConsole.MarkupLine(
-                $"  [cyan]{custom.DynamicBaselineId}[/] [yellow]{Markup.Escape(custom.DisplayName)}[/] family={Markup.Escape(custom.BaselineFamily)} file={Markup.Escape(custom.SourceFileName)} learning={inLearning} carrier={inCarriers} explicit={inExplicit}");
+                $"  [cyan]{custom.DynamicBaselineId}[/] [yellow]{Markup.Escape(custom.DisplayName)}[/] family={Markup.Escape(custom.BaselineFamily)} file={Markup.Escape(custom.SourceFileName)} revision={Markup.Escape(revision)} learning={inLearning} carrier={inCarriers} explicit={inExplicit}");
         }
     }
 

@@ -414,6 +414,9 @@ baselines:
     # - "quantize_base_name" is the quant/base family name used in rebuild logic
     #
     # - repo_id: unsloth/Qwen3-4B-Instruct-2507-GGUF
+    #   # Optional branch, tag, or commit. Pin this when a provider rotates files
+    #   # so tensor digestion and later downloads remain reproducible.
+    #   revision:
     #   enabled: true
     #   short_source_name: UD
     #   source_kind: huggingface_gguf_repository

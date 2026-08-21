@@ -168,6 +168,14 @@ public static class MagicQuantYamlLoader
         config.AnomalyDetection.MaxConfirmedPairwiseOrderingAdjustmentKld = Math.Max(0d, config.AnomalyDetection.MaxConfirmedPairwiseOrderingAdjustmentKld);
         config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone = Math.Max(1, config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone);
 
+        foreach (var repository in config.Baselines.CustomRepositories)
+        {
+            repository.RepoId = repository.RepoId.Trim();
+            repository.Revision = string.IsNullOrWhiteSpace(repository.Revision)
+                ? null
+                : repository.Revision.Trim();
+        }
+
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
     }

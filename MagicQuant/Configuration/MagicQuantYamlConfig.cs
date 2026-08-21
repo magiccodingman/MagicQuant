@@ -421,6 +421,7 @@ public sealed class RuntimeBaselineConfig
 public sealed class CustomBaselineRepositoryConfig
 {
     public string RepoId { get; set; } = string.Empty;
+    public string? Revision { get; set; }
     public string? ShortSourceName { get; set; }
     public string SourceKind { get; set; } = "huggingface_gguf_repository";
     public bool Enabled { get; set; } = true;
@@ -454,6 +455,7 @@ public sealed class ResolvedCustomBaselineSpec
     public string CanonicalKey { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string RepoId { get; set; } = string.Empty;
+    public string? Revision { get; set; }
     public string SourceOwner { get; set; } = string.Empty;
     public string SourceFileName { get; set; } = string.Empty;
     public string ShortSourceName { get; set; } = string.Empty;
