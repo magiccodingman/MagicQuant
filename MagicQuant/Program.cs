@@ -18,16 +18,11 @@ if (args.Length == 0)
         args =
         [
             "clone-repository-quants",
-            "--config", Path.Combine(AppContext.BaseDirectory, "config.clone-unsloth.dev.yaml"),
+            "--config", $"\"{Path.Combine(AppContext.BaseDirectory, "config.clone-unsloth.dev.yaml")}\"",
             "--architecture-family", @"""Qwen3.8-27B""",
-            "--source-repo", @"""magiccodingman/Qwen3.8-27B-MagicQuant-GGUF""",
+            "--source-json", @"""/mnt/world8/AI/Models/Qwen3.8-27B-MagicQuant/magicquant-manifest/magicquant.clone-configs.json""",
             "--model-dir", @"""/mnt/world8/AI/Models/Qwen3.8-27B-Qwen/""",
-            "--output-dir", @"""/mnt/world8/AI/Models/Qwen3.8-27B-MagicQuant-Unsloth/""",
-            "--use-imatrix",
-            "--imatrix-url", @"""https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/imatrix_unsloth.dat?download=true""",
-            "--allow-architecture-family-alias-override",
-            "--missing-manifest-base-quant", "Q8_0",
-            "--reuse-existing-final-artifacts"
+            "--output-dir", @"""/mnt/world8/AI/Models/Qwen3.8-27B-MagicQuant-Unsloth/"""
         ];
     }
     else

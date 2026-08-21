@@ -16,12 +16,12 @@ hardware:
     0: 19
     1: 23
 
-# The actual Unsloth imatrix URL is supplied by the DEBUG clone args in Program.cs.
-# Keep the other source modes empty so ImatrixService sees exactly one active source.
+# Prebuilt Unsloth imatrix. Keep the other source modes empty so ImatrixService
+# sees exactly one active source.
 imatrix:
-  imatrix_url:
+  imatrix_url: "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/imatrix_unsloth.gguf?download=true"
   dataset_repo:
-  dataset_split: text
+  dataset_split:
   dataset_config:
   dataset_local_file:
 
