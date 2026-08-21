@@ -502,6 +502,13 @@ synergy_detection:
     mid_fidelity_reference_quants: [Q4_K_M]
     low_fidelity_reference_quants: [IQ3_S]
     low_fidelity_enabled: false
+  # Remeasure the best and runner-up same-bit isolation recipes head-to-head inside
+  # controlled contexts. This detects context-dependent rank flips without replaying
+  # an old winning mixture. Low-fidelity contexts remain governed by the opt-in above.
+  exploratory_context_pair_enabled: true
+  max_exploratory_context_pairs_per_run: 14
+  exploratory_pair_bit_ranges: [4]
+  exploratory_pair_context_strata: [mid-fidelity, low-fidelity]
   # Match rules against their measured effective surrounding-group context,
   # independent of the search row's carrier quant. Rule-selected groups are excluded.
   context_scoped_rule_application_enabled: true

@@ -391,6 +391,10 @@ synergy_detection:
     mid_fidelity_reference_quants: [Q4_K_M]
     low_fidelity_reference_quants: [IQ3_S]
     low_fidelity_enabled: false
+  exploratory_context_pair_enabled: true
+  max_exploratory_context_pairs_per_run: 14
+  exploratory_pair_bit_ranges: [4]
+  exploratory_pair_context_strata: [mid-fidelity, low-fidelity]
   context_scoped_rule_application_enabled: true
   max_non_rule_group_context_mismatches: 1
   verbose_synergy_logging: true

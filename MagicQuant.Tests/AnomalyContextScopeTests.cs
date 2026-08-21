@@ -1,4 +1,5 @@
 using MagicQuant.Configuration;
+using MagicQuant.Models;
 using MagicQuant.Services;
 using MQ.DB;
 using MQ.DB.Models;
@@ -135,6 +136,47 @@ public sealed class AnomalyContextScopeTests
         finally
         {
             Config.Load(priorConfig);
+        }
+    }
+
+    [Fact]
+    public void RuleSuppressionKey_DistinguishesEffectiveSurroundingContext()
+    {
+        var priorUnusedGroups = Cache.UnusedTensorGroups.ToList();
+
+        try
+        {
+            Cache.UnusedTensorGroups.Clear();
+            var movement = new QuantFidelityComparerService();
+            var repository = new AnomalyRuleRepository(movement);
+            var q8Context = movement.CreateActivatedContextBlanket(BaselineQuants.Q8_0.UniqueId);
+            var q4PassengerContext = movement.WithStoredSlot(
+                q8Context,
+                TReg.LmHead,
+                BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.Q4_K_M));
+            var changed = new List<AnomalyChangedGroup>
+            {
+                new()
+                {
+                    Group = TReg.Embeddings,
+                    ReferenceQuantId = BaselineQuants.Q8_0.UniqueId,
+                    CandidateQuantId = BaselineQuants.Q6_K.UniqueId,
+                    ReferenceStoredSlot = BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.Q8_0),
+                    CandidateStoredSlot = BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.Q6_K),
+                    Movement = QuantMovementKind.Downgrade
+                }
+            };
+
+            string q8Key = repository.BuildRuleSuppressionKey(q8Context, changed);
+            string q4PassengerKey = repository.BuildRuleSuppressionKey(q4PassengerContext, changed);
+
+            Assert.NotEqual(q8Key, q4PassengerKey);
+            Assert.Contains($"{TReg.LmHead.UniqueId}:{BaselineQuants.Q4_K_M.UniqueId}", q4PassengerKey, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Cache.UnusedTensorGroups.Clear();
+            Cache.UnusedTensorGroups.AddRange(priorUnusedGroups);
         }
     }
 }

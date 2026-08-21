@@ -203,6 +203,7 @@ public sealed class ProbePlanningDiagnostics
     public int ExpansionProbesQueued { get; set; }
     public int CompositionProbesQueued { get; set; }
     public int TransferProbesQueued { get; set; }
+    public int ExploratoryPairProbesQueued { get; set; }
     public int SkippedContaminationSuppression { get; set; }
 }
 

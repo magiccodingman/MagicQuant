@@ -199,6 +199,15 @@ public static class MagicQuantYamlLoader
         s.TransferProbeContextStrata.HighFidelityReferenceQuants ??= new List<string>();
         s.TransferProbeContextStrata.MidFidelityReferenceQuants ??= new List<string>();
         s.TransferProbeContextStrata.LowFidelityReferenceQuants ??= new List<string>();
+        s.MaxExploratoryContextPairsPerRun = Math.Max(0, s.MaxExploratoryContextPairsPerRun);
+        s.ExploratoryPairBitRanges ??= new List<int>();
+        s.ExploratoryPairBitRanges = s.ExploratoryPairBitRanges.Where(x => x is >= 1 and <= 16).Distinct().OrderBy(x => x).ToList();
+        s.ExploratoryPairContextStrata ??= new List<string>();
+        s.ExploratoryPairContextStrata = s.ExploratoryPairContextStrata
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         s.MaxNonRuleGroupContextMismatches = Math.Clamp(s.MaxNonRuleGroupContextMismatches, 0, 9);
         s.MinSmokeScore = Math.Clamp(s.MinSmokeScore, 0d, 1d);
         s.MaxSmokeGapKld = Math.Max(0d, s.MaxSmokeGapKld);

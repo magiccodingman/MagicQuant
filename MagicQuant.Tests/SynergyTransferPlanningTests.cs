@@ -57,4 +57,44 @@ public sealed class SynergyTransferPlanningTests
         Assert.False(built);
         Assert.Empty(changed);
     }
+
+    [Fact]
+    public void ControlledRankPair_ComparesTwoRecipesInsideSameLowFidelityBlanket()
+    {
+        var priorUnusedGroups = Cache.UnusedTensorGroups.ToList();
+
+        try
+        {
+            Cache.UnusedTensorGroups.Clear();
+
+            bool built = AnomalyWorkflowService.TryBuildControlledRankPairConfig(
+                BaselineQuants.IQ3_S.UniqueId,
+                TReg.Embeddings,
+                BaselineQuants.Q4_K_M.UniqueId,
+                BaselineQuants.IQ4_NL.UniqueId,
+                out var reference,
+                out var probe,
+                out var changed);
+
+            Assert.True(built);
+            var movement = new QuantFidelityComparerService();
+            Assert.Equal(BaselineQuants.Q4_K_M.UniqueId, movement.EffectiveQuantId(reference, TReg.Embeddings));
+            Assert.Equal(BaselineQuants.IQ4_NL.UniqueId, movement.EffectiveQuantId(probe, TReg.Embeddings));
+            Assert.All(movement.ActiveGroups.Where(x => x.UniqueId != TReg.Embeddings.UniqueId), group =>
+            {
+                Assert.Equal(BaselineQuants.IQ3_S.UniqueId, movement.EffectiveQuantId(reference, group));
+                Assert.Equal(BaselineQuants.IQ3_S.UniqueId, movement.EffectiveQuantId(probe, group));
+            });
+
+            var groupChange = Assert.Single(changed);
+            Assert.Equal(BaselineQuants.Q4_K_M.UniqueId, groupChange.ReferenceQuantId);
+            Assert.Equal(BaselineQuants.IQ4_NL.UniqueId, groupChange.CandidateQuantId);
+            Assert.Equal(QuantMovementKind.LateralOrEquivalent, groupChange.Movement);
+        }
+        finally
+        {
+            Cache.UnusedTensorGroups.Clear();
+            Cache.UnusedTensorGroups.AddRange(priorUnusedGroups);
+        }
+    }
 }

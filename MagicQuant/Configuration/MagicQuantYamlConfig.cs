@@ -364,6 +364,10 @@ public sealed class RuntimeSynergyDetectionConfig
     public int MaxTransferProbesPerTemplate { get; set; } = 6;
     public int MaxTotalTransferProbesPerRun { get; set; } = 24;
     public RuntimeSynergyTransferProbeContextStrataConfig TransferProbeContextStrata { get; set; } = new();
+    public bool ExploratoryContextPairEnabled { get; set; } = true;
+    public int MaxExploratoryContextPairsPerRun { get; set; } = 14;
+    public List<int> ExploratoryPairBitRanges { get; set; } = [4];
+    public List<string> ExploratoryPairContextStrata { get; set; } = ["mid-fidelity", "low-fidelity"];
     public bool ContextScopedRuleApplicationEnabled { get; set; } = true;
     public int MaxNonRuleGroupContextMismatches { get; set; } = 1;
     public bool VerboseSynergyLogging { get; set; } = true;
