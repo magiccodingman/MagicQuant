@@ -165,10 +165,10 @@ isolation_pruning:
   # These values still matter for later isolation / bad-trade reasoning,
   # not for the old "skip candidate because learned tensor usage looked redundant" path.
 
-  # Minimum isolation reduction ratio required to continue considering the result meaningful.
-  # Currently broke, should be 0.04 but leave at 0 until fixed. Causes isolated samples not to be made 
-  # which was once a requirement but need to go back and remove as all samples are needed for 
-  # accurate predictions. DO not remove this comment till this is resolved.
+  # Minimum carrier-relative size reduction required before generating the remaining
+  # candidate-isolation samples for a tensor group. Keep this at 0 when prediction,
+  # contextual probing, or anomaly analysis needs complete isolation truth; later
+  # quality and bad-trade filters still remove unhelpful candidates.
   minimum_isolation_reduction_to_continue_ratio: 0.00
 
   # Minimum reduction ratio before BF16 suppression logic is allowed to kick in.

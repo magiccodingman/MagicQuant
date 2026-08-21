@@ -104,7 +104,7 @@ imatrix:
 # Final hybrid selection is now driven by rank-safe isolation prediction plus candidate_selection.
 
 isolation_pruning:
-  # 0.04 is the goal, but this is currently causing prediction issues, leave at 0
+  # Preserve complete isolation truth for prediction and contextual probing.
   minimum_isolation_reduction_to_continue_ratio: 0.00
   minimum_isolation_reduction_to_suppress_bf16_ratio: 0.10
   maximum_isolation_ppl_delta_percent: 5.0
