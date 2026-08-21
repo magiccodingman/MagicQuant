@@ -36,6 +36,24 @@ public class BenchmarkGpuPlanningTests
         Assert.InRange(gib, 22d, 27d);
     }
 
+    [Theory]
+    [InlineData(true, 20_000_000_000UL, true)]
+    [InlineData(false, 20_000_000_000UL, false)]
+    [InlineData(true, 26_000_000_000UL, false)]
+    public void ShouldUseIndependentTopology_RequiresConcurrentBatchIntent(
+        bool allowIndependentTopology,
+        ulong modelSizeBytes,
+        bool expected)
+    {
+        bool result = BenchmarkGpuPlanner.ShouldUseIndependentTopology(
+            modelSizeBytes,
+            independentMaxModelSizeBytes: 25_000_000_000UL,
+            independentSlotCount: 2,
+            allowIndependentTopology);
+
+        Assert.Equal(expected, result);
+    }
+
     [Fact]
     public async Task ResourceScheduler_ReservesDisjointSingleGpuSlotsConcurrently()
     {
