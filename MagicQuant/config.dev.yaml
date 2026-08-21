@@ -267,7 +267,10 @@ baselines:
   # Use Unsloth GGUFs for dynamic learning/search while retaining the built-in
   # Q8 anchor required by the execution-plan and baseline pipeline.
   standard_baselines_mode: selected
-  enabled_standard_learning_baselines: [Q8_0]
+  # Controlled fidelity probes use these provider-neutral blankets. They must be
+  # learned so base-quant exception tensors have complete carrier mappings, but
+  # only Q8 remains a search carrier to avoid multiplying the global combinatorics.
+  enabled_standard_learning_baselines: [Q8_0, Q6_K, Q5_K, Q4_K_M, IQ3_S]
   enabled_standard_combination_carriers: [Q8_0]
   enabled_standard_explicit_group_candidates: [Q8_0]
 

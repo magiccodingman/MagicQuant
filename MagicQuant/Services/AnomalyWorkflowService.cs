@@ -1280,11 +1280,16 @@ public sealed class AnomalyWorkflowService
 
     private static List<SynergyTransferContext> ResolveTransferTargetContexts(RuntimeSynergyTransferProbeContextStrataConfig strata)
     {
+        var learnedContextIds = BaselineQuants
+            .GetLearningBaselines(RuntimeSearchSpace.HasUsableImatrix())
+            .Select(x => x.UniqueId)
+            .ToHashSet();
         var byName = BaselineQuants.All
             .SelectMany(x => x.Names.Select(name => (Name: name, Quant: x)))
             .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, x => x.First().Quant, StringComparer.OrdinalIgnoreCase);
         var contexts = new List<SynergyTransferContext>();
+        var skippedWithoutLearnedCarrier = new List<string>();
 
         void add(IEnumerable<string> names, string stratum)
         {
@@ -1292,6 +1297,16 @@ public sealed class AnomalyWorkflowService
             {
                 if (!byName.TryGetValue(name.Trim(), out var quant) || BaselineQuants.IsNativeExactAlias(quant.UniqueId))
                     continue;
+
+                // Context blankets need a complete learned tensor map for their base so
+                // base-quant exception tensors can be reconstructed alongside explicit
+                // group overrides. In selected-baseline mode, a recognized built-in name
+                // is not necessarily enabled as a learning baseline.
+                if (!learnedContextIds.Contains(quant.UniqueId))
+                {
+                    skippedWithoutLearnedCarrier.Add($"{name.Trim()} ({stratum})");
+                    continue;
+                }
 
                 if (contexts.All(x => x.QuantId != quant.UniqueId))
                     contexts.Add(new SynergyTransferContext(quant.UniqueId, stratum));
@@ -1302,6 +1317,14 @@ public sealed class AnomalyWorkflowService
         add(strata.MidFidelityReferenceQuants, "mid-fidelity");
         if (strata.LowFidelityEnabled)
             add(strata.LowFidelityReferenceQuants, "low-fidelity");
+
+        if (skippedWithoutLearnedCarrier.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Controlled context skipped:[/] no learned base-carrier mapping is configured for " +
+                $"{Markup.Escape(string.Join(", ", skippedWithoutLearnedCarrier.Distinct(StringComparer.OrdinalIgnoreCase)))}. " +
+                "Enable these names in baselines.enabled_standard_learning_baselines or configure learned external baseline names.");
+        }
 
         return contexts;
     }
