@@ -163,9 +163,9 @@ candidate_selection:
   # Strict epsilon for lower-KLD comparisons after real benchmark validation.
   minimum_kld_improvement_epsilon: 1.0e-9
 
-  # Final spacing pass: candidates closer than this fraction of the global survivor
-  # size span are collapsed unless one genuinely earns the slot.
-  minimum_neighbor_gap_fraction_of_global_span: 0.03
+  # This campaign is the publishable union frontier: retain every nondominated
+  # size/quality tradeoff instead of collapsing nearby points for a shorter list.
+  minimum_neighbor_gap_fraction_of_global_span: 0.00
 
   # Extra-brutal zone near the smaller anchor. A candidate this close to the smaller
   # anchor must provide a stronger KLD gain to justify its existence.
