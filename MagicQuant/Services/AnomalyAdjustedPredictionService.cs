@@ -302,7 +302,53 @@ WHERE {where};", ct);
             predicates.Add($"{EffectiveQuantSql(alias, column)} = {state.CandidateQuantId}");
         }
 
+        string contextFidelityPredicate = BuildContextFidelityPredicate(rule, alias);
+        if (!string.IsNullOrWhiteSpace(contextFidelityPredicate))
+            predicates.Add(contextFidelityPredicate);
+
         return string.Join(" AND ", predicates);
+    }
+
+    internal static string BuildContextFidelityPredicate(AnomalyInteractionRule rule, string? alias)
+    {
+        if (!Config.SynergyDetection.ContextScopedRuleApplicationEnabled)
+            return string.Empty;
+
+        var fidelity = new QuantFidelityComparerService();
+        int referenceTier = fidelity.EffectiveTier(rule.ReferenceQuantId);
+        if (referenceTier < 0)
+            return string.Empty;
+
+        byte[] lowerFidelityQuantIds = BaselineQuants.All
+            .Select(x => (Quant: x, Tier: fidelity.EffectiveTier(x.UniqueId)))
+            .Where(x => !x.Quant.IsHighPrecisionExactAlias && x.Tier >= 0 && x.Tier < referenceTier)
+            .Select(x => x.Quant.UniqueId)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToArray();
+
+        if (lowerFidelityQuantIds.Length == 0)
+            return string.Empty;
+
+        var ruleGroupIds = rule.GroupStates
+            .Select(x => x.TensorGroupId)
+            .ToHashSet();
+        string lowerIds = string.Join(", ", lowerFidelityQuantIds);
+        string[] terms = ActiveGroups()
+            .Where(group => !ruleGroupIds.Contains(group.UniqueId))
+            .Select(group => ColumnNameForGroupId(group.UniqueId))
+            .Where(column => column != null)
+            .Select(column => $"CASE WHEN {EffectiveQuantSql(alias, column!)} IN ({lowerIds}) THEN 1 ELSE 0 END")
+            .ToArray();
+
+        if (terms.Length == 0)
+            return string.Empty;
+
+        int maximumBelowReferenceTier = Math.Clamp(
+            Config.SynergyDetection.MaxNonRuleGroupsBelowReferenceTier,
+            0,
+            terms.Length);
+        return $"(({string.Join(" + ", terms)}) <= {maximumBelowReferenceTier})";
     }
 
     private static string BuildPairwiseTwinJoinPredicate(AnomalyInteractionRule rule, string candidateAlias, string twinAlias)

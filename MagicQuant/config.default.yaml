@@ -499,6 +499,10 @@ synergy_detection:
     high_fidelity_max_non_reference_groups_below_q6: 1
     mid_fidelity_max_non_reference_groups_below_q6: 3
     low_fidelity_enabled: false
+  # Prevent a rule measured in a high-fidelity blanket from silently affecting
+  # a much lower-fidelity surrounding mix. Rule-selected groups are excluded.
+  context_scoped_rule_application_enabled: true
+  max_non_rule_groups_below_reference_tier: 1
   verbose_synergy_logging: true
   min_smoke_score: 0.55
   max_smoke_gap_kld: 0.004

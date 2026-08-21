@@ -364,6 +364,8 @@ public sealed class RuntimeSynergyDetectionConfig
     public int MaxTransferProbesPerTemplate { get; set; } = 6;
     public int MaxTotalTransferProbesPerRun { get; set; } = 24;
     public RuntimeSynergyTransferProbeContextStrataConfig TransferProbeContextStrata { get; set; } = new();
+    public bool ContextScopedRuleApplicationEnabled { get; set; } = true;
+    public int MaxNonRuleGroupsBelowReferenceTier { get; set; } = 1;
     public bool VerboseSynergyLogging { get; set; } = true;
     public double MinSmokeScore { get; set; } = 0.55d;
     public double MaxSmokeGapKld { get; set; } = 0.004d;

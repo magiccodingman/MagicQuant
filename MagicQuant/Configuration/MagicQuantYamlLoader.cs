@@ -198,6 +198,7 @@ public static class MagicQuantYamlLoader
         s.TransferProbeContextStrata ??= new RuntimeSynergyTransferProbeContextStrataConfig();
         s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6);
         s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6);
+        s.MaxNonRuleGroupsBelowReferenceTier = Math.Clamp(s.MaxNonRuleGroupsBelowReferenceTier, 0, 9);
         s.MinSmokeScore = Math.Clamp(s.MinSmokeScore, 0d, 1d);
         s.MaxSmokeGapKld = Math.Max(0d, s.MaxSmokeGapKld);
         s.TopRejectedSmokePreview = Math.Max(1, s.TopRejectedSmokePreview);
