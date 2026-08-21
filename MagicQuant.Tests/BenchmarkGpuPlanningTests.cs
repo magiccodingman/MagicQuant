@@ -55,6 +55,67 @@ public class BenchmarkGpuPlanningTests
     }
 
     [Fact]
+    public void RankIndependentSlots_NearFullCandidateUsesWeakerDevice()
+    {
+        var slots = new[]
+        {
+            Slot(0, 44, (35, 6.5), (44, 5.4)),
+            Slot(1, 57, (48, 4.3), (57, 3.1))
+        };
+
+        var ranked = BenchmarkGpuPlanner.RankIndependentSlotsForModel(
+            slots,
+            Q8Size,
+            maxOffloadNgl: 66,
+            modelSizeBytes: 19_500_000_000UL);
+
+        Assert.Equal(0, ranked[0].DeviceIndices[0]);
+        Assert.Equal(65, BenchmarkGpuPlanner.ResolveNglForModel(Q8Size, 44, 66, 19_500_000_000UL));
+    }
+
+    [Fact]
+    public void RankIndependentSlots_LargeCandidateUsesStrongerDevice()
+    {
+        var slots = new[]
+        {
+            Slot(0, 44, (35, 6.5), (44, 5.4)),
+            Slot(1, 57, (48, 4.3), (57, 3.1))
+        };
+
+        var ranked = BenchmarkGpuPlanner.RankIndependentSlotsForModel(
+            slots,
+            Q8Size,
+            maxOffloadNgl: 66,
+            modelSizeBytes: 22_900_000_000UL);
+
+        Assert.Equal(1, ranked[0].DeviceIndices[0]);
+        Assert.True(
+            BenchmarkGpuPlanner.ResolveNglForModel(Q8Size, 44, 66, 22_900_000_000UL) <
+            BenchmarkGpuPlanner.ResolveNglForModel(Q8Size, 57, 66, 22_900_000_000UL));
+    }
+
+    [Fact]
+    public async Task ResourceScheduler_UsesCandidateSpecificSlotRanking()
+    {
+        var scheduler = new GpuResourceScheduler();
+        var slots = new[]
+        {
+            Slot(0, 44, (35, 6.5), (44, 5.4)),
+            Slot(1, 57, (48, 4.3), (57, 3.1))
+        };
+        var smaller = BenchmarkGpuPlanner.RankIndependentSlotsForModel(
+            slots, Q8Size, 66, 19_500_000_000UL);
+        var larger = BenchmarkGpuPlanner.RankIndependentSlotsForModel(
+            slots, Q8Size, 66, 22_900_000_000UL);
+
+        await using var first = await scheduler.AcquireAsync(smaller);
+        await using var second = await scheduler.AcquireAsync(larger);
+
+        Assert.Equal(0, first.Slot.DeviceIndices[0]);
+        Assert.Equal(1, second.Slot.DeviceIndices[0]);
+    }
+
+    [Fact]
     public async Task ResourceScheduler_ReservesDisjointSingleGpuSlotsConcurrently()
     {
         var scheduler = new GpuResourceScheduler();

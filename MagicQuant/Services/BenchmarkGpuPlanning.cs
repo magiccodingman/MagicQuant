@@ -159,6 +159,7 @@ internal static class BenchmarkTopologyCacheCodec
 internal static class BenchmarkGpuPlanner
 {
     internal const double DefaultIndependentSpeedupMargin = 1.10d;
+    internal const int NearFullOffloadToleranceLayers = 1;
 
     public static bool ShouldUseIndependentTopology(
         ulong modelSizeBytes,
@@ -184,6 +185,53 @@ internal static class BenchmarkGpuPlanner
 
         double scaled = Math.Floor(q8StableNgl * (q8ModelSizeBytes / (double)modelSizeBytes));
         return (int)Math.Clamp(scaled, 0d, maxOffloadNgl);
+    }
+
+    public static IReadOnlyList<BenchmarkSlot> RankIndependentSlotsForModel(
+        IReadOnlyList<BenchmarkSlot> slots,
+        ulong q8ModelSizeBytes,
+        int maxOffloadNgl,
+        ulong modelSizeBytes,
+        int nearFullOffloadToleranceLayers = NearFullOffloadToleranceLayers)
+    {
+        ArgumentNullException.ThrowIfNull(slots);
+        if (slots.Count <= 1 || q8ModelSizeBytes == 0 || modelSizeBytes == 0 || maxOffloadNgl <= 0)
+            return slots;
+
+        int nearFullThreshold = Math.Max(0, maxOffloadNgl - Math.Max(0, nearFullOffloadToleranceLayers));
+        var ranked = slots
+            .Select(slot => new
+            {
+                Slot = slot,
+                Ngl = ResolveNglForModel(
+                    q8ModelSizeBytes,
+                    slot.Q8StableNgl,
+                    maxOffloadNgl,
+                    modelSizeBytes)
+            })
+            .ToArray();
+
+        // A weaker device that is at most one layer shy of full offload is the best fit:
+        // using it preserves the stronger device for a larger concurrent model. When only
+        // one device is close to full offload, prefer that device. Otherwise use the device
+        // that can offload the most layers and accept the unavoidable partial-offload tail.
+        if (ranked.Any(x => x.Ngl >= nearFullThreshold))
+        {
+            return ranked
+                .OrderByDescending(x => x.Ngl >= nearFullThreshold)
+                .ThenBy(x => x.Ngl >= nearFullThreshold ? x.Slot.Q8StableNgl : int.MaxValue)
+                .ThenByDescending(x => x.Ngl)
+                .ThenBy(x => x.Slot.SlotId)
+                .Select(x => x.Slot)
+                .ToArray();
+        }
+
+        return ranked
+            .OrderByDescending(x => x.Ngl)
+            .ThenByDescending(x => x.Slot.Q8StableNgl)
+            .ThenBy(x => x.Slot.SlotId)
+            .Select(x => x.Slot)
+            .ToArray();
     }
 
     public static ulong EstimateIndependentCrossoverBytes(

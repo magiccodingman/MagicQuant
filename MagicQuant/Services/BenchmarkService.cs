@@ -1127,15 +1127,25 @@ public class BenchmarkService
             throw new InvalidOperationException(
                 "Benchmark execution plan has not been initialized. Call EnsureExecutionPlanAsync() first.");
 
-        BenchmarkTopologyProfile profile = BenchmarkGpuPlanner.ShouldUseIndependentTopology(
+        bool useIndependentTopology = BenchmarkGpuPlanner.ShouldUseIndependentTopology(
                 modelSizeBytes,
                 _currentPlan.IndependentMaxModelSizeBytes,
                 _currentPlan.IndependentProfile.Slots.Count,
-                allowIndependentTopology)
-                ? _currentPlan.IndependentProfile
-                : _currentPlan.SharedProfile;
+                allowIndependentTopology);
 
-        return await _resourceScheduler.AcquireAsync(profile.Slots, ct);
+        BenchmarkTopologyProfile profile = useIndependentTopology
+            ? _currentPlan.IndependentProfile
+            : _currentPlan.SharedProfile;
+
+        IReadOnlyList<BenchmarkSlot> candidates = useIndependentTopology
+            ? BenchmarkGpuPlanner.RankIndependentSlotsForModel(
+                profile.Slots,
+                _currentPlan.Q8ModelSizeBytes,
+                _currentPlan.MaxCandidateNgl,
+                modelSizeBytes)
+            : profile.Slots;
+
+        return await _resourceScheduler.AcquireAsync(candidates, ct);
     }
 
     // ----------------------------------------------------------------
