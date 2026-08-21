@@ -1120,17 +1120,18 @@ public class BenchmarkService
 
     private static async ValueTask<GpuResourceScheduler.GpuResourceLease> AcquireBenchmarkSlotAsync(
         ulong modelSizeBytes,
+        bool allowIndependentTopology,
         CancellationToken ct = default)
     {
         if (_currentPlan == null)
             throw new InvalidOperationException(
                 "Benchmark execution plan has not been initialized. Call EnsureExecutionPlanAsync() first.");
 
-        BenchmarkTopologyProfile profile =
-            _currentPlan.IndependentMaxModelSizeBytes > 0 &&
-            modelSizeBytes > 0 &&
-            modelSizeBytes <= _currentPlan.IndependentMaxModelSizeBytes &&
-            _currentPlan.IndependentProfile.Slots.Count > 0
+        BenchmarkTopologyProfile profile = BenchmarkGpuPlanner.ShouldUseIndependentTopology(
+                modelSizeBytes,
+                _currentPlan.IndependentMaxModelSizeBytes,
+                _currentPlan.IndependentProfile.Slots.Count,
+                allowIndependentTopology)
                 ? _currentPlan.IndependentProfile
                 : _currentPlan.SharedProfile;
 
@@ -1297,7 +1298,8 @@ public class BenchmarkService
         int? startNgl = null,
         string? klLogitsDir = null,
         bool saveLogits = false,
-        IReadOnlyCollection<string>? domainsOverride = null)
+        IReadOnlyCollection<string>? domainsOverride = null,
+        bool allowIndependentGpuTopology = true)
     {
         Directory.CreateDirectory(benchDir);
 
@@ -1314,7 +1316,8 @@ public class BenchmarkService
                 klLogitsDir: klLogitsDir,
                 saveLogits: saveLogits,
                 requestedDomains: requestedDomains,
-                requireKld: requireKld);
+                requireKld: requireKld,
+                allowIndependentGpuTopology: allowIndependentGpuTopology);
         }
 
         using var db = new MagicQuantContext();
@@ -1409,7 +1412,9 @@ public class BenchmarkService
         }
 
         ulong modelSizeBytes = TryGetModelSize(modelPath);
-        await using var slotLease = await AcquireBenchmarkSlotAsync(modelSizeBytes);
+        await using var slotLease = await AcquireBenchmarkSlotAsync(
+            modelSizeBytes,
+            allowIndependentGpuTopology);
         var slot = slotLease.Slot;
 
         int initialNgl = ResolveDynamicNglForModel(modelSizeBytes, slot);
@@ -1545,7 +1550,8 @@ public class BenchmarkService
         string? klLogitsDir,
         bool saveLogits,
         IReadOnlyCollection<string> requestedDomains,
-        bool requireKld)
+        bool requireKld,
+        bool allowIndependentGpuTopology)
     {
         if (TryReadExistingBenchmarkArtifacts(benchDir, requestedDomains, requireKld, out var reused))
         {
@@ -1562,7 +1568,9 @@ public class BenchmarkService
         }
 
         ulong modelSizeBytes = TryGetModelSize(modelPath);
-        await using var slotLease = await AcquireBenchmarkSlotAsync(modelSizeBytes);
+        await using var slotLease = await AcquireBenchmarkSlotAsync(
+            modelSizeBytes,
+            allowIndependentGpuTopology);
         var slot = slotLease.Slot;
 
         int initialNgl = ResolveDynamicNglForModel(modelSizeBytes, slot);

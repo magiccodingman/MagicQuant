@@ -160,6 +160,17 @@ internal static class BenchmarkGpuPlanner
 {
     internal const double DefaultIndependentSpeedupMargin = 1.10d;
 
+    public static bool ShouldUseIndependentTopology(
+        ulong modelSizeBytes,
+        ulong independentMaxModelSizeBytes,
+        int independentSlotCount,
+        bool allowIndependentTopology)
+        => allowIndependentTopology &&
+           independentMaxModelSizeBytes > 0 &&
+           modelSizeBytes > 0 &&
+           modelSizeBytes <= independentMaxModelSizeBytes &&
+           independentSlotCount > 0;
+
     public static int ResolveNglForModel(
         ulong q8ModelSizeBytes,
         int q8StableNgl,

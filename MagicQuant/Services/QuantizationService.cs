@@ -254,7 +254,11 @@ public class QuantizationService
             },
             async (baselinePlan, token) =>
             {
-                records.Add(await ExecutePlanAsync(baselinePlan, stageProgress, token));
+                records.Add(await ExecutePlanAsync(
+                    baselinePlan,
+                    stageProgress,
+                    allowIndependentGpuTopology: learnableBaselinePlans.Count > 1,
+                    ct: token));
             });
 
         var remainingPlans = plans.Except(learnableBaselinePlans).ToList();
@@ -302,12 +306,21 @@ public class QuantizationService
             new ParallelOptions { MaxDegreeOfParallelism = workerCount, CancellationToken = ct },
             async (group, token) =>
             {
-                records.Add(await ExecutePlanAsync(group.Source, stageProgress, token));
+                records.Add(await ExecutePlanAsync(
+                    group.Source,
+                    stageProgress,
+                    allowIndependentGpuTopology: primaryGroups.Count > 1,
+                    ct: token));
 
                 foreach (var duplicatePlan in group.Duplicates)
                 {
                     token.ThrowIfCancellationRequested();
-                    records.Add(await ExecuteDuplicatePlanAsync(group.Source, duplicatePlan, stageProgress, token));
+                    records.Add(await ExecuteDuplicatePlanAsync(
+                        group.Source,
+                        duplicatePlan,
+                        stageProgress,
+                        allowIndependentGpuTopology: primaryGroups.Count > 1,
+                        ct: token));
                 }
             });
 
@@ -338,6 +351,7 @@ public class QuantizationService
     private async Task<SampleProcessingRecord> ExecutePlanAsync(
         RequiredSamplePlan plan,
         StageProgressTracker? progress,
+        bool allowIndependentGpuTopology,
         CancellationToken ct)
     {
         var record = new SampleProcessingRecord
@@ -349,7 +363,10 @@ public class QuantizationService
 
         try
         {
-            var state = await ProcessHybridQuantAsync(plan.Quant, ct);
+            var state = await ProcessHybridQuantAsync(
+                plan.Quant,
+                allowIndependentGpuTopology,
+                ct);
             sw.Stop();
             record.State = state;
 
@@ -378,6 +395,7 @@ public class QuantizationService
         RequiredSamplePlan sourcePlan,
         RequiredSamplePlan duplicatePlan,
         StageProgressTracker? progress,
+        bool allowIndependentGpuTopology,
         CancellationToken ct)
     {
         var record = new SampleProcessingRecord
@@ -407,7 +425,11 @@ public class QuantizationService
             }
 
             sw.Stop();
-            return await ExecutePlanAsync(duplicatePlan, progress, ct);
+            return await ExecutePlanAsync(
+                duplicatePlan,
+                progress,
+                allowIndependentGpuTopology,
+                ct);
         }
         catch (Exception ex)
         {
@@ -480,6 +502,7 @@ public class QuantizationService
 
     public async Task<SampleProcessState> ProcessHybridQuantAsync(
         HybridQuant quant,
+        bool allowIndependentGpuTopology = true,
         CancellationToken ct = default)
     {
         string modelName = GenerateHybridName(quant);
@@ -601,7 +624,8 @@ public class QuantizationService
                     benchDir: modelBenchDir,
                     klLogitsDir: baseLogitsDir,
                     saveLogits: false,
-                    domainsOverride: new[] { "general" });
+                    domainsOverride: new[] { "general" },
+                    allowIndependentGpuTopology: allowIndependentGpuTopology);
 
                 if (IsLearnableBaselineRun(quant))
                 {
