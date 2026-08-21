@@ -26,19 +26,9 @@ public class BaselineCandidatePolicyTests
     }
 
     [Fact]
-    public void GetPureBaselineCandidates_NoImatrix_ReturnsExactlyIq4Xs()
+    public void GetPureBaselineCandidates_NoImatrix_ReturnsAllNonImatrixLearningBaselines()
     {
         var ids = BaselineQuants.GetPureBaselineCandidates(hasUsableImatrix: false)
-            .Select(x => x.UniqueId)
-            .ToArray();
-
-        Assert.Equal([BaselineQuants.IQ4_XS.UniqueId], ids);
-    }
-
-    [Fact]
-    public void GetCombinationCarrierBaselines_NoImatrix_ReturnsExactlySixExpectedBaselines()
-    {
-        var ids = BaselineQuants.GetCombinationCarrierBaselines(hasUsableImatrix: false)
             .Select(x => x.UniqueId)
             .ToArray();
 
@@ -49,12 +39,24 @@ public class BaselineCandidatePolicyTests
             BaselineQuants.Q5_K.UniqueId,
             BaselineQuants.Q4_K_M.UniqueId,
             BaselineQuants.IQ4_NL.UniqueId,
-            BaselineQuants.IQ4_XS.UniqueId
+            BaselineQuants.IQ4_XS.UniqueId,
+            BaselineQuants.Q5_K_S.UniqueId,
+            BaselineQuants.Q4_K_S.UniqueId
         ], ids);
     }
 
     [Fact]
-    public void GetGroupCombinationCandidates_NoImatrixNoHighPrecision_ReturnsExactlySixExpectedBaselines()
+    public void GetCombinationCarrierBaselines_UsesCanonicalQ8Carrier()
+    {
+        var ids = BaselineQuants.GetCombinationCarrierBaselines(hasUsableImatrix: false)
+            .Select(x => x.UniqueId)
+            .ToArray();
+
+        Assert.Equal([BaselineQuants.Q8_0.UniqueId], ids);
+    }
+
+    [Fact]
+    public void GetGroupCombinationCandidates_NoImatrix_ReturnsAllEligibleFourBitAndHigherBaselines()
     {
         var ids = BaselineQuants.GetGroupCombinationCandidates(hasUsableImatrix: false, allowHighPrecisionHybrids: false)
             .Select(x => x.UniqueId)
@@ -62,12 +64,14 @@ public class BaselineCandidatePolicyTests
 
         Assert.Equal(
         [
-            BaselineQuants.Q8_0.UniqueId,
-            BaselineQuants.Q6_K.UniqueId,
-            BaselineQuants.Q5_K.UniqueId,
-            BaselineQuants.Q4_K_M.UniqueId,
+            BaselineQuants.IQ4_XS.UniqueId,
             BaselineQuants.IQ4_NL.UniqueId,
-            BaselineQuants.IQ4_XS.UniqueId
+            BaselineQuants.Q4_K_S.UniqueId,
+            BaselineQuants.Q4_K_M.UniqueId,
+            BaselineQuants.Q5_K_S.UniqueId,
+            BaselineQuants.Q5_K.UniqueId,
+            BaselineQuants.Q6_K.UniqueId,
+            BaselineQuants.Q8_0.UniqueId
         ], ids);
 
         Assert.DoesNotContain(BaselineQuants.IQ3_S.UniqueId, ids);
@@ -81,7 +85,7 @@ public class BaselineCandidatePolicyTests
     }
 
     [Fact]
-    public void RuntimeSearchSpace_GetActiveCombinationBaselines_ReturnsExactlySixExpectedBaselines()
+    public void RuntimeSearchSpace_GetActiveCombinationBaselines_ReturnsCanonicalQ8Carrier()
     {
         RuntimeSearchSpace.ResetForNewModel();
         RuntimeSearchSpace.SetImatrixAvailability(false);
@@ -90,15 +94,7 @@ public class BaselineCandidatePolicyTests
             .Select(x => x.UniqueId)
             .ToArray();
 
-        Assert.Equal(
-        [
-            BaselineQuants.Q8_0.UniqueId,
-            BaselineQuants.Q6_K.UniqueId,
-            BaselineQuants.Q5_K.UniqueId,
-            BaselineQuants.Q4_K_M.UniqueId,
-            BaselineQuants.IQ4_NL.UniqueId,
-            BaselineQuants.IQ4_XS.UniqueId
-        ], ids);
+        Assert.Equal([BaselineQuants.Q8_0.UniqueId], ids);
     }
 
     [Fact]
@@ -123,7 +119,7 @@ public class BaselineCandidatePolicyTests
         var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
         var attnQIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.AttnQ.UniqueId);
 
-        Assert.DoesNotContain(BaselineQuants.Q6_K.UniqueId, allowed[attnQIndex]);
+        Assert.DoesNotContain(BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.Q6_K), allowed[attnQIndex]);
     }
 
     [Fact]
@@ -136,8 +132,8 @@ public class BaselineCandidatePolicyTests
         var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
         var attnQIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.AttnQ.UniqueId);
 
-        Assert.DoesNotContain(BaselineQuants.BF16_Hybrid.UniqueId, allowed[attnQIndex]);
-        Assert.DoesNotContain(BaselineQuants.F16_Hybrid.UniqueId, allowed[attnQIndex]);
+        Assert.DoesNotContain(BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.BF16_Hybrid), allowed[attnQIndex]);
+        Assert.DoesNotContain(BaselineQuants.EncodeTensorConfigGroupSlot(BaselineQuants.F16_Hybrid), allowed[attnQIndex]);
     }
 
     [Fact]
@@ -145,12 +141,31 @@ public class BaselineCandidatePolicyTests
     {
         RuntimeSearchSpace.ResetForNewModel();
         RuntimeSearchSpace.SetImatrixAvailability(false);
+        var candidate = BaselineQuants.RegisterCustomExternalBaseline(new BaselineQuants.ExternalBaselineRegistration
+        {
+            CanonicalKey = "test:moe-router-banned",
+            DisplayName = "TEST-Q5-BANNED",
+            QuantizeBaseArgumentName = "Q5_K",
+            Repository = "test/repository",
+            RepositoryFileName = "test-q5.gguf",
+            OwnerShortName = "test",
+            BaselineFamilyName = "Q5_K",
+            TensorScheme = TensorWeightScheme.Q5_K,
+            AddAsGroupCandidate = true,
+            BitRange = 5,
+            BannedGroupIds = [TReg.MoeRouter.UniqueId]
+        });
 
-        var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
-        var moeRouterIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.MoeRouter.UniqueId);
+        try
+        {
+            var allowed = ComboLogic.GetAllowedCandidateIdsPerGroup(BaselineQuants.Q8_0);
+            var moeRouterIndex = TReg.All.OrderBy(x => x.UniqueId).ToList().FindIndex(x => x.UniqueId == TReg.MoeRouter.UniqueId);
 
-        Assert.DoesNotContain(BaselineQuants.Q5_K.UniqueId, allowed[moeRouterIndex]);
-        Assert.DoesNotContain(BaselineQuants.IQ4_NL.UniqueId, allowed[moeRouterIndex]);
-        Assert.DoesNotContain(BaselineQuants.IQ4_XS.UniqueId, allowed[moeRouterIndex]);
+            Assert.DoesNotContain(BaselineQuants.EncodeTensorConfigGroupSlot(candidate), allowed[moeRouterIndex]);
+        }
+        finally
+        {
+            BaselineQuants.ResetDynamicCustomBaselines();
+        }
     }
 }
