@@ -22,10 +22,41 @@ public sealed class ExternalBaselineCacheCleanupService
         if (!Directory.Exists(cacheRoot))
             return false;
 
+        bool preserveResumableDownloads = Config.Current.Baselines.CustomRepositories
+            .Any(x => x.Enabled && x.ResumeOrRetryDownloads);
+
+        if (preserveResumableDownloads)
+        {
+            int removedTransientFiles = await CleanupTransientTopLevelFilesAsync(cacheRoot, ct);
+            AnsiConsole.MarkupLine(
+                $"[green]Preserved resumable external-baseline downloads:[/] {Markup.Escape(cacheRoot)} " +
+                $"[grey](removed transient files={removedTransientFiles:N0})[/]");
+            return removedTransientFiles > 0;
+        }
+
         await HardDeleteHelper.DeleteDirectoryIfExistsAsync(cacheRoot, ct);
         AnsiConsole.MarkupLine(
             $"[green]Cleaned abandoned external-baseline artifacts:[/] {Markup.Escape(cacheRoot)}");
         return true;
+    }
+
+    private static async Task<int> CleanupTransientTopLevelFilesAsync(string cacheRoot, CancellationToken ct)
+    {
+        int removed = 0;
+        foreach (string file in Directory.EnumerateFiles(cacheRoot, "*", SearchOption.TopDirectoryOnly))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            string fileName = Path.GetFileName(file);
+            bool isCompletedGguf = fileName.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase);
+            if (isCompletedGguf)
+                continue;
+
+            await HardDeleteHelper.DeleteFileIfExistsAsync(file);
+            removed++;
+        }
+
+        return removed;
     }
 
     internal static void ValidateCleanupRoot(string cacheRoot, string modelMagicQuantRoot)
