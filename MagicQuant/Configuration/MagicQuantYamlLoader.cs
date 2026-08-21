@@ -268,6 +268,7 @@ public static class MagicQuantYamlLoader
         string? Get(string name) => args.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))?.Value;
         bool Has(string name) => args.Any(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
 
+        config.Paths.MagicQuantRoot = Prefer(Get("magic-quant-root"), config.Paths.MagicQuantRoot);
         config.Paths.ModelDir = Prefer(Get("model-dir"), config.Paths.ModelDir);
         config.Paths.LlamaRoot = Prefer(Get("llama-root"), config.Paths.LlamaRoot);
         config.Paths.LlamaBin = Prefer(Get("llama-bin"), config.Paths.LlamaBin);

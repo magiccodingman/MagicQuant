@@ -744,6 +744,7 @@ public class Evolution : ICommand
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Optional if set in YAML)");
+        AnsiConsole.MarkupLine("  [green]--magic-quant-root[/]    Isolated runtime root containing MagicQuant_SQLite.db and shared runtime assets (Optional)");
         AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
         AnsiConsole.MarkupLine("  [green]--use-imatrix[/]    Enable imatrix acquisition/build and allow imatrix-required search candidates (Optional)");
         AnsiConsole.MarkupLine("  [green]--allow-high-precision-hybrids[/]    Keep BF16/F16 explicit group candidates in final surviving combos (Optional, default false)");

@@ -43,6 +43,7 @@ public class InitializeLlamaCpp : ICommand
             }
 
             AnsiConsole.MarkupLine("[green]✔ Custom Environment Validated.[/]");
+            _ = DetectAndCacheSystemInfo();
             return;
         }
         else if (!string.IsNullOrEmpty(convertScript) || !string.IsNullOrEmpty(llamaBin))
@@ -61,11 +62,7 @@ public class InitializeLlamaCpp : ICommand
         // ---------------------------------------------------------
         // 3. Hardware Detection
         // ---------------------------------------------------------
-        var sysInfo = HardwareHelper.GetSystemInfo();
-        Cache.SysInfo = sysInfo;
-        AnsiConsole.Write(new Rule("[yellow]System Detection[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"Detected GPU: [green]{sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor}[/] ([blue]{sysInfo.GpuInfo.FirstOrDefault()?.GpuName}[/] - {sysInfo.GpuInfo.Sum(x => x.VramGb):F1} GB)");
-        AnsiConsole.MarkupLine($"Detected RAM: [blue]{sysInfo.RamGb:F1} GB[/]");
+        var sysInfo = DetectAndCacheSystemInfo();
 
         // ---------------------------------------------------------
         // 4. Linux System Deps (Sudo Handling)
@@ -220,6 +217,20 @@ public class InitializeLlamaCpp : ICommand
 
         AnsiConsole.MarkupLine("[bold green]Initialization Complete![/]");
         AnsiConsole.MarkupLine($"Llama Binaries: [grey]{builder.GetLlamaBinPath()}[/]");
+    }
+
+    private static SystemInfo DetectAndCacheSystemInfo()
+    {
+        var sysInfo = HardwareHelper.GetSystemInfo();
+        Cache.SysInfo = sysInfo;
+
+        AnsiConsole.Write(new Rule("[yellow]System Detection[/]") { Justification = Justify.Left });
+        AnsiConsole.MarkupLine(
+            $"Detected GPU: [green]{sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor}[/] " +
+            $"([blue]{sysInfo.GpuInfo.FirstOrDefault()?.GpuName}[/] - {sysInfo.GpuInfo.Sum(x => x.VramGb):F1} GB)");
+        AnsiConsole.MarkupLine($"Detected RAM: [blue]{sysInfo.RamGb:F1} GB[/]");
+
+        return sysInfo;
     }
 
     // --- Helpers ---
