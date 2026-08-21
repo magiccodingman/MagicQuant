@@ -452,8 +452,15 @@ public record BaselineQuants(
         if (string.IsNullOrWhiteSpace(name))
             return null;
 
+        // A canonical baseline name must win over a tensor-scheme alias. For example,
+        // IQ3_M's primary tensor scheme is IQ3_S, but a user who explicitly configures
+        // IQ3_S means the IQ3_S baseline, not the earlier IQ3_M registry entry.
+        var exactName = StandardBaselines.FirstOrDefault(x =>
+            x.Names.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)));
+        if (exactName != null)
+            return exactName;
+
         return StandardBaselines.FirstOrDefault(x =>
-            x.Names.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) ||
             string.Equals(x.PrimaryTensorWeightScheme.Names[0], name, StringComparison.OrdinalIgnoreCase));
     }
 
