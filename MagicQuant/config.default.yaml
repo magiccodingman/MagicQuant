@@ -495,9 +495,12 @@ synergy_detection:
   transfer_probe_enabled: true
   max_transfer_probes_per_template: 6
   max_total_transfer_probes_per_run: 24
+  # Controlled all-surrounding-groups blankets. This measures whether a template's
+  # marginal behavior transfers—or flips—without importing an old winning mixture.
   transfer_probe_context_strata:
-    high_fidelity_max_non_reference_groups_below_q6: 1
-    mid_fidelity_max_non_reference_groups_below_q6: 3
+    high_fidelity_reference_quants: [Q6_K, Q5_K]
+    mid_fidelity_reference_quants: [Q4_K_M]
+    low_fidelity_reference_quants: [IQ3_S]
     low_fidelity_enabled: false
   # Match rules against their measured effective surrounding-group context,
   # independent of the search row's carrier quant. Rule-selected groups are excluded.

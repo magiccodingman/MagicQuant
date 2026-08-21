@@ -384,8 +384,9 @@ public sealed class RuntimeSynergyDetectionConfig
 
 public sealed class RuntimeSynergyTransferProbeContextStrataConfig
 {
-    public int HighFidelityMaxNonReferenceGroupsBelowQ6 { get; set; } = 1;
-    public int MidFidelityMaxNonReferenceGroupsBelowQ6 { get; set; } = 3;
+    public List<string> HighFidelityReferenceQuants { get; set; } = ["Q6_K", "Q5_K"];
+    public List<string> MidFidelityReferenceQuants { get; set; } = ["Q4_K_M"];
+    public List<string> LowFidelityReferenceQuants { get; set; } = ["IQ3_S"];
     public bool LowFidelityEnabled { get; set; } = false;
 }
 

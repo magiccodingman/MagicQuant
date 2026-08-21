@@ -596,9 +596,10 @@ synergy_detection:
   max_transfer_probes_per_template: 6
   max_total_transfer_probes_per_run: 24
   transfer_probe_context_strata:
-    high_fidelity_max_non_reference_groups_below_q6: 1
-    mid_fidelity_max_non_reference_groups_below_q6: 3
-    low_fidelity_enabled: false
+    high_fidelity_reference_quants: [Q6_K, Q5_K]
+    mid_fidelity_reference_quants: [Q4_K_M]
+    low_fidelity_reference_quants: [IQ3_S]
+    low_fidelity_enabled: true
   context_scoped_rule_application_enabled: true
   max_non_rule_group_context_mismatches: 1
   verbose_synergy_logging: true

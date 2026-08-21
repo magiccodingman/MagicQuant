@@ -196,8 +196,9 @@ public static class MagicQuantYamlLoader
         s.MaxTransferProbesPerTemplate = Math.Max(0, s.MaxTransferProbesPerTemplate);
         s.MaxTotalTransferProbesPerRun = Math.Max(0, s.MaxTotalTransferProbesPerRun);
         s.TransferProbeContextStrata ??= new RuntimeSynergyTransferProbeContextStrataConfig();
-        s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6);
-        s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6);
+        s.TransferProbeContextStrata.HighFidelityReferenceQuants ??= new List<string>();
+        s.TransferProbeContextStrata.MidFidelityReferenceQuants ??= new List<string>();
+        s.TransferProbeContextStrata.LowFidelityReferenceQuants ??= new List<string>();
         s.MaxNonRuleGroupContextMismatches = Math.Clamp(s.MaxNonRuleGroupContextMismatches, 0, 9);
         s.MinSmokeScore = Math.Clamp(s.MinSmokeScore, 0d, 1d);
         s.MaxSmokeGapKld = Math.Max(0d, s.MaxSmokeGapKld);

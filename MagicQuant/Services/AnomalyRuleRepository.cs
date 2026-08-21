@@ -400,6 +400,7 @@ public sealed class AnomalyRuleRepository
             "single" => "SingleGroupInversion",
             "pair" => "PairSynergy",
             "composition" => rows.Any(x => x.RuleDirection == AnomalyRuleDirection.Harmful) ? "HarmfulInterferenceComposition" : "CounterfactualSynergyComposition",
+            "context-transfer" => rows.Any(x => x.RuleDirection == AnomalyRuleDirection.Harmful) ? "HarmfulContextTransfer" : "ContextTransfer",
             "confirmed-neighborhood" => rows.Any(x => x.Classification == AnomalyProbeClassification.ContaminatingPassenger) ? "ContaminatingPassenger" : "ConfirmedAnomalyNeighborhood",
             "full" => rows.Any(x => x.Plan.ProbeGroups.Count >= 3) ? "HigherOrderSynergy" : "PairSynergy",
             "leave-one-out" => "HigherOrderSynergy",
