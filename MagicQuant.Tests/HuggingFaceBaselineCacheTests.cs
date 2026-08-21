@@ -61,6 +61,35 @@ public sealed class HuggingFaceBaselineCacheTests
             Path.Combine(root, "outside.gguf"), cache));
     }
 
+    [Fact]
+    public void StagingCleanupPath_ResolvesSymlinkedParentDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "mq-hf-symlink-test-" + Guid.NewGuid().ToString("N"));
+        string physical = Path.Combine(root, "physical-model");
+        string alias = Path.Combine(root, "model-alias");
+        string cache = Path.Combine(physical, "MagicQuant", "ExternalBaselines");
+
+        try
+        {
+            Directory.CreateDirectory(cache);
+            Directory.CreateSymbolicLink(alias, physical);
+
+            string downloadedPath = Path.Combine(cache, "source.gguf");
+            File.WriteAllBytes(downloadedPath, "GGUF-source-payload"u8.ToArray());
+
+            string aliasedCache = Path.Combine(alias, "MagicQuant", "ExternalBaselines");
+            Assert.True(HuggingFaceBaselineService.IsPathInsideDirectory(downloadedPath, aliasedCache));
+            Assert.True(HuggingFaceBaselineService.PathsReferToSameLocation(
+                downloadedPath,
+                Path.Combine(aliasedCache, "source.gguf")));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class TemporaryFiles : IDisposable
     {
         private readonly string _directory = Path.Combine(

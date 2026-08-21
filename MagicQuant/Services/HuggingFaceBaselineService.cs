@@ -374,10 +374,7 @@ public sealed class HuggingFaceBaselineService
                 throw new InvalidOperationException($"Downloaded external baseline is not a GGUF file: {downloadedPath}");
 
             bool reused = CanReuseDownloadedFile(downloadedPath, destinationPath);
-            if (!reused && !string.Equals(
-                    Path.GetFullPath(downloadedPath),
-                    Path.GetFullPath(destinationPath),
-                    StringComparison.OrdinalIgnoreCase))
+            if (!reused && !PathsReferToSameLocation(downloadedPath, destinationPath))
             {
                 await CopyDownloadedFileAtomicallyAsync(downloadedPath, atomicStagingPath, destinationPath, ct);
             }
@@ -385,10 +382,7 @@ public sealed class HuggingFaceBaselineService
             if (!File.Exists(destinationPath) || new FileInfo(destinationPath).Length == 0 || !HasGgufMagic(destinationPath))
                 throw new InvalidOperationException($"External baseline staging produced no valid GGUF file: {destinationPath}");
 
-            if (!string.Equals(
-                    Path.GetFullPath(downloadedPath),
-                    Path.GetFullPath(destinationPath),
-                    StringComparison.OrdinalIgnoreCase))
+            if (!PathsReferToSameLocation(downloadedPath, destinationPath))
             {
                 string destinationDirectory = Path.GetDirectoryName(Path.GetFullPath(destinationPath))!;
                 if (!IsPathInsideDirectory(downloadedPath, destinationDirectory))
@@ -431,12 +425,47 @@ public sealed class HuggingFaceBaselineService
 
     internal static bool IsPathInsideDirectory(string childPath, string parentDirectory)
     {
-        string child = Path.GetFullPath(childPath)
+        string child = ResolvePhysicalPath(childPath)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        string parent = Path.GetFullPath(parentDirectory)
+        string parent = ResolvePhysicalPath(parentDirectory)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         return child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool PathsReferToSameLocation(string firstPath, string secondPath)
+    {
+        return string.Equals(
+            ResolvePhysicalPath(firstPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            ResolvePhysicalPath(secondPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolvePhysicalPath(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        string root = Path.GetPathRoot(fullPath)
+            ?? throw new InvalidOperationException($"Path '{path}' has no filesystem root.");
+        string current = root;
+        string relative = Path.GetRelativePath(root, fullPath);
+
+        foreach (string component in relative.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, component);
+
+            FileSystemInfo info = Directory.Exists(current)
+                ? new DirectoryInfo(current)
+                : new FileInfo(current);
+
+            if (!info.Exists || string.IsNullOrWhiteSpace(info.LinkTarget))
+                continue;
+
+            current = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? current;
+        }
+
+        return Path.GetFullPath(current);
     }
 
     private static bool HasGgufMagic(string path)
