@@ -502,7 +502,7 @@ synergy_detection:
     mid_fidelity_reference_quants: [Q4_K_M]
     low_fidelity_reference_quants: [IQ3_S]
     low_fidelity_enabled: false
-  # Remeasure the best and runner-up same-bit isolation recipes head-to-head inside
+  # Remeasure the best and closest-size non-equivalent same-bit isolation recipes head-to-head inside
   # controlled contexts. This detects context-dependent rank flips without replaying
   # an old winning mixture. Low-fidelity contexts remain governed by the opt-in above.
   exploratory_context_pair_enabled: true

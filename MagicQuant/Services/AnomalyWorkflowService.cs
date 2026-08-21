@@ -759,7 +759,7 @@ public sealed class AnomalyWorkflowService
             ct);
         if (isolationPairs.Count == 0)
         {
-            AnsiConsole.MarkupLine("[grey]Exploratory context-rank pairs:[/] no non-equivalent same-bit isolation winner/runner-up pairs were available.");
+            AnsiConsole.MarkupLine("[grey]Exploratory context-rank pairs:[/] no non-equivalent same-bit isolation winner/size-matched-contender pairs were available.");
             return new List<AnomalyProbePlan>();
         }
 
@@ -861,15 +861,21 @@ public sealed class AnomalyWorkflowService
                 continue;
 
             var winner = ordered[0];
-            var runnerUp = ordered.Skip(1).FirstOrDefault(x => !IsolationOutcomesEquivalent(winner, x));
-            if (runnerUp == null)
+            var contender = ordered
+                .Skip(1)
+                .Where(x => !IsolationOutcomesEquivalent(winner, x))
+                .OrderBy(x => Math.Abs((double)x.Snapshot.SizeBytes - winner.Snapshot.SizeBytes))
+                .ThenBy(x => x.Snapshot.Kld)
+                .ThenBy(x => x.Baseline.UniqueId)
+                .FirstOrDefault();
+            if (contender == null)
                 continue;
 
             pairs.Add(new ExploratoryIsolationPair(
                 group,
                 winner,
-                runnerUp,
-                Math.Max(0d, runnerUp.Snapshot.Kld - winner.Snapshot.Kld)));
+                contender,
+                Math.Max(0d, contender.Snapshot.Kld - winner.Snapshot.Kld)));
         }
 
         return pairs;
@@ -892,7 +898,7 @@ public sealed class AnomalyWorkflowService
         if (!TryBuildControlledRankPairConfig(
                 context.QuantId,
                 pair.Group,
-                pair.RunnerUp.Baseline.UniqueId,
+                pair.Contender.Baseline.UniqueId,
                 pair.Winner.Baseline.UniqueId,
                 out var reference,
                 out var probe,
@@ -924,16 +930,16 @@ public sealed class AnomalyWorkflowService
             TwinConfig = reference,
             Movement = movement,
             CandidatePredictedKld = pair.Winner.Snapshot.Kld,
-            TwinPredictedKld = pair.RunnerUp.Snapshot.Kld,
+            TwinPredictedKld = pair.Contender.Snapshot.Kld,
             CandidatePredictedSizeBytes = pair.Winner.Snapshot.SizeBytes,
-            TwinPredictedSizeBytes = pair.RunnerUp.Snapshot.SizeBytes,
-            PredictionSpaceGapVsTwin = pair.Winner.Snapshot.Kld - pair.RunnerUp.Snapshot.Kld,
+            TwinPredictedSizeBytes = pair.Contender.Snapshot.SizeBytes,
+            PredictionSpaceGapVsTwin = pair.Winner.Snapshot.Kld - pair.Contender.Snapshot.Kld,
             SmokeScore = 2_000_000d + pair.IsolationGap,
             SmokeStrength = $"IsolationRankPair:{context.Stratum}",
             SeedClass = AnomalySeedClass.SynergyTransferProbe,
             MatchedConfirmedAnomalyPattern = false,
             PlannedProbeWillMeasureSize = true,
-            Message = "Remeasures a same-bit native-isolation winner and runner-up head-to-head inside a controlled surrounding-fidelity context."
+            Message = "Remeasures a same-bit native-isolation winner and its closest-size non-equivalent contender head-to-head inside a controlled surrounding-fidelity context."
         };
         var plan = new AnomalyProbePlan
         {
@@ -942,7 +948,7 @@ public sealed class AnomalyWorkflowService
             ProbeConfig = probe,
             ProbeGroups = changed,
             ProbeType = "context-rank-pair",
-            HypothesisLabel = $"{pair.Group.Name}: isolation winner {pair.Winner.Baseline.Names[0]} vs runner-up {pair.RunnerUp.Baseline.Names[0]} in {context.Stratum} {SafeName(context.QuantId)} blanket",
+            HypothesisLabel = $"{pair.Group.Name}: isolation winner {pair.Winner.Baseline.Names[0]} vs closest-size contender {pair.Contender.Baseline.Names[0]} in {context.Stratum} {SafeName(context.QuantId)} blanket",
             SeedClass = AnomalySeedClass.SynergyTransferProbe,
             ProbePriorityClass = AnomalySeedClass.SynergyTransferProbe
         };
@@ -1820,7 +1826,7 @@ public sealed class AnomalyWorkflowService
                 RuleDirection = AnomalyRuleDirection.Beneficial,
                 Accepted = true,
                 ActualGainVsTwin = gain,
-                Message = "The native-isolation winner retained a material KLD advantage over its same-bit runner-up in this measured context."
+                Message = "The native-isolation winner retained a material KLD advantage over its closest-size same-bit contender in this measured context."
             };
         }
 
@@ -1835,7 +1841,7 @@ public sealed class AnomalyWorkflowService
                 RuleDirection = AnomalyRuleDirection.Harmful,
                 Accepted = true,
                 ActualGainVsTwin = gain,
-                Message = "Context rank reversal: the native-isolation winner became materially worse than its same-bit runner-up in this measured context."
+                Message = "Context rank reversal: the native-isolation winner became materially worse than its closest-size same-bit contender in this measured context."
             };
         }
 
@@ -2805,7 +2811,7 @@ LIMIT 1;";
     private sealed record ExploratoryIsolationPair(
         TensorGroup Group,
         ExploratoryIsolationObservation Winner,
-        ExploratoryIsolationObservation RunnerUp,
+        ExploratoryIsolationObservation Contender,
         double IsolationGap);
 
     private sealed record ExploratoryContextPairCandidate(
