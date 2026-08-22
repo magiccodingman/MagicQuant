@@ -104,7 +104,7 @@ imatrix:
 # Final hybrid selection is now driven by rank-safe isolation prediction plus candidate_selection.
 
 isolation_pruning:
-  # 0.04 is the goal, but this is currently causing prediction issues, leave at 0
+  # Preserve complete isolation truth for prediction and contextual probing.
   minimum_isolation_reduction_to_continue_ratio: 0.00
   minimum_isolation_reduction_to_suppress_bf16_ratio: 0.10
   maximum_isolation_ppl_delta_percent: 5.0
@@ -163,9 +163,9 @@ candidate_selection:
   # Strict epsilon for lower-KLD comparisons after real benchmark validation.
   minimum_kld_improvement_epsilon: 1.0e-9
 
-  # Final spacing pass: candidates closer than this fraction of the global survivor
-  # size span are collapsed unless one genuinely earns the slot.
-  minimum_neighbor_gap_fraction_of_global_span: 0.03
+  # This campaign is the publishable union frontier: retain every nondominated
+  # size/quality tradeoff instead of collapsing nearby points for a shorter list.
+  minimum_neighbor_gap_fraction_of_global_span: 0.00
 
   # Extra-brutal zone near the smaller anchor. A candidate this close to the smaller
   # anchor must provide a stronger KLD gain to justify its existence.
@@ -267,12 +267,17 @@ baselines:
   # Use Unsloth GGUFs for dynamic learning/search while retaining the built-in
   # Q8 anchor required by the execution-plan and baseline pipeline.
   standard_baselines_mode: selected
-  enabled_standard_learning_baselines: [Q8_0]
+  # Controlled fidelity probes use these provider-neutral blankets. They must be
+  # learned so base-quant exception tensors have complete carrier mappings, but
+  # only Q8 remains a search carrier to avoid multiplying the global combinatorics.
+  enabled_standard_learning_baselines: [Q8_0, Q6_K, Q5_K, Q4_K_M, IQ3_S]
   enabled_standard_combination_carriers: [Q8_0]
   enabled_standard_explicit_group_candidates: [Q8_0]
 
   custom_repositories:
     - repo_id: unsloth/Qwen3.8-27B-GGUF
+      # Immutable dynamic-v3 revision used by the completed Qwen3.8 campaign.
+      revision: 4ca720788d1e01f1bff70c033e0d0028fd02e502
       enabled: true
       short_source_name: Unsloth
       source_kind: huggingface_gguf_repository
@@ -470,6 +475,114 @@ baselines:
           allow_as_combination_carrier: false
           allow_as_explicit_group_candidate: true
 
+    # Unsloth replaced its dynamic-v2 files when dynamic-v3 was published. Keep
+    # the source generation explicit and reproducible instead of importing old
+    # MagicQuant winners or silently resolving these names against a moving main.
+    - repo_id: unsloth/Qwen3.8-27B-GGUF
+      revision: 313447f257f7ebde0b968e4778feef774546ed81
+      enabled: true
+      short_source_name: UnslothV2
+      source_kind: huggingface_gguf_repository
+      require_all_includes_to_resolve: true
+      validate_tensor_names_against_source_model: true
+      delete_partial_or_dirty_downloads: true
+      resume_or_retry_downloads: true
+
+      allow_as_learning_baseline: true
+      allow_as_combination_carrier: false
+      allow_as_explicit_group_candidate: false
+
+      includes:
+        - file_name: Qwen3.8-27B-UD-IQ2_M.gguf
+          baseline_family: IQ2_M
+          quantize_base_name: IQ2_M
+          display_name: Unsloth-UD-IQ2_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q3_K_S.gguf
+          baseline_family: IQ3_M
+          quantize_base_name: IQ3_S
+          display_name: Unsloth-Q3_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q3_K_M.gguf
+          baseline_family: IQ3_M
+          quantize_base_name: IQ3_M
+          display_name: Unsloth-Q3_K_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-IQ4_XS.gguf
+          baseline_family: IQ4_XS
+          quantize_base_name: IQ4_XS
+          display_name: Unsloth-IQ4_XS
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-IQ4_NL.gguf
+          baseline_family: IQ4_NL
+          quantize_base_name: IQ4_NL
+          display_name: Unsloth-IQ4_NL
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q4_K_S.gguf
+          baseline_family: Q4_K_S
+          quantize_base_name: Q4_K_S
+          display_name: Unsloth-Q4_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q4_K_M.gguf
+          baseline_family: Q4_K_M
+          quantize_base_name: Q4_K_M
+          display_name: Unsloth-Q4_K_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q5_K_S.gguf
+          baseline_family: Q5_K_S
+          quantize_base_name: Q5_K_S
+          display_name: Unsloth-Q5_K_S
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q5_K_M.gguf
+          baseline_family: Q5_K
+          quantize_base_name: Q5_K
+          display_name: Unsloth-Q5_K_M
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
+        - file_name: Qwen3.8-27B-Q6_K.gguf
+          baseline_family: Q6_K
+          quantize_base_name: Q6_K
+          display_name: Unsloth-Q6_K
+          force_relearn: false
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: false
+          allow_as_explicit_group_candidate: true
+
 # Counterfactual synergy templates generalize confirmed contextual anomaly evidence.
 # anomaly_detection remains the low-level compatibility section; synergy_detection controls
 # template transfer, composition probes, contamination suppression, and wing diagnostics.
@@ -488,9 +601,16 @@ synergy_detection:
   max_transfer_probes_per_template: 6
   max_total_transfer_probes_per_run: 24
   transfer_probe_context_strata:
-    high_fidelity_max_non_reference_groups_below_q6: 1
-    mid_fidelity_max_non_reference_groups_below_q6: 3
-    low_fidelity_enabled: false
+    high_fidelity_reference_quants: [Q6_K, Q5_K]
+    mid_fidelity_reference_quants: [Q4_K_M]
+    low_fidelity_reference_quants: [IQ3_S]
+    low_fidelity_enabled: true
+  exploratory_context_pair_enabled: true
+  max_exploratory_context_pairs_per_run: 14
+  exploratory_pair_bit_ranges: [4]
+  exploratory_pair_context_strata: [mid-fidelity, low-fidelity]
+  context_scoped_rule_application_enabled: true
+  max_non_rule_group_context_mismatches: 1
   verbose_synergy_logging: true
   min_smoke_score: 0.55
   max_smoke_gap_kld: 0.004

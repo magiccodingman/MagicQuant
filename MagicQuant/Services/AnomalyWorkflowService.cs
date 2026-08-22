@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Text.Json;
 using DuckDB.NET.Data;
+using MagicQuant.Configuration;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using Microsoft.EntityFrameworkCore;
@@ -97,6 +98,25 @@ public sealed class AnomalyWorkflowService
             var probes = await PlanProbesAsync(smoke, planningDiagnostics, ct);
 
             var results = await ValidateProbesAsync(probes, ct);
+
+            var exploratoryPairProbes = await PlanExploratoryContextPairProbesAsync(planningDiagnostics, ct);
+            if (exploratoryPairProbes.Count > 0)
+            {
+                probes = probes.Concat(exploratoryPairProbes).ToList();
+                var exploratoryPairResults = await ValidateProbesAsync(exploratoryPairProbes, ct);
+                results = results.Concat(exploratoryPairResults).ToList();
+            }
+
+            int remainingTransferBudget = Math.Max(
+                0,
+                Config.SynergyDetection.MaxTotalTransferProbesPerRun - exploratoryPairProbes.Count);
+            var transferProbes = await PlanSynergyTransferProbesAsync(results, planningDiagnostics, remainingTransferBudget, ct);
+            if (transferProbes.Count > 0)
+            {
+                probes = probes.Concat(transferProbes).ToList();
+                var transferResults = await ValidateProbesAsync(transferProbes, ct);
+                results = results.Concat(transferResults).ToList();
+            }
 
             var expansionProbes = await PlanConfirmedAnomalyExpansionProbesAsync(results, planningDiagnostics, ct);
             if (expansionProbes.Count > 0)
@@ -716,6 +736,600 @@ public sealed class AnomalyWorkflowService
     }
 
 
+    private async Task<List<AnomalyProbePlan>> PlanExploratoryContextPairProbesAsync(
+        ProbePlanningDiagnostics diagnostics,
+        CancellationToken ct)
+    {
+        var cfg = Config.SynergyDetection;
+        int limit = Math.Min(
+            Math.Max(0, cfg.MaxExploratoryContextPairsPerRun),
+            Math.Max(0, cfg.MaxTotalTransferProbesPerRun));
+        if (!cfg.Enabled || !cfg.TransferProbeEnabled || !cfg.ExploratoryContextPairEnabled || limit <= 0)
+            return new List<AnomalyProbePlan>();
+
+        var requestedStrata = cfg.ExploratoryPairContextStrata.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var contexts = ResolveTransferTargetContexts(cfg.TransferProbeContextStrata)
+            .Where(x => requestedStrata.Contains(x.Stratum))
+            .ToList();
+        if (contexts.Count == 0 || cfg.ExploratoryPairBitRanges.Count == 0)
+            return new List<AnomalyProbePlan>();
+
+        var isolationPairs = await LoadExploratoryIsolationPairsAsync(
+            cfg.ExploratoryPairBitRanges.ToHashSet(),
+            ct);
+        if (isolationPairs.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey]Exploratory context-rank pairs:[/] no non-equivalent same-bit isolation winner/size-matched-contender pairs were available.");
+            return new List<AnomalyProbePlan>();
+        }
+
+        var existingRuleKeys = await _rules.LoadExistingRuleSuppressionKeysAsync(ct);
+        var candidatesByContext = contexts.ToDictionary(
+            x => x,
+            x => isolationPairs
+                .Select(pair => TryBuildExploratoryContextPairPlan(x, pair, existingRuleKeys, diagnostics))
+                .Where(x => x != null)
+                .Select(x => x!)
+                .OrderBy(x => x.Pair.Group.UniqueId)
+                .ThenByDescending(x => x.Pair.IsolationGap)
+                .ThenBy(x => x.IdentityKey, StringComparer.Ordinal)
+                .ToList());
+
+        var cursors = contexts.ToDictionary(x => x, _ => 0);
+        var plans = new List<AnomalyProbePlan>();
+        var identities = new HashSet<string>(StringComparer.Ordinal);
+        while (plans.Count < limit)
+        {
+            bool added = false;
+            foreach (var context in contexts)
+            {
+                var candidates = candidatesByContext[context];
+                while (cursors[context] < candidates.Count)
+                {
+                    var candidate = candidates[cursors[context]++];
+                    if (!identities.Add(candidate.IdentityKey))
+                        continue;
+
+                    plans.Add(candidate.Plan);
+                    diagnostics.ProbesQueued++;
+                    diagnostics.TransferProbesQueued++;
+                    diagnostics.ExploratoryPairProbesQueued++;
+                    added = true;
+                    break;
+                }
+
+                if (plans.Count >= limit)
+                    break;
+            }
+
+            if (!added)
+                break;
+        }
+
+        int candidateCount = candidatesByContext.Values.Sum(x => x.Count);
+        diagnostics.SkippedBudget += Math.Max(0, candidateCount - plans.Count);
+        AnsiConsole.MarkupLine(
+            $"[yellow]Exploratory context-rank pairs:[/] isolationPairs=[cyan]{isolationPairs.Count:N0}[/] " +
+            $"strata=[cyan]{contexts.Count:N0}[/] candidates=[cyan]{candidateCount:N0}[/] " +
+            $"queued=[cyan]{plans.Count:N0}[/] budget=[cyan]{limit:N0}[/]");
+
+        foreach (var context in contexts)
+        {
+            int queued = plans.Count(x => x.ReferenceConfig.BaseQuant == context.QuantId);
+            AnsiConsole.MarkupLine(
+                $"[grey]  rank-pair stratum={Markup.Escape(context.Stratum)} reference={Markup.Escape(SafeName(context.QuantId))} " +
+                $"candidates={candidatesByContext[context].Count:N0} queued={queued:N0}[/]");
+        }
+
+        return plans;
+    }
+
+    private async Task<List<ExploratoryIsolationPair>> LoadExploratoryIsolationPairsAsync(
+        IReadOnlySet<int> bitRanges,
+        CancellationToken ct)
+    {
+        var pairs = new List<ExploratoryIsolationPair>();
+        var nativeExactScheme = TensorWeightScheme.GetCurrentNativePrecisionScheme();
+
+        foreach (var group in _movement.ActiveGroups.OrderBy(x => x.UniqueId))
+        {
+            var observations = new List<ExploratoryIsolationObservation>();
+            // Deliberately include isolation-pruned candidates here. A candidate that loses in
+            // native/F16 surroundings is exactly the candidate that may reverse rank in a Q3
+            // context; requiring it to survive that earlier pruning would make this probe blind.
+            // Invalid/unlearnable candidates still fall out because they have no isolation snapshot.
+            foreach (var baseline in RuntimeSearchSpace.GetRealExplicitCombinationCandidatesForGroup(group)
+                         .Where(x => bitRanges.Contains(x.BitRange))
+                         .OrderBy(x => x.UniqueId))
+            {
+                var isolation = HybridQuant.CreateExactBlanket(
+                    BaselineQuants.Q8_0,
+                    _movement.ActiveGroups,
+                    nativeExactScheme);
+                isolation.SetLearnedCandidateOverride(group, baseline);
+                var snapshot = await _repository.LoadBenchmarkSnapshotAsync((TensorConfig)isolation, ct);
+                if (snapshot != null)
+                    observations.Add(new ExploratoryIsolationObservation(group, baseline, snapshot));
+            }
+
+            var ordered = observations
+                .OrderBy(x => x.Snapshot.Kld)
+                .ThenBy(x => x.Snapshot.SizeBytes)
+                .ThenBy(x => x.Baseline.UniqueId)
+                .ToList();
+            if (ordered.Count < 2)
+                continue;
+
+            var winner = ordered[0];
+            var contender = ordered
+                .Skip(1)
+                .Where(x => !IsolationOutcomesEquivalent(winner, x))
+                .OrderBy(x => Math.Abs((double)x.Snapshot.SizeBytes - winner.Snapshot.SizeBytes))
+                .ThenBy(x => x.Snapshot.Kld)
+                .ThenBy(x => x.Baseline.UniqueId)
+                .FirstOrDefault();
+            if (contender == null)
+                continue;
+
+            pairs.Add(new ExploratoryIsolationPair(
+                group,
+                winner,
+                contender,
+                Math.Max(0d, contender.Snapshot.Kld - winner.Snapshot.Kld)));
+        }
+
+        return pairs;
+    }
+
+    private static bool IsolationOutcomesEquivalent(
+        ExploratoryIsolationObservation left,
+        ExploratoryIsolationObservation right)
+    {
+        return left.Snapshot.SizeBytes == right.Snapshot.SizeBytes &&
+               Math.Abs(left.Snapshot.Kld - right.Snapshot.Kld) <= 1e-12d;
+    }
+
+    private ExploratoryContextPairCandidate? TryBuildExploratoryContextPairPlan(
+        SynergyTransferContext context,
+        ExploratoryIsolationPair pair,
+        IReadOnlySet<string> existingRuleKeys,
+        ProbePlanningDiagnostics diagnostics)
+    {
+        if (!TryBuildControlledRankPairConfig(
+                context.QuantId,
+                pair.Group,
+                pair.Contender.Baseline.UniqueId,
+                pair.Winner.Baseline.UniqueId,
+                out var reference,
+                out var probe,
+                out var changed))
+        {
+            diagnostics.SkippedInvalidMovement++;
+            return null;
+        }
+
+        if (ShouldSkipInvalidContextualAnomalyConfig(reference, "exploratory-context-rank-reference", out _) ||
+            ShouldSkipInvalidContextualAnomalyConfig(probe, "exploratory-context-rank-probe", out _))
+        {
+            diagnostics.SkippedInvalidMovement++;
+            return null;
+        }
+
+        if (existingRuleKeys.Contains(_rules.BuildRuleSuppressionKey(reference, changed)))
+        {
+            diagnostics.SkippedExistingRuleOrSuppression++;
+            return null;
+        }
+
+        string identityKey = TensorConfigIdentity.ToKey(reference) + "=>" + TensorConfigIdentity.ToKey(probe);
+        var movement = _movement.Analyze(reference, probe);
+        var seed = new AnomalySmokeCandidate
+        {
+            Source = "exploratory-isolation-rank-transfer",
+            CandidateConfig = probe,
+            TwinConfig = reference,
+            Movement = movement,
+            CandidatePredictedKld = pair.Winner.Snapshot.Kld,
+            TwinPredictedKld = pair.Contender.Snapshot.Kld,
+            CandidatePredictedSizeBytes = pair.Winner.Snapshot.SizeBytes,
+            TwinPredictedSizeBytes = pair.Contender.Snapshot.SizeBytes,
+            PredictionSpaceGapVsTwin = pair.Winner.Snapshot.Kld - pair.Contender.Snapshot.Kld,
+            SmokeScore = 2_000_000d + pair.IsolationGap,
+            SmokeStrength = $"IsolationRankPair:{context.Stratum}",
+            SeedClass = AnomalySeedClass.SynergyTransferProbe,
+            MatchedConfirmedAnomalyPattern = false,
+            PlannedProbeWillMeasureSize = true,
+            Message = "Remeasures a same-bit native-isolation winner and its closest-size non-equivalent contender head-to-head inside a controlled surrounding-fidelity context."
+        };
+        var plan = new AnomalyProbePlan
+        {
+            Seed = seed,
+            ReferenceConfig = reference,
+            ProbeConfig = probe,
+            ProbeGroups = changed,
+            ProbeType = "context-rank-pair",
+            HypothesisLabel = $"{pair.Group.Name}: isolation winner {pair.Winner.Baseline.Names[0]} vs closest-size contender {pair.Contender.Baseline.Names[0]} in {context.Stratum} {SafeName(context.QuantId)} blanket",
+            SeedClass = AnomalySeedClass.SynergyTransferProbe,
+            ProbePriorityClass = AnomalySeedClass.SynergyTransferProbe
+        };
+
+        return new ExploratoryContextPairCandidate(identityKey, pair, plan);
+    }
+
+    internal static bool TryBuildControlledRankPairConfig(
+        byte targetContextQuantId,
+        TensorGroup group,
+        byte referenceCandidateQuantId,
+        byte probeCandidateQuantId,
+        out TensorConfig reference,
+        out TensorConfig probe,
+        out IReadOnlyList<AnomalyChangedGroup> changedGroups)
+    {
+        var movementService = new QuantFidelityComparerService();
+        reference = movementService.CreateActivatedContextBlanket(targetContextQuantId);
+        probe = reference;
+        changedGroups = Array.Empty<AnomalyChangedGroup>();
+
+        if (!movementService.ActiveGroups.Any(x => x.UniqueId == group.UniqueId) ||
+            referenceCandidateQuantId == probeCandidateQuantId ||
+            BaselineQuants.IsNativeExactAlias(referenceCandidateQuantId) ||
+            BaselineQuants.IsNativeExactAlias(probeCandidateQuantId))
+        {
+            return false;
+        }
+
+        byte referenceStored = BaselineQuants.EncodeTensorConfigGroupSlotBaselineId(referenceCandidateQuantId);
+        byte probeStored = BaselineQuants.EncodeTensorConfigGroupSlotBaselineId(probeCandidateQuantId);
+        reference = movementService.WithStoredSlot(reference, group, referenceStored);
+        probe = movementService.WithStoredSlot(probe, group, probeStored);
+        changedGroups =
+        [
+            new AnomalyChangedGroup
+            {
+                Group = group,
+                ReferenceQuantId = referenceCandidateQuantId,
+                CandidateQuantId = probeCandidateQuantId,
+                ReferenceStoredSlot = referenceStored,
+                CandidateStoredSlot = probeStored,
+                Movement = movementService.Compare(referenceCandidateQuantId, probeCandidateQuantId)
+            }
+        ];
+        return changedGroups[0].Movement != QuantMovementKind.Unknown;
+    }
+
+
+    private async Task<List<AnomalyProbePlan>> PlanSynergyTransferProbesAsync(
+        IReadOnlyList<AnomalyProbeResult> currentResults,
+        ProbePlanningDiagnostics diagnostics,
+        int availableBudget,
+        CancellationToken ct)
+    {
+        var cfg = Config.SynergyDetection;
+        if (!cfg.Enabled || !cfg.TransferProbeEnabled || cfg.MaxTotalTransferProbesPerRun <= 0 || availableBudget <= 0)
+            return new List<AnomalyProbePlan>();
+
+        var contexts = ResolveTransferTargetContexts(cfg.TransferProbeContextStrata);
+        if (contexts.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Synergy transfer probes skipped:[/] no configured context-stratum quant names resolved to active baselines.");
+            return new List<AnomalyProbePlan>();
+        }
+
+        var historicalRules = await _rules.LoadApplicableRulesAsync(ct);
+        var templates = BuildTransferTemplates(historicalRules, currentResults)
+            .Where(x => x.Confidence >= cfg.MinConfidenceToScheduleTransferProbe)
+            .GroupBy(x => x.Key, StringComparer.Ordinal)
+            .Select(g => g
+                .OrderByDescending(x => x.Confidence)
+                .ThenByDescending(x => x.ActualEffectMagnitude)
+                .First())
+            .ToList();
+
+        if (templates.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey]Synergy transfer probes:[/] no confirmed templates met the transfer confidence threshold.");
+            return new List<AnomalyProbePlan>();
+        }
+
+        var existingRuleKeys = await _rules.LoadExistingRuleSuppressionKeysAsync(ct);
+        var candidatesByContext = contexts.ToDictionary(
+            x => x,
+            x => BuildTransferCandidatesForContext(x, templates, existingRuleKeys, diagnostics));
+
+        int globalLimit = Math.Min(Math.Max(0, cfg.MaxTotalTransferProbesPerRun), Math.Max(0, availableBudget));
+        int perTemplateLimit = Math.Max(1, cfg.MaxTransferProbesPerTemplate);
+        var cursors = contexts.ToDictionary(x => x, _ => 0);
+        var perTemplateCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var selectedKeys = new HashSet<string>(StringComparer.Ordinal);
+        var plans = new List<AnomalyProbePlan>();
+
+        while (plans.Count < globalLimit)
+        {
+            bool addedInRound = false;
+            foreach (var context in contexts)
+            {
+                var candidates = candidatesByContext[context];
+                while (cursors[context] < candidates.Count)
+                {
+                    var candidate = candidates[cursors[context]++];
+                    int used = perTemplateCounts.GetValueOrDefault(candidate.TemplateKey);
+                    if (used >= perTemplateLimit || !selectedKeys.Add(candidate.IdentityKey))
+                        continue;
+
+                    plans.Add(candidate.Plan);
+                    perTemplateCounts[candidate.TemplateKey] = used + 1;
+                    diagnostics.ProbesQueued++;
+                    diagnostics.TransferProbesQueued++;
+                    addedInRound = true;
+                    break;
+                }
+
+                if (plans.Count >= globalLimit)
+                    break;
+            }
+
+            if (!addedInRound)
+                break;
+        }
+
+        int candidateCount = candidatesByContext.Values.Sum(x => x.Count);
+        diagnostics.SkippedBudget += Math.Max(0, candidateCount - plans.Count);
+        AnsiConsole.MarkupLine(
+            $"[yellow]Synergy context-transfer probes:[/] templates=[cyan]{templates.Count:N0}[/] " +
+            $"strata=[cyan]{contexts.Count:N0}[/] candidates=[cyan]{candidateCount:N0}[/] " +
+            $"queued=[cyan]{plans.Count:N0}[/] globalLimit=[cyan]{globalLimit:N0}[/] perTemplateLimit=[cyan]{perTemplateLimit:N0}[/]");
+
+        foreach (var context in contexts)
+        {
+            int queued = plans.Count(x => x.ReferenceConfig.BaseQuant == context.QuantId);
+            AnsiConsole.MarkupLine(
+                $"[grey]  transfer stratum={Markup.Escape(context.Stratum)} reference={Markup.Escape(SafeName(context.QuantId))} " +
+                $"candidates={candidatesByContext[context].Count:N0} queued={queued:N0}[/]");
+        }
+
+        return plans;
+    }
+
+    private List<SynergyTransferCandidate> BuildTransferCandidatesForContext(
+        SynergyTransferContext context,
+        IReadOnlyList<SynergyTransferTemplate> templates,
+        IReadOnlySet<string> existingRuleKeys,
+        ProbePlanningDiagnostics diagnostics)
+    {
+        var candidates = new List<SynergyTransferCandidate>();
+        int targetTier = _movement.EffectiveTier(context.QuantId);
+
+        foreach (var template in templates)
+        {
+            if (template.SourceReferenceQuantId == context.QuantId)
+                continue;
+
+            if (!TryBuildControlledTransferConfig(
+                    context.QuantId,
+                    template.Groups.Select(x => (x.Group.UniqueId, x.CandidateQuantId)).ToList(),
+                    out var reference,
+                    out var probe,
+                    out var changed) ||
+                changed.Count > Config.AnomalyDetection.MaxProbeGroupCount)
+            {
+                continue;
+            }
+
+            if (ShouldSkipInvalidContextualAnomalyConfig(probe, "synergy-context-transfer", out _))
+            {
+                diagnostics.SkippedInvalidMovement++;
+                continue;
+            }
+
+            if (existingRuleKeys.Contains(_rules.BuildRuleSuppressionKey(reference, changed)))
+            {
+                diagnostics.SkippedExistingRuleOrSuppression++;
+                continue;
+            }
+
+            string identityKey = TensorConfigIdentity.ToKey(reference) + "=>" + TensorConfigIdentity.ToKey(probe);
+            var analyzedMovement = _movement.Analyze(reference, probe);
+            var seed = new AnomalySmokeCandidate
+            {
+                Source = $"synergy-template-transfer:{template.Source}",
+                CandidateConfig = probe,
+                TwinConfig = reference,
+                Movement = analyzedMovement,
+                SmokeScore = 1_000_000d + template.Confidence + template.ActualEffectMagnitude,
+                SmokeStrength = $"ControlledContextTransfer:{context.Stratum}",
+                SeedClass = AnomalySeedClass.SynergyTransferProbe,
+                MatchedConfirmedAnomalyPattern = true,
+                PlannedProbeWillMeasureSize = true,
+                Message = "Controlled blanket transfer probe: remeasures a confirmed tensor template under a different surrounding-fidelity context."
+            };
+
+            var plan = new AnomalyProbePlan
+            {
+                Seed = seed,
+                ReferenceConfig = reference,
+                ProbeConfig = probe,
+                ProbeGroups = changed,
+                ProbeType = "context-transfer",
+                HypothesisLabel = $"{_movement.DescribeGroups(changed)} in {context.Stratum} {SafeName(context.QuantId)} blanket",
+                SeedClass = AnomalySeedClass.SynergyTransferProbe,
+                ProbePriorityClass = AnomalySeedClass.SynergyTransferProbe
+            };
+
+            double candidateTierDistance = changed
+                .Select(x => Math.Abs(_movement.EffectiveTier(x.CandidateQuantId) - targetTier))
+                .DefaultIfEmpty(int.MaxValue)
+                .Average();
+            candidates.Add(new SynergyTransferCandidate(
+                template.Key,
+                identityKey,
+                plan,
+                changed.Count,
+                candidateTierDistance,
+                template.Confidence,
+                template.ActualEffectMagnitude));
+        }
+
+        return candidates
+            .OrderBy(x => x.GroupCount)
+            .ThenBy(x => x.CandidateTierDistance)
+            .ThenByDescending(x => x.Confidence)
+            .ThenByDescending(x => x.ActualEffectMagnitude)
+            .ThenBy(x => x.IdentityKey, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    internal static bool TryBuildControlledTransferConfig(
+        byte targetContextQuantId,
+        IReadOnlyList<(byte TensorGroupId, byte CandidateQuantId)> templateGroups,
+        out TensorConfig reference,
+        out TensorConfig probe,
+        out IReadOnlyList<AnomalyChangedGroup> changedGroups)
+    {
+        var movementService = new QuantFidelityComparerService();
+        reference = movementService.CreateActivatedContextBlanket(targetContextQuantId);
+        probe = reference;
+        var changed = new List<AnomalyChangedGroup>();
+        var activeGroupsById = movementService.ActiveGroups.ToDictionary(x => x.UniqueId);
+
+        foreach (var state in templateGroups.OrderBy(x => x.TensorGroupId))
+        {
+            if (state.CandidateQuantId == targetContextQuantId ||
+                !activeGroupsById.TryGetValue(state.TensorGroupId, out var group))
+            {
+                continue;
+            }
+
+            var movement = movementService.Compare(targetContextQuantId, state.CandidateQuantId);
+            if (movement == QuantMovementKind.Unknown || BaselineQuants.IsNativeExactAlias(state.CandidateQuantId))
+                continue;
+
+            byte candidateStored = BaselineQuants.EncodeTensorConfigGroupSlotBaselineId(state.CandidateQuantId);
+            changed.Add(new AnomalyChangedGroup
+            {
+                Group = group,
+                ReferenceQuantId = targetContextQuantId,
+                CandidateQuantId = state.CandidateQuantId,
+                ReferenceStoredSlot = BaselineQuants.EncodeTensorConfigGroupSlotBaselineId(targetContextQuantId),
+                CandidateStoredSlot = candidateStored,
+                Movement = movement
+            });
+            probe = movementService.WithStoredSlot(probe, group, candidateStored);
+        }
+
+        changedGroups = changed;
+        return changed.Count > 0;
+    }
+
+    private List<SynergyTransferTemplate> BuildTransferTemplates(
+        IReadOnlyList<AnomalyInteractionRule> historicalRules,
+        IReadOnlyList<AnomalyProbeResult> currentResults)
+    {
+        var activeGroupsById = _movement.ActiveGroups.ToDictionary(x => x.UniqueId);
+        var knownQuantIds = BaselineQuants.All.Select(x => x.UniqueId).ToHashSet();
+        var templates = new List<SynergyTransferTemplate>();
+
+        foreach (var rule in historicalRules)
+        {
+            var groups = rule.GroupStates
+                .Where(x => activeGroupsById.ContainsKey(x.TensorGroupId))
+                .Where(x => knownQuantIds.Contains(x.CandidateQuantId) && !BaselineQuants.IsNativeExactAlias(x.CandidateQuantId))
+                .OrderBy(x => x.TensorGroupId)
+                .Select(x => new SynergyTransferTemplateGroup(activeGroupsById[x.TensorGroupId], x.CandidateQuantId))
+                .ToList();
+            if (groups.Count == 0)
+                continue;
+
+            templates.Add(new SynergyTransferTemplate(
+                BuildTransferTemplateKey(groups),
+                $"historical-rule:{rule.Id:N}:{rule.RuleDirection}",
+                rule.ReferenceQuantId,
+                rule.Confidence,
+                Math.Abs(rule.MeanActualGainVsTwin),
+                groups));
+        }
+
+        double effectScale = Math.Max(Config.AnomalyDetection.MinActualGainVsTwinKld, 1e-9d);
+        foreach (var result in currentResults
+                     .Where(x => x.Accepted && x.RuleDirection != AnomalyRuleDirection.SuppressionOnly)
+                     .Where(x => x.ReferenceSnapshot != null && x.ProbeSnapshot != null))
+        {
+            var groups = result.Plan.ProbeGroups
+                .Where(x => activeGroupsById.ContainsKey(x.Group.UniqueId))
+                .Where(x => knownQuantIds.Contains(x.CandidateQuantId) && !BaselineQuants.IsNativeExactAlias(x.CandidateQuantId))
+                .OrderBy(x => x.Group.UniqueId)
+                .Select(x => new SynergyTransferTemplateGroup(activeGroupsById[x.Group.UniqueId], x.CandidateQuantId))
+                .ToList();
+            if (groups.Count == 0)
+                continue;
+
+            double confidence = Math.Clamp(0.70d + (0.15d * Math.Clamp(Math.Abs(result.ActualGainVsTwin) / effectScale, 0d, 2d)), 0d, 1d);
+            templates.Add(new SynergyTransferTemplate(
+                BuildTransferTemplateKey(groups),
+                $"current-probe:{result.Plan.ProbeType}:{result.RuleDirection}",
+                result.Plan.ReferenceConfig.BaseQuant,
+                confidence,
+                Math.Abs(result.ActualGainVsTwin),
+                groups));
+        }
+
+        return templates;
+    }
+
+    private static string BuildTransferTemplateKey(IReadOnlyList<SynergyTransferTemplateGroup> groups)
+        => string.Join("|", groups.OrderBy(x => x.Group.UniqueId).Select(x => $"{x.Group.UniqueId}:{x.CandidateQuantId}"));
+
+    private static List<SynergyTransferContext> ResolveTransferTargetContexts(RuntimeSynergyTransferProbeContextStrataConfig strata)
+    {
+        var learnedContextIds = BaselineQuants
+            .GetLearningBaselines(RuntimeSearchSpace.HasUsableImatrix())
+            .Select(x => x.UniqueId)
+            .ToHashSet();
+        var byName = BaselineQuants.All
+            .SelectMany(x => x.Names.Select(name => (Name: name, Quant: x)))
+            .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(x => x.Key, x => x.First().Quant, StringComparer.OrdinalIgnoreCase);
+        var contexts = new List<SynergyTransferContext>();
+        var skippedWithoutLearnedCarrier = new List<string>();
+
+        void add(IEnumerable<string> names, string stratum)
+        {
+            foreach (string name in names.Where(x => !string.IsNullOrWhiteSpace(x)))
+            {
+                if (!byName.TryGetValue(name.Trim(), out var quant) || BaselineQuants.IsNativeExactAlias(quant.UniqueId))
+                    continue;
+
+                // Context blankets need a complete learned tensor map for their base so
+                // base-quant exception tensors can be reconstructed alongside explicit
+                // group overrides. In selected-baseline mode, a recognized built-in name
+                // is not necessarily enabled as a learning baseline.
+                if (!learnedContextIds.Contains(quant.UniqueId))
+                {
+                    skippedWithoutLearnedCarrier.Add($"{name.Trim()} ({stratum})");
+                    continue;
+                }
+
+                if (contexts.All(x => x.QuantId != quant.UniqueId))
+                    contexts.Add(new SynergyTransferContext(quant.UniqueId, stratum));
+            }
+        }
+
+        add(strata.HighFidelityReferenceQuants, "high-fidelity");
+        add(strata.MidFidelityReferenceQuants, "mid-fidelity");
+        if (strata.LowFidelityEnabled)
+            add(strata.LowFidelityReferenceQuants, "low-fidelity");
+
+        if (skippedWithoutLearnedCarrier.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Controlled context skipped:[/] no learned base-carrier mapping is configured for " +
+                $"{Markup.Escape(string.Join(", ", skippedWithoutLearnedCarrier.Distinct(StringComparer.OrdinalIgnoreCase)))}. " +
+                "Enable these names in baselines.enabled_standard_learning_baselines or configure learned external baseline names.");
+        }
+
+        return contexts;
+    }
+
+
 
     private async Task<List<AnomalyProbePlan>> PlanConfirmedAnomalyExpansionProbesAsync(
         IReadOnlyList<AnomalyProbeResult> initialResults,
@@ -1145,6 +1759,9 @@ public sealed class AnomalyWorkflowService
             };
         }
 
+        if (plan.ProbeType == "context-rank-pair")
+            return ClassifyContextRankPair(plan, reference, probe);
+
         double gain = reference.Kld - probe.Kld;
         bool sameOrSmaller = probe.SizeBytes <= reference.SizeBytes;
         if (sameOrSmaller && gain >= Config.AnomalyDetection.MinActualGainVsTwinKld)
@@ -1211,6 +1828,57 @@ public sealed class AnomalyWorkflowService
             ActualGainVsTwin = gain,
             FailureCode = "NORMAL_GRAVITY",
             Message = "Smoke rejected / normal MDA gravity confirmed."
+        };
+    }
+
+    private static AnomalyProbeResult ClassifyContextRankPair(
+        AnomalyProbePlan plan,
+        BenchmarkSnapshotRecord reference,
+        BenchmarkSnapshotRecord probe)
+    {
+        double gain = reference.Kld - probe.Kld;
+        double threshold = Math.Max(Config.AnomalyDetection.MinActualGainVsTwinKld, 1e-12d);
+        if (gain >= threshold)
+        {
+            return new AnomalyProbeResult
+            {
+                Plan = plan,
+                ReferenceSnapshot = reference,
+                ProbeSnapshot = probe,
+                Classification = AnomalyProbeClassification.ContextOnly,
+                RuleDirection = AnomalyRuleDirection.Beneficial,
+                Accepted = true,
+                ActualGainVsTwin = gain,
+                Message = "The native-isolation winner retained a material KLD advantage over its closest-size same-bit contender in this measured context."
+            };
+        }
+
+        if (-gain >= threshold)
+        {
+            return new AnomalyProbeResult
+            {
+                Plan = plan,
+                ReferenceSnapshot = reference,
+                ProbeSnapshot = probe,
+                Classification = AnomalyProbeClassification.HarmfulInteraction,
+                RuleDirection = AnomalyRuleDirection.Harmful,
+                Accepted = true,
+                ActualGainVsTwin = gain,
+                Message = "Context rank reversal: the native-isolation winner became materially worse than its closest-size same-bit contender in this measured context."
+            };
+        }
+
+        return new AnomalyProbeResult
+        {
+            Plan = plan,
+            ReferenceSnapshot = reference,
+            ProbeSnapshot = probe,
+            Classification = AnomalyProbeClassification.NormalGravity,
+            RuleDirection = AnomalyRuleDirection.SuppressionOnly,
+            Accepted = false,
+            ActualGainVsTwin = gain,
+            FailureCode = "CONTEXT_RANK_PAIR_INCONCLUSIVE",
+            Message = "The same-bit context pair did not separate beyond the configured KLD evidence threshold."
         };
     }
 
@@ -2135,6 +2803,44 @@ LIMIT 1;";
             return $"id:{quantId}";
         }
     }
+
+
+    private sealed record SynergyTransferContext(byte QuantId, string Stratum);
+
+    private sealed record SynergyTransferTemplateGroup(TensorGroup Group, byte CandidateQuantId);
+
+    private sealed record SynergyTransferTemplate(
+        string Key,
+        string Source,
+        byte SourceReferenceQuantId,
+        double Confidence,
+        double ActualEffectMagnitude,
+        IReadOnlyList<SynergyTransferTemplateGroup> Groups);
+
+    private sealed record SynergyTransferCandidate(
+        string TemplateKey,
+        string IdentityKey,
+        AnomalyProbePlan Plan,
+        int GroupCount,
+        double CandidateTierDistance,
+        double Confidence,
+        double ActualEffectMagnitude);
+
+    private sealed record ExploratoryIsolationObservation(
+        TensorGroup Group,
+        BaselineQuants Baseline,
+        BenchmarkSnapshotRecord Snapshot);
+
+    private sealed record ExploratoryIsolationPair(
+        TensorGroup Group,
+        ExploratoryIsolationObservation Winner,
+        ExploratoryIsolationObservation Contender,
+        double IsolationGap);
+
+    private sealed record ExploratoryContextPairCandidate(
+        string IdentityKey,
+        ExploratoryIsolationPair Pair,
+        AnomalyProbePlan Plan);
 
 
     private sealed class RejectedSmokePreview

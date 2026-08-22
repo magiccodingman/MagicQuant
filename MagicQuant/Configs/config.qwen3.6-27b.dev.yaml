@@ -104,7 +104,7 @@ imatrix:
 # Final hybrid selection is now driven by rank-safe isolation prediction plus candidate_selection.
 
 isolation_pruning:
-  # 0.04 is the goal, but this is currently causing prediction issues, leave at 0
+  # Preserve complete isolation truth for prediction and contextual probing.
   minimum_isolation_reduction_to_continue_ratio: 0.00
   minimum_isolation_reduction_to_suppress_bf16_ratio: 0.10
   maximum_isolation_ppl_delta_percent: 5.0
@@ -375,9 +375,16 @@ synergy_detection:
   max_transfer_probes_per_template: 6
   max_total_transfer_probes_per_run: 24
   transfer_probe_context_strata:
-    high_fidelity_max_non_reference_groups_below_q6: 1
-    mid_fidelity_max_non_reference_groups_below_q6: 3
+    high_fidelity_reference_quants: [Q6_K, Q5_K]
+    mid_fidelity_reference_quants: [Q4_K_M]
+    low_fidelity_reference_quants: [IQ3_S]
     low_fidelity_enabled: false
+  exploratory_context_pair_enabled: true
+  max_exploratory_context_pairs_per_run: 14
+  exploratory_pair_bit_ranges: [4]
+  exploratory_pair_context_strata: [mid-fidelity, low-fidelity]
+  context_scoped_rule_application_enabled: true
+  max_non_rule_group_context_mismatches: 1
   verbose_synergy_logging: true
   min_smoke_score: 0.55
   max_smoke_gap_kld: 0.004

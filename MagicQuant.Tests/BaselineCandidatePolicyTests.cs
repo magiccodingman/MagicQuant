@@ -26,6 +26,13 @@ public class BaselineCandidatePolicyTests
     }
 
     [Fact]
+    public void ResolveBuiltInStandardRoleBaseline_PrefersCanonicalNameOverSharedTensorSchemeAlias()
+    {
+        Assert.Same(BaselineQuants.IQ3_S, BaselineQuants.ResolveBuiltInStandardRoleBaseline("IQ3_S"));
+        Assert.Same(BaselineQuants.IQ3_M, BaselineQuants.ResolveBuiltInStandardRoleBaseline("IQ3_M"));
+    }
+
+    [Fact]
     public void GetPureBaselineCandidates_NoImatrix_ReturnsAllNonImatrixLearningBaselines()
     {
         var ids = BaselineQuants.GetPureBaselineCandidates(hasUsableImatrix: false)

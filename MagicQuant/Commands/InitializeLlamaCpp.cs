@@ -121,7 +121,11 @@ public class InitializeLlamaCpp : ICommand
         // ---------------------------------------------------------
         // 6. Build Llama.cpp (Runs as Normal User)
         // ---------------------------------------------------------
-        Cache.MagicQuantDirectory = magicQuantPath;
+        // The installer always lives in the user's shared MagicQuant directory, but
+        // dependency validation is also invoked inside commands that may use an
+        // isolated --magic-quant-root. Do not overwrite that configured runtime root:
+        // doing so silently redirects SQLite and other campaign state back to the
+        // user's shared installation directory.
         var builder = new LlamaBuilder(magicQuantPath, sysInfo);
         await builder.PrepareAndBuildAsync(update);
 

@@ -457,6 +457,23 @@ public record BaselineQuants(
             string.Equals(x.PrimaryTensorWeightScheme.Names[0], name, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Resolves user-facing standard-role configuration with canonical baseline names
+    /// taking precedence over shared tensor-scheme aliases. Keep the legacy resolver
+    /// unchanged because external baseline family normalization relies on its historical
+    /// scheme-first registry ordering.
+    /// </summary>
+    public static BaselineQuants? ResolveBuiltInStandardRoleBaseline(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        var exactName = StandardBaselines.FirstOrDefault(x =>
+            x.Names.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)));
+
+        return exactName ?? ResolveBuiltInStandardBaseline(name);
+    }
+
     public static IReadOnlyList<BaselineQuants> GetAllRecognizedBaselines() =>
         StandardBaselines
             .Concat(DynamicCustomBaselines.OrderBy(x => x.UniqueId))

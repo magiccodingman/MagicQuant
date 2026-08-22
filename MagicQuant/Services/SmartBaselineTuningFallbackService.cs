@@ -123,7 +123,23 @@ public sealed class SmartBaselineTuningFallbackService
 
         var context = await GetContextAsync(ct);
         var blanketAnchor = ResolveSmartBlanketAnchor(request.BaselineAnchor, blanketBaseline, context);
-        ValidateBlanketIsolationCoverage(blanketBaseline, context);
+        var missingIsolationGroups = GetMissingIsolationGroups(blanketBaseline, context);
+        var activeExplicitCandidates = BaselineQuants.GetGroupCombinationCandidates(
+            RuntimeSearchSpace.HasUsableImatrix(),
+            Config.Current.Flags.AllowHighPrecisionHybrids);
+
+        if (!IsEligibleForSmartFallbackTuning(
+                blanketBaseline,
+                activeExplicitCandidates,
+                hasCompleteIsolationCoverage: missingIsolationGroups.Count == 0))
+        {
+            AnsiConsole.MarkupLine(
+                $"[grey]Smart fallback skipped:[/] baseline [cyan]{Markup.Escape(blanketBaseline.Names[0])}[/] is learning/context-only in the active search space and intentionally lacks isolated group truth for " +
+                $"{missingIsolationGroups.Count:N0}/{context.ActiveGroups.Count:N0} active group(s). Enable it as an explicit group candidate before smart blanket tuning.");
+            return Array.Empty<HybridSelectionCandidate>();
+        }
+
+        ValidateBlanketIsolationCoverage(blanketBaseline, context, missingIsolationGroups);
 
         var baseSize = blanketAnchor.SizeBytes;
         var baseKld = Math.Max(0d, blanketAnchor.Kld);
@@ -263,14 +279,32 @@ public sealed class SmartBaselineTuningFallbackService
         return true;
     }
 
-    private static void ValidateBlanketIsolationCoverage(
+    internal static bool IsEligibleForSmartFallbackTuning(
+        BaselineQuants blanketBaseline,
+        IReadOnlyCollection<BaselineQuants> activeExplicitCandidates,
+        bool hasCompleteIsolationCoverage)
+    {
+        if (hasCompleteIsolationCoverage)
+            return true;
+
+        return activeExplicitCandidates.Any(x => x.UniqueId == blanketBaseline.UniqueId);
+    }
+
+    private static IReadOnlyList<string> GetMissingIsolationGroups(
         BaselineQuants blanketBaseline,
         RankSafeKldPredictionService.RankSafePredictionModel context)
     {
-        var missingGroups = context.ActiveGroups
+        return context.ActiveGroups
             .Where(group => !context.IsolationByGroupAndBaseline.ContainsKey((group.UniqueId, blanketBaseline.UniqueId)))
             .Select(group => group.Name)
             .ToList();
+    }
+
+    private static void ValidateBlanketIsolationCoverage(
+        BaselineQuants blanketBaseline,
+        RankSafeKldPredictionService.RankSafePredictionModel context,
+        IReadOnlyList<string> missingGroups)
+    {
 
         if (missingGroups.Count == 0)
             return;

@@ -168,6 +168,14 @@ public static class MagicQuantYamlLoader
         config.AnomalyDetection.MaxConfirmedPairwiseOrderingAdjustmentKld = Math.Max(0d, config.AnomalyDetection.MaxConfirmedPairwiseOrderingAdjustmentKld);
         config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone = Math.Max(1, config.AnomalyDetection.MaxSmokeCandidatesPerReferenceZone);
 
+        foreach (var repository in config.Baselines.CustomRepositories)
+        {
+            repository.RepoId = repository.RepoId.Trim();
+            repository.Revision = string.IsNullOrWhiteSpace(repository.Revision)
+                ? null
+                : repository.Revision.Trim();
+        }
+
         ApplyStandardBaselineFilters(config.Baselines);
         BaselineQuants.ResetDynamicCustomBaselines();
     }
@@ -188,8 +196,19 @@ public static class MagicQuantYamlLoader
         s.MaxTransferProbesPerTemplate = Math.Max(0, s.MaxTransferProbesPerTemplate);
         s.MaxTotalTransferProbesPerRun = Math.Max(0, s.MaxTotalTransferProbesPerRun);
         s.TransferProbeContextStrata ??= new RuntimeSynergyTransferProbeContextStrataConfig();
-        s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.HighFidelityMaxNonReferenceGroupsBelowQ6);
-        s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6 = Math.Max(0, s.TransferProbeContextStrata.MidFidelityMaxNonReferenceGroupsBelowQ6);
+        s.TransferProbeContextStrata.HighFidelityReferenceQuants ??= new List<string>();
+        s.TransferProbeContextStrata.MidFidelityReferenceQuants ??= new List<string>();
+        s.TransferProbeContextStrata.LowFidelityReferenceQuants ??= new List<string>();
+        s.MaxExploratoryContextPairsPerRun = Math.Max(0, s.MaxExploratoryContextPairsPerRun);
+        s.ExploratoryPairBitRanges ??= new List<int>();
+        s.ExploratoryPairBitRanges = s.ExploratoryPairBitRanges.Where(x => x is >= 1 and <= 16).Distinct().OrderBy(x => x).ToList();
+        s.ExploratoryPairContextStrata ??= new List<string>();
+        s.ExploratoryPairContextStrata = s.ExploratoryPairContextStrata
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        s.MaxNonRuleGroupContextMismatches = Math.Clamp(s.MaxNonRuleGroupContextMismatches, 0, 9);
         s.MinSmokeScore = Math.Clamp(s.MinSmokeScore, 0d, 1d);
         s.MaxSmokeGapKld = Math.Max(0d, s.MaxSmokeGapKld);
         s.TopRejectedSmokePreview = Math.Max(1, s.TopRejectedSmokePreview);
@@ -235,7 +254,7 @@ public static class MagicQuantYamlLoader
             if (string.IsNullOrWhiteSpace(raw))
                 continue;
 
-            var baseline = BaselineQuants.ResolveBuiltInStandardBaseline(raw.Trim());
+            var baseline = BaselineQuants.ResolveBuiltInStandardRoleBaseline(raw.Trim());
             if (baseline == null)
             {
                 throw new InvalidOperationException(

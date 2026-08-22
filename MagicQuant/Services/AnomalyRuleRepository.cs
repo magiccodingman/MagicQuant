@@ -163,6 +163,7 @@ public sealed class AnomalyRuleRepository
             string groupSetHash = _movement.BuildChangedGroupHash(probeGroups);
             string direction = first.RuleDirection.ToString();
             byte referenceQuantId = first.Plan.ReferenceConfig.BaseQuant;
+            string referenceContextKey = _movement.ReferenceContextKey(first.Plan.ReferenceConfig);
 
             var rule = await db.AnomalyInteractionRules
                 .Include(x => x.GroupStates)
@@ -173,6 +174,7 @@ public sealed class AnomalyRuleRepository
                     x.ImatrixDefinitionId == scope.ImatrixDefinitionId &&
                     x.BenchmarkCategory == (byte)BenchmarkCategory.General &&
                     x.ReferenceQuantId == referenceQuantId &&
+                    x.ReferenceContextKey == referenceContextKey &&
                     x.GroupSetHash == groupSetHash &&
                     x.RuleDirection == direction,
                     ct);
@@ -188,7 +190,7 @@ public sealed class AnomalyRuleRepository
                     ImatrixDefinitionId = scope.ImatrixDefinitionId,
                     BenchmarkCategory = (byte)BenchmarkCategory.General,
                     ReferenceQuantId = referenceQuantId,
-                    ReferenceContextKey = _movement.ReferenceContextKey(first.Plan.ReferenceConfig),
+                    ReferenceContextKey = referenceContextKey,
                     ReferenceEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ReferenceConfig), JsonOptions),
                     CandidateEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig), JsonOptions),
                     InactiveGroupsJson = JsonSerializer.Serialize(_movement.BuildInactiveGroupList(), JsonOptions),
@@ -216,7 +218,7 @@ public sealed class AnomalyRuleRepository
             rule.ShrinkFactor = Config.AnomalyDetection.AnomalyAdjustmentShrinkFactor;
             rule.Confidence = ComputeConfidence(rows);
             rule.AppliedPredictionSpaceAdjustmentKld = ComputePredictionAdjustment(first, rule.Confidence);
-            rule.ReferenceContextKey = _movement.ReferenceContextKey(first.Plan.ReferenceConfig);
+            rule.ReferenceContextKey = referenceContextKey;
             rule.ReferenceEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ReferenceConfig), JsonOptions);
             rule.CandidateEffectiveGroupsJson = JsonSerializer.Serialize(_movement.BuildEffectiveGroupVector(first.Plan.ProbeConfig), JsonOptions);
             rule.InactiveGroupsJson = JsonSerializer.Serialize(_movement.BuildInactiveGroupList(), JsonOptions);
@@ -299,16 +301,16 @@ public sealed class AnomalyRuleRepository
             .Where(x => x.ImatrixDefinitionId == scope.ImatrixDefinitionId)
             .Where(x => x.BenchmarkCategory == (byte)BenchmarkCategory.General)
             .Where(x => x.RuleStatus != AnomalyRuleStatus.Retired.ToString())
-            .Select(x => new { x.ReferenceQuantId, x.GroupSetHash })
+            .Select(x => new { x.ReferenceContextKey, x.GroupSetHash })
             .ToListAsync(ct);
 
         return rows
-            .Select(x => BuildRuleSuppressionKey(x.ReferenceQuantId, x.GroupSetHash))
+            .Select(x => BuildRuleSuppressionKey(x.ReferenceContextKey, x.GroupSetHash))
             .ToHashSet(StringComparer.Ordinal);
     }
 
     public string BuildRuleSuppressionKey(TensorConfig reference, IReadOnlyList<AnomalyChangedGroup> groups)
-        => BuildRuleSuppressionKey(reference.BaseQuant, _movement.BuildChangedGroupHash(groups));
+        => BuildRuleSuppressionKey(_movement.ReferenceContextKey(reference), _movement.BuildChangedGroupHash(groups));
 
     public async Task<bool> HasSuppressionOrRuleAsync(
         TensorConfig reference,
@@ -319,8 +321,8 @@ public sealed class AnomalyRuleRepository
         return keys.Contains(BuildRuleSuppressionKey(reference, groups));
     }
 
-    private static string BuildRuleSuppressionKey(byte referenceQuantId, string groupSetHash)
-        => $"ref={referenceQuantId}|groups={groupSetHash}";
+    private static string BuildRuleSuppressionKey(string referenceContextKey, string groupSetHash)
+        => $"context={referenceContextKey}|groups={groupSetHash}";
 
     private async Task<AnomalyScope> ResolveScopeAsync(MagicQuantContext db, CancellationToken ct)
     {
@@ -400,6 +402,8 @@ public sealed class AnomalyRuleRepository
             "single" => "SingleGroupInversion",
             "pair" => "PairSynergy",
             "composition" => rows.Any(x => x.RuleDirection == AnomalyRuleDirection.Harmful) ? "HarmfulInterferenceComposition" : "CounterfactualSynergyComposition",
+            "context-transfer" => rows.Any(x => x.RuleDirection == AnomalyRuleDirection.Harmful) ? "HarmfulContextTransfer" : "ContextTransfer",
+            "context-rank-pair" => rows.Any(x => x.RuleDirection == AnomalyRuleDirection.Harmful) ? "HarmfulContextRankReversal" : "ContextRankPair",
             "confirmed-neighborhood" => rows.Any(x => x.Classification == AnomalyProbeClassification.ContaminatingPassenger) ? "ContaminatingPassenger" : "ConfirmedAnomalyNeighborhood",
             "full" => rows.Any(x => x.Plan.ProbeGroups.Count >= 3) ? "HigherOrderSynergy" : "PairSynergy",
             "leave-one-out" => "HigherOrderSynergy",

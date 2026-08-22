@@ -364,6 +364,12 @@ public sealed class RuntimeSynergyDetectionConfig
     public int MaxTransferProbesPerTemplate { get; set; } = 6;
     public int MaxTotalTransferProbesPerRun { get; set; } = 24;
     public RuntimeSynergyTransferProbeContextStrataConfig TransferProbeContextStrata { get; set; } = new();
+    public bool ExploratoryContextPairEnabled { get; set; } = true;
+    public int MaxExploratoryContextPairsPerRun { get; set; } = 14;
+    public List<int> ExploratoryPairBitRanges { get; set; } = [4];
+    public List<string> ExploratoryPairContextStrata { get; set; } = ["mid-fidelity", "low-fidelity"];
+    public bool ContextScopedRuleApplicationEnabled { get; set; } = true;
+    public int MaxNonRuleGroupContextMismatches { get; set; } = 1;
     public bool VerboseSynergyLogging { get; set; } = true;
     public double MinSmokeScore { get; set; } = 0.55d;
     public double MaxSmokeGapKld { get; set; } = 0.004d;
@@ -382,8 +388,9 @@ public sealed class RuntimeSynergyDetectionConfig
 
 public sealed class RuntimeSynergyTransferProbeContextStrataConfig
 {
-    public int HighFidelityMaxNonReferenceGroupsBelowQ6 { get; set; } = 1;
-    public int MidFidelityMaxNonReferenceGroupsBelowQ6 { get; set; } = 3;
+    public List<string> HighFidelityReferenceQuants { get; set; } = ["Q6_K", "Q5_K"];
+    public List<string> MidFidelityReferenceQuants { get; set; } = ["Q4_K_M"];
+    public List<string> LowFidelityReferenceQuants { get; set; } = ["IQ3_S"];
     public bool LowFidelityEnabled { get; set; } = false;
 }
 
@@ -421,6 +428,7 @@ public sealed class RuntimeBaselineConfig
 public sealed class CustomBaselineRepositoryConfig
 {
     public string RepoId { get; set; } = string.Empty;
+    public string? Revision { get; set; }
     public string? ShortSourceName { get; set; }
     public string SourceKind { get; set; } = "huggingface_gguf_repository";
     public bool Enabled { get; set; } = true;
@@ -454,6 +462,7 @@ public sealed class ResolvedCustomBaselineSpec
     public string CanonicalKey { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string RepoId { get; set; } = string.Empty;
+    public string? Revision { get; set; }
     public string SourceOwner { get; set; } = string.Empty;
     public string SourceFileName { get; set; } = string.Empty;
     public string ShortSourceName { get; set; } = string.Empty;
