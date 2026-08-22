@@ -43,6 +43,7 @@ public class InitializeLlamaCpp : ICommand
             }
 
             AnsiConsole.MarkupLine("[green]✔ Custom Environment Validated.[/]");
+            _ = DetectAndCacheSystemInfo();
             return;
         }
         else if (!string.IsNullOrEmpty(convertScript) || !string.IsNullOrEmpty(llamaBin))
@@ -61,11 +62,7 @@ public class InitializeLlamaCpp : ICommand
         // ---------------------------------------------------------
         // 3. Hardware Detection
         // ---------------------------------------------------------
-        var sysInfo = HardwareHelper.GetSystemInfo();
-        Cache.SysInfo = sysInfo;
-        AnsiConsole.Write(new Rule("[yellow]System Detection[/]") { Justification = Justify.Left });
-        AnsiConsole.MarkupLine($"Detected GPU: [green]{sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor}[/] ([blue]{sysInfo.GpuInfo.FirstOrDefault()?.GpuName}[/] - {sysInfo.GpuInfo.Sum(x => x.VramGb):F1} GB)");
-        AnsiConsole.MarkupLine($"Detected RAM: [blue]{sysInfo.RamGb:F1} GB[/]");
+        var sysInfo = DetectAndCacheSystemInfo();
 
         // ---------------------------------------------------------
         // 4. Linux System Deps (Sudo Handling)
@@ -124,7 +121,11 @@ public class InitializeLlamaCpp : ICommand
         // ---------------------------------------------------------
         // 6. Build Llama.cpp (Runs as Normal User)
         // ---------------------------------------------------------
-        Cache.MagicQuantDirectory = magicQuantPath;
+        // The installer always lives in the user's shared MagicQuant directory, but
+        // dependency validation is also invoked inside commands that may use an
+        // isolated --magic-quant-root. Do not overwrite that configured runtime root:
+        // doing so silently redirects SQLite and other campaign state back to the
+        // user's shared installation directory.
         var builder = new LlamaBuilder(magicQuantPath, sysInfo);
         await builder.PrepareAndBuildAsync(update);
 
@@ -220,6 +221,20 @@ public class InitializeLlamaCpp : ICommand
 
         AnsiConsole.MarkupLine("[bold green]Initialization Complete![/]");
         AnsiConsole.MarkupLine($"Llama Binaries: [grey]{builder.GetLlamaBinPath()}[/]");
+    }
+
+    private static SystemInfo DetectAndCacheSystemInfo()
+    {
+        var sysInfo = HardwareHelper.GetSystemInfo();
+        Cache.SysInfo = sysInfo;
+
+        AnsiConsole.Write(new Rule("[yellow]System Detection[/]") { Justification = Justify.Left });
+        AnsiConsole.MarkupLine(
+            $"Detected GPU: [green]{sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor}[/] " +
+            $"([blue]{sysInfo.GpuInfo.FirstOrDefault()?.GpuName}[/] - {sysInfo.GpuInfo.Sum(x => x.VramGb):F1} GB)");
+        AnsiConsole.MarkupLine($"Detected RAM: [blue]{sysInfo.RamGb:F1} GB[/]");
+
+        return sysInfo;
     }
 
     // --- Helpers ---

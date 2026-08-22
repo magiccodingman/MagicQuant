@@ -273,7 +273,7 @@ WHERE {where};", ct);
         return new BroadRuleResult(before, log);
     }
 
-    private static string BuildRuleCandidateWhere(AnomalyInteractionRule rule, string? alias)
+    internal static string BuildRuleCandidateWhere(AnomalyInteractionRule rule, string? alias)
     {
         if (rule.GroupStates.Count == 0)
             return string.Empty;
@@ -289,9 +289,11 @@ WHERE {where};", ct);
         var predicates = new List<string>
         {
             $"COALESCE({q("IsProtectedAnchor")}, FALSE) = FALSE",
-            $"{q("BaseRankSafeKld")} IS NOT NULL",
-            $"{q("BaseQuant")} = {rule.ReferenceQuantId}"
+            $"{q("BaseRankSafeKld")} IS NOT NULL"
         };
+
+        if (!Config.SynergyDetection.ContextScopedRuleApplicationEnabled)
+            predicates.Add($"{q("BaseQuant")} = {rule.ReferenceQuantId}");
 
         foreach (var state in rule.GroupStates.OrderBy(x => x.SortOrder))
         {
@@ -302,7 +304,57 @@ WHERE {where};", ct);
             predicates.Add($"{EffectiveQuantSql(alias, column)} = {state.CandidateQuantId}");
         }
 
+        string contextFidelityPredicate = BuildContextFidelityPredicate(rule, alias);
+        if (!string.IsNullOrWhiteSpace(contextFidelityPredicate))
+            predicates.Add(contextFidelityPredicate);
+
         return string.Join(" AND ", predicates);
+    }
+
+    internal static string BuildContextFidelityPredicate(AnomalyInteractionRule rule, string? alias)
+    {
+        if (!Config.SynergyDetection.ContextScopedRuleApplicationEnabled)
+            return string.Empty;
+
+        var ruleGroupIds = rule.GroupStates
+            .Select(x => x.TensorGroupId)
+            .ToHashSet();
+        var referenceContext = ParseReferenceContextKey(rule.ReferenceContextKey);
+        string[] terms = ActiveGroups()
+            .Where(group => !ruleGroupIds.Contains(group.UniqueId))
+            .Select(group => new
+            {
+                Column = ColumnNameForGroupId(group.UniqueId),
+                ExpectedQuantId = referenceContext.GetValueOrDefault(group.UniqueId, rule.ReferenceQuantId)
+            })
+            .Where(x => x.Column != null)
+            .Select(x => $"CASE WHEN {EffectiveQuantSql(alias, x.Column!)} = {x.ExpectedQuantId} THEN 0 ELSE 1 END")
+            .ToArray();
+
+        if (terms.Length == 0)
+            return string.Empty;
+
+        int maximumContextMismatches = Math.Clamp(
+            Config.SynergyDetection.MaxNonRuleGroupContextMismatches,
+            0,
+            terms.Length);
+        return $"(({string.Join(" + ", terms)}) <= {maximumContextMismatches})";
+    }
+
+    private static IReadOnlyDictionary<byte, byte> ParseReferenceContextKey(string? contextKey)
+    {
+        var result = new Dictionary<byte, byte>();
+        if (string.IsNullOrWhiteSpace(contextKey))
+            return result;
+
+        foreach (string item in contextKey.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = item.Split(':', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 && byte.TryParse(parts[0], out byte groupId) && byte.TryParse(parts[1], out byte quantId))
+                result[groupId] = quantId;
+        }
+
+        return result;
     }
 
     private static string BuildPairwiseTwinJoinPredicate(AnomalyInteractionRule rule, string candidateAlias, string twinAlias)

@@ -728,8 +728,9 @@ public class Evolution : ICommand
             bool inCarriers = carriers.Any(x => x.UniqueId == custom.DynamicBaselineId);
             bool inExplicit = explicitCandidates.Any(x => x.UniqueId == custom.DynamicBaselineId);
 
+            string revision = string.IsNullOrWhiteSpace(custom.Revision) ? "main" : custom.Revision;
             AnsiConsole.MarkupLine(
-                $"  [cyan]{custom.DynamicBaselineId}[/] [yellow]{Markup.Escape(custom.DisplayName)}[/] family={Markup.Escape(custom.BaselineFamily)} file={Markup.Escape(custom.SourceFileName)} learning={inLearning} carrier={inCarriers} explicit={inExplicit}");
+                $"  [cyan]{custom.DynamicBaselineId}[/] [yellow]{Markup.Escape(custom.DisplayName)}[/] family={Markup.Escape(custom.BaselineFamily)} file={Markup.Escape(custom.SourceFileName)} revision={Markup.Escape(revision)} learning={inLearning} carrier={inCarriers} explicit={inExplicit}");
         }
     }
 
@@ -744,6 +745,7 @@ public class Evolution : ICommand
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[bold]Arguments:[/]");
         AnsiConsole.MarkupLine("  [green]--model-dir[/]    Path to the model directory containing .safetensors files (Optional if set in YAML)");
+        AnsiConsole.MarkupLine("  [green]--magic-quant-root[/]    Isolated runtime root containing MagicQuant_SQLite.db and shared runtime assets (Optional)");
         AnsiConsole.MarkupLine("  [green]--recheck-hardware-probe[/]    Force hardware/Q8 probe and update cached plan in SQLite (Optional)");
         AnsiConsole.MarkupLine("  [green]--use-imatrix[/]    Enable imatrix acquisition/build and allow imatrix-required search candidates (Optional)");
         AnsiConsole.MarkupLine("  [green]--allow-high-precision-hybrids[/]    Keep BF16/F16 explicit group candidates in final surviving combos (Optional, default false)");

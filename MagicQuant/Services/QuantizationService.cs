@@ -49,6 +49,7 @@ public class QuantizationService
     private readonly ModelArtifactPathService _paths;
     private readonly ScratchStorageService _scratchStorage;
     private readonly PythonManager _python;
+    private readonly GgufMetadataReader _ggufMetadataReader;
     private readonly SemaphoreSlim _cpuQuantLock;
     private readonly int _quantThreadsPerProcess;
     private readonly int _maxConcurrentQuantizations;
@@ -67,6 +68,7 @@ public class QuantizationService
     {
         _benchmarker = benchmarker ?? throw new ArgumentNullException(nameof(benchmarker));
         _python = _benchmarker._pyManager;
+        _ggufMetadataReader = new GgufMetadataReader(_python);
 
         if (string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
             throw new Exception(
@@ -252,7 +254,11 @@ public class QuantizationService
             },
             async (baselinePlan, token) =>
             {
-                records.Add(await ExecutePlanAsync(baselinePlan, stageProgress, token));
+                records.Add(await ExecutePlanAsync(
+                    baselinePlan,
+                    stageProgress,
+                    allowIndependentGpuTopology: learnableBaselinePlans.Count > 1,
+                    ct: token));
             });
 
         var remainingPlans = plans.Except(learnableBaselinePlans).ToList();
@@ -300,12 +306,21 @@ public class QuantizationService
             new ParallelOptions { MaxDegreeOfParallelism = workerCount, CancellationToken = ct },
             async (group, token) =>
             {
-                records.Add(await ExecutePlanAsync(group.Source, stageProgress, token));
+                records.Add(await ExecutePlanAsync(
+                    group.Source,
+                    stageProgress,
+                    allowIndependentGpuTopology: primaryGroups.Count > 1,
+                    ct: token));
 
                 foreach (var duplicatePlan in group.Duplicates)
                 {
                     token.ThrowIfCancellationRequested();
-                    records.Add(await ExecuteDuplicatePlanAsync(group.Source, duplicatePlan, stageProgress, token));
+                    records.Add(await ExecuteDuplicatePlanAsync(
+                        group.Source,
+                        duplicatePlan,
+                        stageProgress,
+                        allowIndependentGpuTopology: primaryGroups.Count > 1,
+                        ct: token));
                 }
             });
 
@@ -336,6 +351,7 @@ public class QuantizationService
     private async Task<SampleProcessingRecord> ExecutePlanAsync(
         RequiredSamplePlan plan,
         StageProgressTracker? progress,
+        bool allowIndependentGpuTopology,
         CancellationToken ct)
     {
         var record = new SampleProcessingRecord
@@ -347,7 +363,10 @@ public class QuantizationService
 
         try
         {
-            var state = await ProcessHybridQuantAsync(plan.Quant, ct);
+            var state = await ProcessHybridQuantAsync(
+                plan.Quant,
+                allowIndependentGpuTopology,
+                ct);
             sw.Stop();
             record.State = state;
 
@@ -376,6 +395,7 @@ public class QuantizationService
         RequiredSamplePlan sourcePlan,
         RequiredSamplePlan duplicatePlan,
         StageProgressTracker? progress,
+        bool allowIndependentGpuTopology,
         CancellationToken ct)
     {
         var record = new SampleProcessingRecord
@@ -405,7 +425,11 @@ public class QuantizationService
             }
 
             sw.Stop();
-            return await ExecutePlanAsync(duplicatePlan, progress, ct);
+            return await ExecutePlanAsync(
+                duplicatePlan,
+                progress,
+                allowIndependentGpuTopology,
+                ct);
         }
         catch (Exception ex)
         {
@@ -478,6 +502,7 @@ public class QuantizationService
 
     public async Task<SampleProcessState> ProcessHybridQuantAsync(
         HybridQuant quant,
+        bool allowIndependentGpuTopology = true,
         CancellationToken ct = default)
     {
         string modelName = GenerateHybridName(quant);
@@ -599,7 +624,8 @@ public class QuantizationService
                     benchDir: modelBenchDir,
                     klLogitsDir: baseLogitsDir,
                     saveLogits: false,
-                    domainsOverride: new[] { "general" });
+                    domainsOverride: new[] { "general" },
+                    allowIndependentGpuTopology: allowIndependentGpuTopology);
 
                 if (IsLearnableBaselineRun(quant))
                 {
@@ -2812,85 +2838,7 @@ public class QuantizationService
 
     private async Task<GgufTensorReadResult> ReadTensorMetadataFromGgufAsync(string ggufPath, string workingDirectory)
     {
-        string workingDir = workingDirectory;
-        string unique = Guid.NewGuid().ToString("N");
-        string payloadPath = Path.Combine(workingDir, $"read_gguf_tensors_{unique}.json");
-        string resultPath = Path.Combine(workingDir, $"read_gguf_tensors_result_{unique}.json");
-        string scriptPath = Path.Combine(workingDir, $"read_gguf_tensors_{unique}.py");
-
-        try
-        {
-            await File.WriteAllTextAsync(payloadPath,
-                JsonSerializer.Serialize(new { gguf_path = ggufPath, output_path = resultPath }));
-
-            const string py = """
-                              import json
-                              import sys
-
-                              payload_path = sys.argv[1]
-                              with open(payload_path, "r", encoding="utf-8") as f:
-                                  payload = json.load(f)
-
-                              output_path = payload["output_path"]
-
-                              def resolve_type_name(t):
-                                  for attr in ["type_name", "tensor_type", "type"]:
-                                      v = getattr(t, attr, None)
-                                      if v is None:
-                                          continue
-                                      if hasattr(v, "name"):
-                                          return str(v.name)
-                                      return str(v)
-                                  return "UNKNOWN"
-
-                              try:
-                                  import gguf
-                                  reader = gguf.GGUFReader(payload["gguf_path"])
-                                  tensor_names = [t.name for t in reader.tensors]
-                                  tensor_types = {t.name: resolve_type_name(t) for t in reader.tensors}
-
-                                  def read_scalar(key):
-                                      field = reader.fields.get(key)
-                                      if field is None:
-                                          return None
-                                      value = field.contents()
-                                      return value.item() if hasattr(value, "item") else value
-
-                                  architecture = read_scalar("general.architecture")
-                                  architecture_key = str(architecture) if architecture is not None else None
-                                  block_count = read_scalar(f"{architecture_key}.block_count") if architecture_key else None
-                                  nextn_layers = read_scalar(f"{architecture_key}.nextn_predict_layers") if architecture_key else None
-                                  result = {
-                                      "Architecture": architecture_key,
-                                      "BlockCount": int(block_count) if block_count is not None else None,
-                                      "NextnPredictLayers": int(nextn_layers) if nextn_layers is not None else None,
-                                      "TensorNames": tensor_names,
-                                      "TensorTypes": tensor_types
-                                  }
-                              except Exception as e:
-                                  result = {"Error": str(e), "TensorNames": [], "TensorTypes": {}}
-
-                              with open(output_path, "w", encoding="utf-8") as f:
-                                  json.dump(result, f, indent=2)
-                              """;
-
-            await File.WriteAllTextAsync(scriptPath, py);
-            await _python.RunPythonScriptAsync(scriptPath, $"\"{payloadPath}\"");
-
-            var result = JsonSerializer.Deserialize<GgufTensorReadResult>(await File.ReadAllTextAsync(resultPath));
-            if (result == null)
-                throw new InvalidOperationException("Failed to parse GGUF tensor list result.");
-            if (!string.IsNullOrWhiteSpace(result.Error))
-                throw new InvalidOperationException($"Failed to read GGUF tensor names: {result.Error}");
-
-            return result;
-        }
-        finally
-        {
-            if (File.Exists(payloadPath)) File.Delete(payloadPath);
-            if (File.Exists(resultPath)) File.Delete(resultPath);
-            if (File.Exists(scriptPath)) File.Delete(scriptPath);
-        }
+        return await _ggufMetadataReader.ReadAsync(ggufPath, workingDirectory);
     }
 
 

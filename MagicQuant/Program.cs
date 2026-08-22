@@ -72,8 +72,7 @@ if (!commands.TryGetValue(commandInput, out var commandInfo))
     return;
 }
 
-string remainingArgsString = string.Join(" ", args.Skip(1));
-List<CliArg> parsedArgs = CliHelpers.ParseArguments(remainingArgsString);
+List<CliArg> parsedArgs = CliHelpers.ParseArguments(args.Skip(1));
 
 try
 {

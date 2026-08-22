@@ -107,6 +107,46 @@ public static class CliHelpers
         return cliArgs;
     }
 
+    public static List<CliArg> ParseArguments(IEnumerable<string> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+
+        string[] tokens = arguments.ToArray();
+        var cliArgs = new List<CliArg>();
+
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            string token = tokens[i];
+            if (!token.StartsWith("--", StringComparison.Ordinal) || token.Length <= 2)
+                continue;
+
+            string option = token[2..];
+            string name;
+            string value = string.Empty;
+            int equals = option.IndexOf('=');
+
+            if (equals >= 0)
+            {
+                name = option[..equals];
+                value = option[(equals + 1)..];
+            }
+            else
+            {
+                name = option;
+                if (i + 1 < tokens.Length && !tokens[i + 1].StartsWith("--", StringComparison.Ordinal))
+                    value = tokens[++i];
+            }
+
+            cliArgs.Add(new CliArg
+            {
+                Name = name,
+                Value = value.Trim().Trim('"')
+            });
+        }
+
+        return cliArgs;
+    }
+
     public static void ShowHelp(Dictionary<string, (string Description, Func<ICommand> Factory)> commands)
     {
         AnsiConsole.Write(new Rule("[yellow]MagicQuant CLI[/]") { Justification = Justify.Left, Style = "grey" });

@@ -165,10 +165,10 @@ isolation_pruning:
   # These values still matter for later isolation / bad-trade reasoning,
   # not for the old "skip candidate because learned tensor usage looked redundant" path.
 
-  # Minimum isolation reduction ratio required to continue considering the result meaningful.
-  # Currently broke, should be 0.04 but leave at 0 until fixed. Causes isolated samples not to be made 
-  # which was once a requirement but need to go back and remove as all samples are needed for 
-  # accurate predictions. DO not remove this comment till this is resolved.
+  # Minimum carrier-relative size reduction required before generating the remaining
+  # candidate-isolation samples for a tensor group. Keep this at 0 when prediction,
+  # contextual probing, or anomaly analysis needs complete isolation truth; later
+  # quality and bad-trade filters still remove unhelpful candidates.
   minimum_isolation_reduction_to_continue_ratio: 0.00
 
   # Minimum reduction ratio before BF16 suppression logic is allowed to kick in.
@@ -414,6 +414,9 @@ baselines:
     # - "quantize_base_name" is the quant/base family name used in rebuild logic
     #
     # - repo_id: unsloth/Qwen3-4B-Instruct-2507-GGUF
+    #   # Optional branch, tag, or commit. Pin this when a provider rotates files
+    #   # so tensor digestion and later downloads remain reproducible.
+    #   revision:
     #   enabled: true
     #   short_source_name: UD
     #   source_kind: huggingface_gguf_repository
@@ -492,10 +495,24 @@ synergy_detection:
   transfer_probe_enabled: true
   max_transfer_probes_per_template: 6
   max_total_transfer_probes_per_run: 24
+  # Controlled all-surrounding-groups blankets. This measures whether a template's
+  # marginal behavior transfers—or flips—without importing an old winning mixture.
   transfer_probe_context_strata:
-    high_fidelity_max_non_reference_groups_below_q6: 1
-    mid_fidelity_max_non_reference_groups_below_q6: 3
+    high_fidelity_reference_quants: [Q6_K, Q5_K]
+    mid_fidelity_reference_quants: [Q4_K_M]
+    low_fidelity_reference_quants: [IQ3_S]
     low_fidelity_enabled: false
+  # Remeasure the best and closest-size non-equivalent same-bit isolation recipes head-to-head inside
+  # controlled contexts. This detects context-dependent rank flips without replaying
+  # an old winning mixture. Low-fidelity contexts remain governed by the opt-in above.
+  exploratory_context_pair_enabled: true
+  max_exploratory_context_pairs_per_run: 14
+  exploratory_pair_bit_ranges: [4]
+  exploratory_pair_context_strata: [mid-fidelity, low-fidelity]
+  # Match rules against their measured effective surrounding-group context,
+  # independent of the search row's carrier quant. Rule-selected groups are excluded.
+  context_scoped_rule_application_enabled: true
+  max_non_rule_group_context_mismatches: 1
   verbose_synergy_logging: true
   min_smoke_score: 0.55
   max_smoke_gap_kld: 0.004

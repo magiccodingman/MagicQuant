@@ -481,7 +481,12 @@ public sealed class HybridBenchmarkRepository
 
         var resolved = Config.GetResolvedCustomBaseline(baseline.CanonicalKey);
         if (resolved != null && !string.IsNullOrWhiteSpace(resolved.RepoId))
-            return $"https://huggingface.co/{resolved.RepoId}";
+        {
+            string repositoryUrl = $"https://huggingface.co/{resolved.RepoId}";
+            return string.IsNullOrWhiteSpace(resolved.Revision)
+                ? repositoryUrl
+                : $"{repositoryUrl}/tree/{Uri.EscapeDataString(resolved.Revision)}";
+        }
 
         if (!string.IsNullOrWhiteSpace(baseline.SourceRepository))
             return $"https://huggingface.co/{baseline.SourceRepository}";

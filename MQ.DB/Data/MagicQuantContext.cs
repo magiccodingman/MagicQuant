@@ -10,7 +10,7 @@ public class MagicQuantContext : DbContext
     // --------------------------------------------------------
     // Self-Initialization Logic
     // --------------------------------------------------------
-    private static bool _isInitialized = false;
+    private static readonly HashSet<string> InitializedDatabaseDirectories = new(StringComparer.Ordinal);
     private static readonly object _initLock = new();
 
     public MagicQuantContext()
@@ -30,17 +30,23 @@ public class MagicQuantContext : DbContext
         if (IsDesignTime())
             return;
 
-        if (_isInitialized)
-            return;
-
+        string initializationKey = ResolveDatabaseDirectory();
         lock (_initLock)
         {
-            if (_isInitialized)
+            if (InitializedDatabaseDirectories.Contains(initializationKey))
                 return;
 
             InitializeDatabase();
-            _isInitialized = true;
+            InitializedDatabaseDirectories.Add(initializationKey);
         }
+    }
+
+    private static string ResolveDatabaseDirectory()
+    {
+        string directory = string.IsNullOrWhiteSpace(Cache.MagicQuantDirectory)
+            ? Directory.GetCurrentDirectory()
+            : Cache.MagicQuantDirectory;
+        return Path.GetFullPath(directory);
     }
 
     private void InitializeDatabase()
