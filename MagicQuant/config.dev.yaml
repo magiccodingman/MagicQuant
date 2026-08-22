@@ -276,6 +276,8 @@ baselines:
 
   custom_repositories:
     - repo_id: unsloth/Qwen3.8-27B-GGUF
+      # Immutable dynamic-v3 revision used by the completed Qwen3.8 campaign.
+      revision: 4ca720788d1e01f1bff70c033e0d0028fd02e502
       enabled: true
       short_source_name: Unsloth
       source_kind: huggingface_gguf_repository
