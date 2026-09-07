@@ -50,7 +50,7 @@ public sealed class TensorGroupReviewService
             if (!confirmed)
             {
                 throw new OperationCanceledException(
-                    "Evolution run cancelled by user after tensor-group profile review. No tensor-group-scoped learning/search work was started.");
+                    "Pipeline run cancelled by user after tensor-group profile review. No tensor-group-scoped learning/search work was started.");
             }
         }
         else

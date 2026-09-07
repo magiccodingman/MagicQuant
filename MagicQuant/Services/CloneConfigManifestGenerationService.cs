@@ -44,7 +44,7 @@ public sealed class CloneConfigManifestGenerationService
             SourceJson = sourceJson,
             SourceModelId = Cache.CurrentModelId,
             SourceArchitectureFamily = Cache.CurrentArchitectureFamilyName,
-            Notes = "Exact GGUF tensor quantization map for repository clone/reproducibility mode. This file is not a proof that another cloned model went through the full MagicQuant evolution pipeline. External reference finalists use persisted SQLite learned tensor truth when no local final GGUF was exported."
+            Notes = "Exact GGUF tensor quantization map for repository clone/reproducibility mode. This file is not a proof that another cloned model went through the full MagicQuant discovery pipeline. External reference finalists use persisted SQLite learned tensor truth when no local final GGUF was exported."
         };
 
         double? referencePpl = ResolveReferencePpl(pplReference, exportedArtifacts.Select(x => x.Snapshot));

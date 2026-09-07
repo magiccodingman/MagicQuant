@@ -1029,13 +1029,8 @@ public sealed class CloneRepositoryQuants : ICommand
     private static string ResolveAndValidateOutputDirectory(IReadOnlyCollection<CliArg> args)
     {
         string? explicitOutput = Get(args, "output-dir");
-        string outputDir = !string.IsNullOrWhiteSpace(explicitOutput)
-            ? explicitOutput!
-            : !string.IsNullOrWhiteSpace(Config.OutputDirectory)
-                ? Config.OutputDirectory!
-                : Path.Combine(Cache.ModelMagicQuantDirectory!, "FinalOutput");
-
-        outputDir = Path.GetFullPath(outputDir);
+        string outputDir = OutputPathService.Clone(
+            Cache.ModelMagicQuantDirectory!, explicitOutput, Config.OutputDirectory);
         Directory.CreateDirectory(outputDir);
         return outputDir;
     }
@@ -1046,10 +1041,10 @@ public sealed class CloneRepositoryQuants : ICommand
     private static void ShowHelp()
     {
         AnsiConsole.MarkupLine("[bold yellow]Command: clone-repository-quants[/]");
-        AnsiConsole.MarkupLine("Rebuilds the final GGUF list from a MagicQuant-compatible tensor config manifest without running the evolution/search pipeline.");
+        AnsiConsole.MarkupLine("Rebuilds the final GGUF list from a MagicQuant-compatible tensor config manifest without running the discovery pipeline.");
         AnsiConsole.MarkupLine("Usage:");
-        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-repo \"owner/repo\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
-        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-json \"<path-or-url>\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
+        AnsiConsole.WriteLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-repo \"owner/repo\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
+        AnsiConsole.WriteLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-json \"<path-or-url>\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
         AnsiConsole.MarkupLine("Options:");
         AnsiConsole.MarkupLine($"  --source-repo       Hugging Face repo containing {MagicQuantManifestPathService.RelativeManifestPath(MagicQuantManifestPathService.CloneConfigsFileName)} or legacy root {MagicQuantManifestPathService.CloneConfigsFileName}");
         AnsiConsole.MarkupLine("  --source-json       Local or http(s) path to magicquant.clone-configs.json");

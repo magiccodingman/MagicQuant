@@ -7,57 +7,9 @@ using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
 
-#if DEBUG
-if (args.Length == 0)
-{
-    // Use: "clone" or "evolution"
-    const string debugMode = "clone"; // switch to "evolution" to use the full learning/search pipeline again.
+var commands = CommandCatalog.Create();
 
-    if (string.Equals(debugMode, "clone", StringComparison.OrdinalIgnoreCase))
-    {
-        args =
-        [
-            "clone-repository-quants",
-            "--config", $"\"{Path.Combine(AppContext.BaseDirectory, "config.clone-unsloth.dev.yaml")}\"",
-            "--architecture-family", @"""Qwen3.8-27B""",
-            "--source-json", @"""/mnt/world8/AI/Models/Qwen3.8-27B-MagicQuant/magicquant-manifest/magicquant.clone-configs.json""",
-            "--model-dir", @"""/mnt/world8/AI/Models/Qwen3.8-27B-Qwen/""",
-            "--output-dir", @"""/mnt/world8/AI/Models/Qwen3.8-27B-MagicQuant-Unsloth/"""
-        ];
-    }
-    else
-    {
-        // Previous DEBUG harness kept intact for quick full-pipeline testing.
-        // --reuse-existing-final-artifacts preserves/reuses valid existing final GGUFs by exact file name + byte size.
-        // Omit --reuse-existing-final-artifacts to force normal full rebuild behavior.
-        // "--config", @"/path/to/config.dev.yaml",
-        args =
-        [
-            "evolution",
-            "--architecture-family", @"""Qwen3.8-27B""",
-            "--allow-architecture-family-alias-override"
-        ];
-    }
-}
-else if (args.Length > 0 &&
-         (string.Equals(args[0], "evolution", StringComparison.OrdinalIgnoreCase) ||
-          string.Equals(args[0], "clone-repository-quants", StringComparison.OrdinalIgnoreCase)) &&
-         !args.Any(x => string.Equals(x, "--architecture-family", StringComparison.OrdinalIgnoreCase)))
-{
-    args = args.Concat(["--architecture-family", @"""Qwen3-4B-Instruct-2507"""]).ToArray();
-}
-#endif
-
-var commands = new Dictionary<string, (string Description, Func<ICommand> Factory)>(StringComparer.OrdinalIgnoreCase)
-{
-    { "evolution", ("Run the full evolutionary quantization search", () => new Evolution()) },
-    { "validate-predictions", ("Validate rank-safe KLD predictions against existing SQLite benchmarks", () => new ValidatePredictions()) },
-    { "build-hybrids", ("Export specific hybrid models with polished README", () => new BuildHybrids()) },
-    { "clone-repository-quants", ("Clone final MagicQuant tensor configurations from a compatible repository/json", () => new CloneRepositoryQuants()) },
-    { "initialize-llama-cpp", ("Initialize or update llama.cpp", () => new InitializeLlamaCpp()) }
-};
-
-if (args.Length == 0 || args[0].Equals("help", StringComparison.OrdinalIgnoreCase))
+if (args.Length == 0 || CommandCatalog.IsHelp(args[0]))
 {
     CliHelpers.ShowHelp(commands);
     return;
@@ -67,8 +19,9 @@ string commandInput = args[0];
 
 if (!commands.TryGetValue(commandInput, out var commandInfo))
 {
-    AnsiConsole.MarkupLine($"[red]Error:[/] The command [yellow]'{commandInput}'[/] does not exist.");
+    AnsiConsole.MarkupLine($"[red]Error:[/] The command [yellow]'{Markup.Escape(commandInput)}'[/] does not exist.");
     CliHelpers.ShowHelp(commands);
+    Environment.ExitCode = 2;
     return;
 }
 
@@ -76,6 +29,15 @@ List<CliArg> parsedArgs = CliHelpers.ParseArguments(args.Skip(1));
 
 try
 {
+    // Help is a read-only operation: do not load config, clean caches, install
+    // dependencies, or open databases just to explain a command.
+    if (parsedArgs.Any(a => a.Name.Equals("help", StringComparison.OrdinalIgnoreCase)) ||
+        args.Skip(1).Any(a => a == "-h"))
+    {
+        await commandInfo.Factory().Run([new CliArg { Name = "help", Value = string.Empty }]);
+        return;
+    }
+
     var loadedConfig = MagicQuantYamlLoader.LoadAndApply(commandInput, parsedArgs);
     var startupScratch = new ScratchStorageService();
     await startupScratch.CleanupStaleScratchArtifactsAsync();
@@ -109,12 +71,11 @@ try
         AnsiConsole.WriteLine();
     }
 
-    CliHelpers.ValidateCombinationLogicWorks();
-
     var commandInstance = commandInfo.Factory();
     await commandInstance.Run(parsedArgs);
 }
 catch (Exception ex)
 {
     AnsiConsole.WriteException(ex);
+    Environment.ExitCode = 1;
 }

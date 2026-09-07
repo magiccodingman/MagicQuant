@@ -4,6 +4,10 @@ using MQ.DB.Models;
 
 namespace MagicQuant.Services;
 
+/// <summary>
+/// Names durable model artifacts and quantization logs from the active model context.
+/// Temporary heavy writes belong to ScratchStorageService leases instead.
+/// </summary>
 public sealed class ModelArtifactPathService
 {
     public string ModelDirectory => Cache.ModelDirectory

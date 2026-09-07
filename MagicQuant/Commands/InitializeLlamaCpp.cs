@@ -12,23 +12,38 @@ public class InitializeLlamaCpp : ICommand
 {
     public async Task Run(List<CliArg> args)
     {
+        if (args.Any(a => string.Equals(a.Name, "help", StringComparison.OrdinalIgnoreCase)))
+        {
+            AnsiConsole.MarkupLine("[bold yellow]Command: initialize-llama-cpp[/]");
+            AnsiConsole.WriteLine("Initialize llama.cpp and Python dependencies in the shared user MagicQuant directory.");
+            AnsiConsole.WriteLine("  --update          Update dependencies and rebuild llama.cpp");
+            AnsiConsole.WriteLine("  --llama-root      Existing llama.cpp checkout (requires both paths below)");
+            AnsiConsole.WriteLine("  --llama-bin       Existing compiled binaries directory");
+            AnsiConsole.WriteLine("  --convert-script  Existing convert_hf_to_gguf.py file");
+            AnsiConsole.WriteLine("Without custom paths, setup can download dependencies and request sudo on Linux.");
+            AnsiConsole.WriteLine("--validate / --verify retain setup behavior; they are not a read-only check.");
+            return;
+        }
+
         // ---------------------------------------------------------
         // 1. Argument Parsing & Path Validation
         // ---------------------------------------------------------
-        bool validate = args.Any(a => a.Name?.ToLower() == "validate" || a.Name?.ToLower() == "verify");
         bool update = args.Any(a => a.Name?.ToLower() == "update");
         
         string? convertScript = args.FirstOrDefault(a => a.Name?.ToLower() == "convert-script")?.Value;
         string? llamaBin = args.FirstOrDefault(a => a.Name?.ToLower() == "llama-bin")?.Value;
         string? llamaRoot = args.FirstOrDefault(a => a.Name?.ToLower() == "llama-root")?.Value;
 
+        convertScript ??= Config.Current.Paths.ConvertScript;
+        llamaBin ??= Config.Current.Paths.LlamaBin;
+        llamaRoot ??= Config.Current.Paths.LlamaRoot;
+
         // Custom Path Validation
         if (!string.IsNullOrEmpty(llamaRoot))
         {
             if (string.IsNullOrEmpty(convertScript) || string.IsNullOrEmpty(llamaBin))
             {
-                AnsiConsole.MarkupLine("[red]Error: If you provide custom paths, you must provide --llama-root, --llama-bin, AND --convert-script[/]");
-                return;
+                throw new ArgumentException("Custom paths require --llama-root, --llama-bin, AND --convert-script (or their YAML equivalents).");
             }
 
             // Normalize and Check
@@ -38,18 +53,19 @@ public class InitializeLlamaCpp : ICommand
 
             if (!Directory.Exists(llamaRoot) || !Directory.Exists(llamaBin) || !File.Exists(convertScript))
             {
-                AnsiConsole.MarkupLine("[red]Error: One or more provided custom paths do not exist.[/]");
-                return;
+                throw new DirectoryNotFoundException("One or more custom llama.cpp paths do not exist.");
             }
 
+            Cache.LlamaRoot = llamaRoot;
+            Cache.LlamaBin = llamaBin;
+            Cache.ConvertScript = convertScript;
             AnsiConsole.MarkupLine("[green]✔ Custom Environment Validated.[/]");
             _ = DetectAndCacheSystemInfo();
             return;
         }
         else if (!string.IsNullOrEmpty(convertScript) || !string.IsNullOrEmpty(llamaBin))
         {
-             AnsiConsole.MarkupLine("[red]Error: Partial paths provided. Provide ALL custom paths or NONE to use defaults.[/]");
-             return;
+             throw new ArgumentException("Partial llama.cpp paths provided. Provide all three custom paths or none.");
         }
 
         // ---------------------------------------------------------
@@ -88,10 +104,9 @@ public class InitializeLlamaCpp : ICommand
                 {
                     await RefreshSudoCredentialsAsync();
                 }
-                catch
+                catch (Exception ex)
                 {
-                    AnsiConsole.MarkupLine("[red]Error: Sudo access denied or cancelled. Cannot install system dependencies.[/]");
-                    return;
+                    throw new InvalidOperationException("Sudo access denied or cancelled. Cannot install system dependencies.", ex);
                 }
 
                 // B. Run Install WITH sudo
@@ -108,8 +123,7 @@ public class InitializeLlamaCpp : ICommand
         }
         else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
-            AnsiConsole.MarkupLine("[red]Error: MacOS support coming soon.[/]");
-            return;
+            throw new PlatformNotSupportedException("Automatic macOS setup is not implemented. Provide an existing llama.cpp environment.");
         }
 
         // ---------------------------------------------------------
@@ -242,8 +256,11 @@ public class InitializeLlamaCpp : ICommand
     private static async Task RunSimpleProcess(string exe, string args)
     {
         var startInfo = new ProcessStartInfo(exe, args) { UseShellExecute = false, CreateNoWindow = true };
-        var p = Process.Start(startInfo);
-        await p!.WaitForExitAsync();
+        using var p = Process.Start(startInfo)
+            ?? throw new InvalidOperationException($"Could not start {exe}.");
+        await p.WaitForExitAsync();
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"{exe} failed with exit code {p.ExitCode}.");
     }
 
     private async Task RefreshSudoCredentialsAsync()

@@ -72,10 +72,10 @@ public class QuantizationService
 
         if (string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
             throw new Exception(
-                "Cache.ModelMagicQuantDirectory not set. Evolution must set this before quantization starts.");
+                "Cache.ModelMagicQuantDirectory not set. The pipeline must set this before quantization starts.");
 
         if (string.IsNullOrWhiteSpace(Cache.ModelDirectory))
-            throw new Exception("Cache.ModelDirectory not set. Evolution must set this before quantization starts.");
+            throw new Exception("Cache.ModelDirectory not set. The pipeline must set this before quantization starts.");
 
         if (string.IsNullOrWhiteSpace(Cache.LlamaBin))
             throw new Exception("Cache.LlamaBin not set. Initialization must complete before quantization starts.");

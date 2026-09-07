@@ -130,7 +130,7 @@ public class Cache
 
     /// <summary>
     /// Clone/export-only flows may benchmark for release metadata without polluting the
-    /// learning/evolution SQLite truth tables.
+    /// learning/discovery SQLite truth tables.
     /// </summary>
     public static bool SuppressBenchmarkPersistence { get; set; }
 

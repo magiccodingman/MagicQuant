@@ -1,0 +1,12 @@
+# Copy to config.local.yaml and edit. Pass explicitly with --config.
+# Omitted settings use C# defaults, not a merge with config.default.yaml.
+# For the full distributed tuning profile, copy MagicQuant/config.default.yaml instead.
+paths:
+  model_dir: /data/models/my-model
+identity:
+  architecture_family_name: my-model-family
+output:
+  output_dir: /data/exports/my-model-MagicQuant
+  output_name_prefix: MyModel
+learning:
+  confirm_tensor_group_profile: true

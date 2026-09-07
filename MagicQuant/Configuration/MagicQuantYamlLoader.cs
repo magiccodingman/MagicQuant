@@ -10,6 +10,10 @@ using YamlDotNet.Serialization.NamingConventions;
 
 namespace MagicQuant.Configuration;
 
+/// <summary>
+/// Loads one YAML document, applies supported CLI overrides, and initializes runtime state.
+/// Custom files inherit typed defaults, not values from the distributed YAML profile.
+/// </summary>
 public static class MagicQuantYamlLoader
 {
     public static MagicQuantYamlConfig LoadAndApply(string commandName, IReadOnlyList<CliArg> args)
@@ -21,7 +25,7 @@ public static class MagicQuantYamlLoader
         {
             throw new FileNotFoundException(
                 $"MagicQuant config file was not found at '{configPath}'. " +
-                "Ensure config.default.yaml or config.dev.yaml is copied next to the build output, or pass --config.");
+                "Ensure config.default.yaml is copied next to the build output, or pass --config.");
         }
 
         var deserializer = new DeserializerBuilder()
@@ -48,11 +52,6 @@ public static class MagicQuantYamlLoader
         if (!string.IsNullOrWhiteSpace(explicitPath))
             return Path.GetFullPath(explicitPath);
 
-#if DEBUG
-        string preferred = Path.Combine(AppContext.BaseDirectory, "config.dev.yaml");
-        if (File.Exists(preferred))
-            return preferred;
-#endif
         return Path.Combine(AppContext.BaseDirectory, "config.default.yaml");
     }
 
@@ -113,9 +112,6 @@ public static class MagicQuantYamlLoader
         config.Readme.Frontmatter = config.Readme.Frontmatter
             .Where(x => !string.IsNullOrWhiteSpace(x.Key) && !IsEmptyFrontmatterValue(x.Value))
             .ToDictionary(x => x.Key.Trim(), x => x.Value, StringComparer.OrdinalIgnoreCase);
-
-        if (config.Survival.MaxSelectedChoicesPerBucket <= 0)
-            config.Survival.MaxSelectedChoicesPerBucket = 1;
 
         if (config.Prediction.BitStressThresholdCandidates.Count == 0)
             config.Prediction.BitStressThresholdCandidates.Add(config.Prediction.DefaultBitStressThreshold);
@@ -316,9 +312,6 @@ public static class MagicQuantYamlLoader
         config.Imatrix.DatasetConfig = Prefer(Get("imatrix-dataset-config"), config.Imatrix.DatasetConfig);
         config.Imatrix.DatasetLocalFile = Prefer(Get("imatrix-dataset-local-file"), config.Imatrix.DatasetLocalFile);
 
-        if (int.TryParse(Get("brute-force-final-combination-threshold"), out var bruteForceThreshold) && bruteForceThreshold > 0)
-            config.Evolution.BruteForceFinalCombinationThreshold = bruteForceThreshold;
-
         if (ulong.TryParse(Get("manual-max-predicted-size-bytes"), out var manualBytes))
             config.Prediction.ManualMaxPredictedSizeBytes = manualBytes;
 
@@ -382,27 +375,6 @@ public static class MagicQuantYamlLoader
         config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);
         if (Has("export-external-learned-baselines")) config.Output.ExportExternalLearnedBaselines = true;
         if (Has("reuse-existing-final-artifacts")) config.Output.ReuseExistingFinalArtifacts = true;
-
-        if (int.TryParse(Get("max-selected-choices-per-bucket"), out var maxSelectedChoicesPerBucket) && maxSelectedChoicesPerBucket > 0)
-            config.Survival.MaxSelectedChoicesPerBucket = maxSelectedChoicesPerBucket;
-
-        if (double.TryParse(Get("survival-meaningful-size-bias-percent"), out var sizeBiasPercent) && sizeBiasPercent >= 0d)
-            config.Survival.MeaningfulSizeBiasPercent = sizeBiasPercent;
-
-        if (double.TryParse(Get("survival-kld-close-call-absolute-epsilon"), out var kldCloseCallAbs) && kldCloseCallAbs >= 0d)
-            config.Survival.KldCloseCallAbsoluteEpsilon = kldCloseCallAbs;
-
-        if (double.TryParse(Get("survival-kld-close-call-relative-fraction"), out var kldCloseCallRelative) && kldCloseCallRelative >= 0d)
-            config.Survival.KldCloseCallRelativeFraction = kldCloseCallRelative;
-
-        if (double.TryParse(Get("survival-ppl-large-difference-percent"), out var pplLargeDiff) && pplLargeDiff >= 0d)
-            config.Survival.PplLargeDifferencePercent = pplLargeDiff;
-
-        if (double.TryParse(Get("survival-trade-score-size-bias-weight"), out var sizeWeight) && sizeWeight >= 0d)
-            config.Survival.TradeScoreSizeBiasWeight = sizeWeight;
-
-        if (double.TryParse(Get("survival-trade-score-ppl-weight"), out var pplWeight) && pplWeight >= 0d)
-            config.Survival.TradeScorePplWeight = pplWeight;
 
         config.Identity.ArchitectureFamilyName = Prefer(Get("architecture-family"), config.Identity.ArchitectureFamilyName);
         if (Has("allow-architecture-family-alias-override")) config.Identity.AllowArchitectureFamilyAliasOverride = true;

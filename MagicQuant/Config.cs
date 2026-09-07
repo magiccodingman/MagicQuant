@@ -2,6 +2,10 @@ using MagicQuant.Configuration;
 
 namespace MagicQuant;
 
+/// <summary>
+/// Process-wide normalized settings for one CLI run. Load through MagicQuantYamlLoader;
+/// tests changing this state must restore the previous configuration.
+/// </summary>
 public static class Config
 {
     public static MagicQuantYamlConfig Current { get; private set; } = MagicQuantYamlConfig.CreateDefault();
@@ -22,12 +26,6 @@ public static class Config
             string.Equals(x.CanonicalKey, canonicalKey, StringComparison.Ordinal));
     }
 
-    // Legacy evolution knobs are retained for old helper compatibility, but the final
-    // hybrid chooser now uses rank-safe isolation prediction and candidate_selection.
-    public static int MaxDataCollectedPerCategory => Current.Evolution.MaxDataCollectedPerCategory;
-    public static int MaxSurvivalRounds => Current.Evolution.MaxSurvivalRounds;
-    public static double CollapseMultiplier => Current.Evolution.CollapseMultiplier;
-    public static int BruteForceFinalCombinationThreshold => Current.Evolution.BruteForceFinalCombinationThreshold;
     public static ulong ManualMaxPredictedSizeBytes => Current.Prediction.ManualMaxPredictedSizeBytes;
 
     public static IReadOnlyList<double> PredictionBitStressThresholdCandidates =>
@@ -110,17 +108,4 @@ public static class Config
     public static bool RequireMmprojForVisionModels => Current.Output.RequireMmprojForVisionModels;
     public static bool ReuseExistingFinalArtifacts => Current.Output.ReuseExistingFinalArtifacts;
 
-    public static int MaxSelectedChoicesPerBucket => Math.Max(1, Current.Survival.MaxSelectedChoicesPerBucket);
-    public static double SurvivalMeaningfulSizeBiasPercent => Current.Survival.MeaningfulSizeBiasPercent;
-    public static double SurvivalKldCloseCallAbsoluteEpsilon => Current.Survival.KldCloseCallAbsoluteEpsilon;
-    public static double SurvivalKldCloseCallRelativeFraction => Current.Survival.KldCloseCallRelativeFraction;
-    public static double SurvivalPplLargeDifferencePercent => Current.Survival.PplLargeDifferencePercent;
-    public static double SurvivalTradeScoreSizeBiasWeight => Current.Survival.TradeScoreSizeBiasWeight;
-    public static double SurvivalTradeScorePplWeight => Current.Survival.TradeScorePplWeight;
-
-    public static List<string> SensitivityProbeGroups => Current.SensitivityProbeGroups;
-    public static List<string> SensitivityProbeGroupsMoe => Current.SensitivityProbeGroupsMoe;
-    public static List<string> BrainLayers => Current.BrainLayers;
-    public static List<string> CollapsePenaltySchemes => Current.CollapsePenaltySchemes;
-    public static List<string> MoeIndicatorTensors => Current.MoeIndicatorTensors;
 }

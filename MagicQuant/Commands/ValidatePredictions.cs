@@ -122,13 +122,8 @@ public sealed class ValidatePredictions : ICommand
     private static string ResolveOutputDirectory(IReadOnlyList<CliArg> args)
     {
         string? explicitOutput = args.FirstOrDefault(a => string.Equals(a.Name, "output-dir", StringComparison.OrdinalIgnoreCase))?.Value;
-        if (!string.IsNullOrWhiteSpace(explicitOutput))
-            return Path.GetFullPath(explicitOutput);
-
-        if (!string.IsNullOrWhiteSpace(Config.OutputDirectory))
-            return Path.Combine(Path.GetFullPath(Config.OutputDirectory!), "PredictionValidation");
-
-        return Path.Combine(Cache.ModelMagicQuantDirectory!, "PredictionValidation");
+        return OutputPathService.PredictionValidation(
+            Cache.ModelMagicQuantDirectory!, explicitOutput, Config.OutputDirectory);
     }
 
     private static void ShowHelp()

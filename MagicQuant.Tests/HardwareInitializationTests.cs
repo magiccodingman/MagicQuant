@@ -1,4 +1,5 @@
 using MagicQuant.Commands;
+using MagicQuant.Configuration;
 using MagicQuant.Models;
 using MQ.DB;
 using Xunit;
@@ -14,8 +15,10 @@ public sealed class HardwareInitializationCollection
 [Collection(HardwareInitializationCollection.Name)]
 public sealed class HardwareInitializationTests
 {
-    [Fact]
-    public async Task Custom_environment_validation_populates_system_info()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Custom_environment_validation_populates_system_info(bool useYamlPaths)
     {
         string testRoot = Path.Combine(
             Path.GetTempPath(),
@@ -24,6 +27,8 @@ public sealed class HardwareInitializationTests
         string llamaBin = Path.Combine(llamaRoot, "build", "bin");
         string convertScript = Path.Combine(llamaRoot, "convert_hf_to_gguf.py");
         var previous = Cache.SysInfo;
+        var previousPaths = (Cache.LlamaRoot, Cache.LlamaBin, Cache.ConvertScript);
+        var previousConfig = Config.Current;
 
         try
         {
@@ -31,13 +36,28 @@ public sealed class HardwareInitializationTests
             await File.WriteAllTextAsync(convertScript, "# test");
             Cache.SysInfo = null;
 
-            await new InitializeLlamaCpp().Run(
-            [
-                new CliArg { Name = "validate", Value = string.Empty },
-                new CliArg { Name = "llama-root", Value = llamaRoot },
-                new CliArg { Name = "llama-bin", Value = llamaBin },
-                new CliArg { Name = "convert-script", Value = convertScript }
-            ]);
+            var config = MagicQuantYamlConfig.CreateDefault();
+            Config.Load(config);
+            List<CliArg> args = [new() { Name = "validate", Value = string.Empty }];
+            if (useYamlPaths)
+            {
+                config.Paths.LlamaRoot = llamaRoot;
+                config.Paths.LlamaBin = llamaBin;
+                config.Paths.ConvertScript = convertScript;
+            }
+            else
+            {
+                args.AddRange([
+                    new CliArg { Name = "llama-root", Value = llamaRoot },
+                    new CliArg { Name = "llama-bin", Value = llamaBin },
+                    new CliArg { Name = "convert-script", Value = convertScript }
+                ]);
+            }
+            await new InitializeLlamaCpp().Run(args);
+
+            Assert.Equal(llamaRoot, Cache.LlamaRoot);
+            Assert.Equal(llamaBin, Cache.LlamaBin);
+            Assert.Equal(convertScript, Cache.ConvertScript);
 
             Assert.NotNull(Cache.SysInfo);
             Assert.True(Cache.SysInfo.ThreadCount > 0);
@@ -46,8 +66,28 @@ public sealed class HardwareInitializationTests
         finally
         {
             Cache.SysInfo = previous;
+            (Cache.LlamaRoot, Cache.LlamaBin, Cache.ConvertScript) = previousPaths;
+            Config.Load(previousConfig);
             if (Directory.Exists(testRoot))
                 Directory.Delete(testRoot, recursive: true);
         }
     }
+    [Fact]
+    public async Task Partial_custom_paths_fail_before_setup()
+    {
+        var previous = Config.Current;
+        try
+        {
+            Config.Load(MagicQuantYamlConfig.CreateDefault());
+            await Assert.ThrowsAsync<ArgumentException>(() => new InitializeLlamaCpp().Run(
+                [new CliArg { Name = "llama-root", Value = "/missing/llama.cpp" }]));
+            await Assert.ThrowsAsync<ArgumentException>(() => new InitializeLlamaCpp().Run(
+                [new CliArg { Name = "llama-bin", Value = "/missing/bin" }]));
+        }
+        finally
+        {
+            Config.Load(previous);
+        }
+    }
+
 }
