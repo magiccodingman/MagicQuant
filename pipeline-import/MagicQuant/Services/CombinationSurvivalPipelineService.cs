@@ -1,0 +1,260 @@
+using System.Diagnostics;
+using MagicQuant.Helpers;
+using MagicQuant.Models;
+using MQ.DB;
+using MQ.DB.Models;
+using Spectre.Console;
+
+namespace MagicQuant.Services;
+
+public sealed class CombinationSurvivalPipelineService
+{
+    private readonly QuantizationService _quantizationService;
+    private readonly RemainingCombinationStore _combinationStore;
+    private readonly HybridBenchmarkRepository _benchmarkRepository;
+    private readonly EffectiveCandidateStateResolverService _effectiveResolver;
+    private readonly RankSafeKldPredictionService _predictionService;
+    private readonly DuckDbPredictionMaterializationService _materializationService;
+    private readonly FinalRealBenchmarkEliminationService _finalEliminator;
+    private readonly PredictionGuidedHybridSelectionService _selectionEngine;
+    private readonly FinalSurvivorSelectionCliService _selectionCli;
+    private readonly HybridArtifactExportService _exportService;
+    private readonly ReadmeGenerationService _readmeService;
+    private readonly HybridMapGenerationService _hybridMapService;
+    private readonly SelectionDiagnosticsLogService _diagnosticsLogService;
+    private readonly FinalReleaseMetadataService _releaseMetadataService;
+    private readonly CloneConfigManifestGenerationService _cloneConfigManifestService;
+    private readonly FinalArtifactNamingService _namingService;
+    private readonly IsolationDiagnosticsManifestService _isolationDiagnosticsManifestService;
+    private readonly AnomalyWorkflowService _anomalyWorkflowService;
+
+    public CombinationSurvivalPipelineService(QuantizationService quantizationService)
+    {
+        _quantizationService = quantizationService;
+        _combinationStore = new RemainingCombinationStore();
+        _benchmarkRepository = new HybridBenchmarkRepository();
+        _effectiveResolver = new EffectiveCandidateStateResolverService(_benchmarkRepository);
+        _predictionService = new RankSafeKldPredictionService(_benchmarkRepository, _effectiveResolver);
+        _finalEliminator = new FinalRealBenchmarkEliminationService();
+        _materializationService = new DuckDbPredictionMaterializationService(_combinationStore, _predictionService);
+        _selectionEngine = new PredictionGuidedHybridSelectionService(_quantizationService, _benchmarkRepository, _finalEliminator, _combinationStore);
+        _selectionCli = new FinalSurvivorSelectionCliService();
+        var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
+        var sidecarService = new ModelSidecarArtifactService(pyManager);
+        _exportService = new HybridArtifactExportService(_quantizationService, _effectiveResolver, sidecarService);
+        _readmeService = new ReadmeGenerationService();
+        _hybridMapService = new HybridMapGenerationService();
+        _diagnosticsLogService = new SelectionDiagnosticsLogService();
+        _releaseMetadataService = new FinalReleaseMetadataService();
+        _cloneConfigManifestService = new CloneConfigManifestGenerationService(_quantizationService);
+        _namingService = new FinalArtifactNamingService();
+        _isolationDiagnosticsManifestService = new IsolationDiagnosticsManifestService();
+        _anomalyWorkflowService = new AnomalyWorkflowService(_combinationStore, _benchmarkRepository, _quantizationService);
+    }
+
+    public async Task<CombinationSurvivalExecutionResult> RunAsync(
+        RequiredSampleGenerationResult? isolationSamplePlan = null,
+        IsolationOptimizationResult? isolationOptimizationResult = null,
+        CancellationToken ct = default)
+    {
+        var report = new SurvivalStageReport
+        {
+            StartingCount = await _combinationStore.CountAsync(ct)
+        };
+
+        AnsiConsole.Write(new Rule("[yellow]Rank-Safe Prediction / Hybrid Selection Pipeline[/]") { Justification = Justify.Left });
+        AnsiConsole.MarkupLine($"[green]Remaining DuckDB combinations available to score:[/] [cyan]{report.StartingCount:N0}[/]");
+        AnsiConsole.MarkupLine("[grey]Old MDA bucket survival is disabled. DuckDB now defines the allowed search space; rank-safe isolation prediction selects what deserves real benchmarking.[/]");
+        AnsiConsole.MarkupLine("[grey]DuckDB prediction materialization is enabled; final selection will query pre-ranked candidates instead of loading the full search space into memory.[/]");
+        var pureBaselines = await _benchmarkRepository.LoadPureBaselineSnapshotsAsync(ct);
+
+        if (pureBaselines.Count == 0)
+            throw new InvalidOperationException("No pure baseline benchmark snapshots were available. Run the baseline/isolation phases before final hybrid selection.");
+
+        AnsiConsole.MarkupLine($"[green]Pure baseline snapshots loaded:[/] [cyan]{pureBaselines.Count:N0}[/]");
+
+        var materialization = await _materializationService.MaterializeAsync(ct);
+        AnsiConsole.MarkupLine($"[green]DuckDB predicted rows:[/] [cyan]{materialization.PredictedRows:N0}[/] / [cyan]{materialization.TotalRows:N0}[/] (ranked: {materialization.RankedRows:N0})");
+
+        var anomalyResult = await _anomalyWorkflowService.RunAsync(pureBaselines, ct);
+        if (anomalyResult.AdjustmentSummary.MatchedRowCount > 0)
+        {
+            AnsiConsole.MarkupLine($"[green]Anomaly-adjusted prediction rows:[/] [cyan]{anomalyResult.AdjustmentSummary.MatchedRowCount:N0}[/] matched by [cyan]{anomalyResult.AdjustmentSummary.AppliedRuleCount:N0}[/] scoped rules. Final selector will use adjusted prediction ranks.");
+        }
+
+        var selection = await _selectionEngine.RunAsync(
+            pureBaselines,
+            ct);
+
+        report.EndingCount = selection.Survivors.Count;
+        report.AddRemoval("prediction-guided-non-selected", Math.Max(0L, report.StartingCount - report.EndingCount));
+
+        AnsiConsole.MarkupLine($"[green]Final candidate/anchor survivors before manual enablement:[/] [cyan]{selection.Survivors.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[yellow]Recorded baseline/anchor eliminations:[/] [cyan]{selection.Eliminations.Count:N0}[/]");
+        AnsiConsole.MarkupLine($"[yellow]Prediction validation misses:[/] [cyan]{selection.ValidationFailures.Count:N0}[/]");
+        RenderEliminationSummary(selection.Eliminations, pureBaselines);
+
+        var nativeReference = await _benchmarkRepository.LoadBenchmarkSnapshotAsync(
+            (TensorConfig)HybridQuant.CreatePureBaseline(BaselineQuants.GetNativeQuant()),
+            ct);
+
+        var selectedRows = _selectionCli.Prompt(selection.Survivors, pureBaselines, nativeReference);
+
+        var exportedArtifacts = await _exportService.ExportAsync(selectedRows, pureBaselines, ct);
+
+        string modelName = string.IsNullOrWhiteSpace(Cache.ModelDirectory)
+            ? "model"
+            : new DirectoryInfo(Cache.ModelDirectory!).Name;
+
+        var benchmarkOverview = selection.Survivors
+            .Concat(pureBaselines)
+            .Concat(selection.ValidationFailures.Select(x => x.Snapshot).OfType<BenchmarkSnapshotRecord>())
+            .DistinctBy(x => TensorConfigIdentity.ToKey(x.Config))
+            .OrderBy(x => x.Kld)
+            .ThenBy(x => x.SizeBytes)
+            .ToList();
+
+        await RunFinalOutputStageAsync(
+            "selection diagnostics log",
+            () => _diagnosticsLogService.WriteAsync(benchmarkOverview, selection.ValidationFailures, ct));
+
+        await RunFinalOutputStageAsync(
+            "hybrid map JSON",
+            () => _hybridMapService.GenerateAsync(Cache.OutputDirectory!, exportedArtifacts, ct));
+
+        await RunFinalOutputStageAsync(
+            "final survivor / replacement metadata JSON",
+            () => _releaseMetadataService.GenerateAsync(
+                Cache.OutputDirectory!,
+                exportedArtifacts,
+                selection.Eliminations,
+                pureBaselines,
+                nativeReference,
+                ct));
+
+        await RunFinalOutputStageAsync(
+            "clone configuration manifest JSON",
+            () => _cloneConfigManifestService.GenerateAsync(
+                Cache.OutputDirectory!,
+                exportedArtifacts,
+                nativeReference,
+                ct: ct));
+
+        if (isolationSamplePlan != null)
+        {
+            await RunFinalOutputStageAsync(
+                "isolation sample manifest JSON",
+                () => _isolationDiagnosticsManifestService.GenerateIsolationSamplesAsync(
+                    Cache.OutputDirectory!,
+                    isolationSamplePlan,
+                    ct));
+        }
+
+        if (isolationOptimizationResult != null)
+        {
+            await RunFinalOutputStageAsync(
+                "bad trade manifest JSON",
+                () => _isolationDiagnosticsManifestService.GenerateBadTradesAsync(
+                    Cache.OutputDirectory!,
+                    isolationOptimizationResult,
+                    ct));
+        }
+
+        await RunFinalOutputStageAsync(
+            "README",
+            () => _readmeService.GenerateAsync(
+                Cache.OutputDirectory!,
+                modelName,
+                exportedArtifacts,
+                pureBaselines,
+                selection.Eliminations,
+                nativeReference,
+                ct));
+
+        return new CombinationSurvivalExecutionResult
+        {
+            BenchmarkedSnapshots = benchmarkOverview,
+            BrutalSurvivors = selection.Survivors,
+            SelectedRows = selectedRows,
+            ExportedArtifacts = exportedArtifacts,
+            BucketDiagnostics = Array.Empty<BucketPruneDiagnostics>(),
+            SurvivalReport = report,
+            Eliminations = selection.Eliminations,
+            ValidationFailures = selection.ValidationFailures
+        };
+    }
+
+
+    private static async Task RunFinalOutputStageAsync(string stageName, Func<Task> action)
+    {
+        var sw = Stopwatch.StartNew();
+        WriteFinalOutputLog($"START {stageName}");
+
+        try
+        {
+            await action();
+            sw.Stop();
+            WriteFinalOutputLog($"DONE {stageName} in {FormatDuration(sw.Elapsed)}");
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            WriteFinalOutputLog($"FAILED {stageName} after {FormatDuration(sw.Elapsed)}: {ex.GetType().Name}: {ex.Message}", isError: true);
+            throw;
+        }
+    }
+
+    private static string FormatDuration(TimeSpan value) => value.ToString(@"hh\:mm\:ss");
+
+    private static void WriteFinalOutputLog(string message, bool isError = false)
+    {
+        string color = isError ? "red" : "grey";
+        string line = $"[{DateTime.Now:HH:mm:ss}] Final output: {message}";
+        AnsiConsole.MarkupLine($"[{color}]{Markup.Escape(line)}[/]");
+    }
+
+    private void RenderEliminationSummary(
+        IReadOnlyCollection<BaselineEliminationRecord> eliminations,
+        IReadOnlyCollection<BenchmarkSnapshotRecord> pureBaselineSnapshots)
+    {
+        if (eliminations.Count == 0)
+            return;
+
+        var namingContext = _namingService.CreateContext(pureBaselineSnapshots);
+
+        AnsiConsole.Write(new Rule("[yellow]Baseline / Anchor Eliminations[/]") { Justification = Justify.Left });
+
+        var table = new Table().Border(TableBorder.Rounded);
+        table.AddColumn("Removed");
+        table.AddColumn("Winner");
+        table.AddColumn("KLD Δ");
+        table.AddColumn("Size Δ (GB)");
+        table.AddColumn("Code");
+
+        foreach (var row in eliminations
+                     .DistinctBy(x => $"{TensorConfigIdentity.ToKey(x.Eliminated.Config)}::{TensorConfigIdentity.ToKey(x.Eliminator.Config)}::{x.Reason}")
+                     .OrderBy(x => x.Eliminated.Kld)
+                     .ThenBy(x => x.Eliminated.SizeBytes)
+                     .Take(25))
+        {
+            double kldDelta = row.Eliminated.Kld - row.Eliminator.Kld;
+            double sizeDeltaGb = (row.Eliminated.SizeBytes - (double)row.Eliminator.SizeBytes) / 1000d / 1000d / 1000d;
+            string removed = _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(row.Eliminated, namingContext));
+            string winner = _namingService.ToShortDisplayName(_namingService.BuildDisplayLabel(row.Eliminator, namingContext));
+            string code = FinalArtifactNamingService.ReasonCode(row.Reason);
+
+            table.AddRow(
+                Markup.Escape(removed),
+                Markup.Escape(winner),
+                kldDelta.ToString("0.000000"),
+                sizeDeltaGb.ToString("0.00"),
+                Markup.Escape(code));
+        }
+
+        AnsiConsole.Write(table);
+
+        if (eliminations.Count > 25)
+            AnsiConsole.MarkupLine($"[grey]Showing first 25 of {eliminations.Count:N0} elimination records. Full details are in magicquant-manifest/magicquant.replacements.json.[/]");
+    }
+
+}
