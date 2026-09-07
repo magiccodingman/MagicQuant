@@ -2,6 +2,7 @@ using MagicQuant.Commands;
 using MagicQuant.Configuration;
 using MagicQuant.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.Sqlite;
 using MQ.DB;
 using MQ.DB.Data;
 using MQ.DB.Models.DbModels;
@@ -85,6 +86,9 @@ public class QuantizationRunAndBuildHybridsRegressionTests
         finally
         {
             Cache.MagicQuantDirectory = priorMagicQuantDirectory;
+            // Disposing the context returns connections to SQLite's pool. Release
+            // those handles before deleting this test's database on Windows.
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(tempRoot))
                 Directory.Delete(tempRoot, recursive: true);
         }
