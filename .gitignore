@@ -20,3 +20,16 @@ obj/
 # Other common C# stuff
 *.log
 *.vs/
+
+# Local campaigns and generated model/runtime artifacts
+config.local.yaml
+*.local.yaml
+*.dev.yaml
+**/MagicQuant_SQLite.db*
+*.duckdb
+*.duckdb.wal
+*.gguf
+*.safetensors
+.MagicQuant_tmp/
+TestResults/
+artifacts/

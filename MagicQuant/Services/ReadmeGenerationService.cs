@@ -201,7 +201,7 @@ public sealed class ReadmeGenerationService
         sb.AppendLine("</details>");
         sb.AppendLine();
         //}
-        
+
         sb.AppendLine("<details>");
         sb.AppendLine("<summary>Re-Uploading External Provider Baselines</summary>");
         sb.AppendLine();
@@ -234,7 +234,7 @@ public sealed class ReadmeGenerationService
         sb.AppendLine("<summary>Clone Notice</summary>");
         sb.AppendLine();
         sb.AppendLine(
-            $"This repository did not run through the full MagicQuant evolution/search pipeline. It is a clone of the final survivor tensor configurations from {source}, rebuilt and benchmarked locally for this model.");
+            $"This repository did not run through the full MagicQuant discovery pipeline. It is a clone of the final survivor tensor configurations from {source}, rebuilt and benchmarked locally for this model.");
         sb.AppendLine();
         sb.AppendLine(
             "The archived MagicQuant JSON files in `magicquant-manifest/` are copied from the source release for durability. The clone benchmark JSON and the table below are from this clone run, so those metrics reflect the rebuilt outputs in this repository.");
@@ -272,7 +272,9 @@ public sealed class ReadmeGenerationService
         if (string.IsNullOrWhiteSpace(key))
             return false;
 
-        return replacementHints.TryGetValue(key.Trim(), out replaced) && replaced.Count > 0;
+        if (!replacementHints.TryGetValue(key.Trim(), out var found) || found.Count == 0) return false;
+        replaced = found;
+        return true;
     }
 
     private static Dictionary<string, IReadOnlyList<string>> LoadCloneReplacementHints(string outputDirectory)

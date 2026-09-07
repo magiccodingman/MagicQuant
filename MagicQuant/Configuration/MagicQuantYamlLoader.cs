@@ -1,5 +1,4 @@
-using System.Diagnostics;
-using System.Text.Json;
+using System.Globalization;
 using MagicQuant.Helpers;
 using MagicQuant.Models;
 using MQ.DB;
@@ -10,36 +9,50 @@ using YamlDotNet.Serialization.NamingConventions;
 
 namespace MagicQuant.Configuration;
 
+/// <summary>
+/// Loads one YAML document, applies supported CLI overrides, and initializes runtime state.
+/// Custom files inherit typed defaults, not values from the distributed YAML profile.
+/// </summary>
 public static class MagicQuantYamlLoader
 {
+    public sealed record LoadedConfiguration(string Path, MagicQuantYamlConfig Settings, IReadOnlyList<string> Warnings);
+
     public static MagicQuantYamlConfig LoadAndApply(string commandName, IReadOnlyList<CliArg> args)
     {
+        var loaded = Read(args);
+        Apply(loaded);
+        return loaded.Settings;
+    }
+
+    /// <summary>Reads and validates configuration without changing globals or creating directories.</summary>
+    public static LoadedConfiguration Read(IReadOnlyList<CliArg> args)
+    {
         string configPath = ResolveConfigPath(args);
-        Cache.ActiveConfigPath = configPath;
-
         if (!File.Exists(configPath))
-        {
-            throw new FileNotFoundException(
-                $"MagicQuant config file was not found at '{configPath}'. " +
-                "Ensure config.default.yaml or config.dev.yaml is copied next to the build output, or pass --config.");
-        }
-
+            throw new FileNotFoundException($"MagicQuant config file was not found at '{configPath}'. Pass --config or copy config.default.yaml next to the executable.");
+        string yaml = File.ReadAllText(configPath);
+        var warnings = YamlConfigurationDiagnostics.Inspect(yaml);
+        if (warnings.Count > 0 && args.Any(a => string.Equals(a.Name, "strict-config", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException(string.Join(Environment.NewLine, warnings));
         var deserializer = new DeserializerBuilder()
             .IgnoreUnmatchedProperties()
             .WithNamingConvention(UnderscoredNamingConvention.Instance)
             .Build();
+        var config = deserializer.Deserialize<MagicQuantYamlConfig>(yaml) ?? MagicQuantYamlConfig.CreateDefault();
+        ConfigurationShapeValidator.Validate(config);
+        ApplyCliOverrides(config, args);
+        ConfigurationShapeValidator.Validate(config);
+        return new LoadedConfiguration(configPath, config, warnings);
+    }
 
-        var yaml = File.ReadAllText(configPath);
-        RejectLegacyGlobalRelearnYaml(yaml, configPath);
-        var loaded = deserializer.Deserialize<MagicQuantYamlConfig>(yaml) ?? MagicQuantYamlConfig.CreateDefault();
-      
-        ApplyCliOverrides(loaded, args);
-        NormalizeAndApply(loaded);
-
-        Config.Load(loaded);
-
-        AnsiConsole.MarkupLine($"[grey]Using config:[/] {Markup.Escape(configPath)}");
-        return loaded;
+    public static void Apply(LoadedConfiguration loaded)
+    {
+        Cache.ActiveConfigPath = loaded.Path;
+        NormalizeAndApply(loaded.Settings);
+        Config.Load(loaded.Settings);
+        AnsiConsole.MarkupLine($"[grey]Using config:[/] {Markup.Escape(loaded.Path)}");
+        foreach (string warning in loaded.Warnings)
+            AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(warning)}[/]");
     }
 
     public static string ResolveConfigPath(IReadOnlyList<CliArg> args)
@@ -48,11 +61,6 @@ public static class MagicQuantYamlLoader
         if (!string.IsNullOrWhiteSpace(explicitPath))
             return Path.GetFullPath(explicitPath);
 
-#if DEBUG
-        string preferred = Path.Combine(AppContext.BaseDirectory, "config.dev.yaml");
-        if (File.Exists(preferred))
-            return preferred;
-#endif
         return Path.Combine(AppContext.BaseDirectory, "config.default.yaml");
     }
 
@@ -90,7 +98,7 @@ public static class MagicQuantYamlLoader
 
         Cache.AllowArchitectureFamilyAliasOverride =
             config.Identity.AllowArchitectureFamilyAliasOverride;
-        
+
         Cache.CurrentArchitectureFamilyId = null;
         Cache.CurrentTensorGroupProfileId = null;
         Cache.CurrentTensorGroupProfileFingerprintHash = null;
@@ -113,9 +121,6 @@ public static class MagicQuantYamlLoader
         config.Readme.Frontmatter = config.Readme.Frontmatter
             .Where(x => !string.IsNullOrWhiteSpace(x.Key) && !IsEmptyFrontmatterValue(x.Value))
             .ToDictionary(x => x.Key.Trim(), x => x.Value, StringComparer.OrdinalIgnoreCase);
-
-        if (config.Survival.MaxSelectedChoicesPerBucket <= 0)
-            config.Survival.MaxSelectedChoicesPerBucket = 1;
 
         if (config.Prediction.BitStressThresholdCandidates.Count == 0)
             config.Prediction.BitStressThresholdCandidates.Add(config.Prediction.DefaultBitStressThreshold);
@@ -269,17 +274,6 @@ public static class MagicQuantYamlLoader
     }
 
 
-    private static void RejectLegacyGlobalRelearnYaml(string yaml, string configPath)
-    {
-        if (yaml.IndexOf("force_relearn_baseline_tensor_mappings", StringComparison.OrdinalIgnoreCase) < 0)
-            return;
-
-        throw new InvalidOperationException(
-            $"Config '{configPath}' contains removed option 'flags.force_relearn_baseline_tensor_mappings'. " +
-            "This global destructive relearn mode has been removed. Use targeted relearn commands under 'learning:' " +
-            "or per custom include 'force_relearn: true'.");
-    }
-
     private static void ApplyCliOverrides(MagicQuantYamlConfig config, IReadOnlyList<CliArg> args)
     {
         config.Learning ??= new RuntimeLearningConfig();
@@ -316,13 +310,10 @@ public static class MagicQuantYamlLoader
         config.Imatrix.DatasetConfig = Prefer(Get("imatrix-dataset-config"), config.Imatrix.DatasetConfig);
         config.Imatrix.DatasetLocalFile = Prefer(Get("imatrix-dataset-local-file"), config.Imatrix.DatasetLocalFile);
 
-        if (int.TryParse(Get("brute-force-final-combination-threshold"), out var bruteForceThreshold) && bruteForceThreshold > 0)
-            config.Evolution.BruteForceFinalCombinationThreshold = bruteForceThreshold;
-
         if (ulong.TryParse(Get("manual-max-predicted-size-bytes"), out var manualBytes))
             config.Prediction.ManualMaxPredictedSizeBytes = manualBytes;
 
-        if (double.TryParse(Get("prediction-default-bit-stress-threshold"), out var defaultBitStress) && defaultBitStress > 0d)
+        if (TryParseFiniteDouble(Get("prediction-default-bit-stress-threshold"), out var defaultBitStress) && defaultBitStress > 0d)
             config.Prediction.DefaultBitStressThreshold = defaultBitStress;
 
         if (int.TryParse(Get("prediction-minimum-fit-rows"), out var minFitRows) && minFitRows >= 2)
@@ -332,7 +323,7 @@ public static class MagicQuantYamlLoader
         if (bitStressCandidates.Count > 0)
             config.Prediction.BitStressThresholdCandidates = bitStressCandidates;
 
-        if (double.TryParse(Get("selection-near-baseline-max-size-growth-percent"), out var nearPct) && nearPct >= 0d)
+        if (TryParseFiniteDouble(Get("selection-near-baseline-max-size-growth-percent"), out var nearPct) && nearPct >= 0d)
             config.CandidateSelection.NearBaselineMaxSizeGrowthPercent = nearPct;
 
         var windows = ParseDoubleList(Get("selection-interior-window-fractions"));
@@ -345,16 +336,16 @@ public static class MagicQuantYamlLoader
         if (int.TryParse(Get("selection-max-fallback-attempts-per-anchor"), out var maxFallbacks) && maxFallbacks > 0)
             config.CandidateSelection.MaxFallbackAttemptsPerAnchor = maxFallbacks;
 
-        if (double.TryParse(Get("selection-minimum-kld-improvement-epsilon"), out var minKldEpsilon) && minKldEpsilon >= 0d)
+        if (TryParseFiniteDouble(Get("selection-minimum-kld-improvement-epsilon"), out var minKldEpsilon) && minKldEpsilon >= 0d)
             config.CandidateSelection.MinimumKldImprovementEpsilon = minKldEpsilon;
 
-        if (double.TryParse(Get("selection-minimum-neighbor-gap-fraction"), out var neighborGap) && neighborGap >= 0d)
+        if (TryParseFiniteDouble(Get("selection-minimum-neighbor-gap-fraction"), out var neighborGap) && neighborGap >= 0d)
             config.CandidateSelection.MinimumNeighborGapFractionOfGlobalSpan = neighborGap;
 
-        if (double.TryParse(Get("selection-near-lower-anchor-brutal-zone-fraction"), out var brutalZone) && brutalZone >= 0d)
+        if (TryParseFiniteDouble(Get("selection-near-lower-anchor-brutal-zone-fraction"), out var brutalZone) && brutalZone >= 0d)
             config.CandidateSelection.NearLowerAnchorBrutalZoneFractionOfPairSpan = brutalZone;
 
-        if (double.TryParse(Get("selection-near-anchor-required-kld-gain-fraction"), out var brutalGain) && brutalGain >= 0d)
+        if (TryParseFiniteDouble(Get("selection-near-anchor-required-kld-gain-fraction"), out var brutalGain) && brutalGain >= 0d)
             config.CandidateSelection.NearAnchorRequiredKldGainFractionOfPairGap = brutalGain;
 
         if (Has("allow-eight-bit-anchor-replacements"))
@@ -379,33 +370,21 @@ public static class MagicQuantYamlLoader
             config.CandidateSelection.DiversityLowBitOnly = diversityLowBitOnly;
 
         config.Output.OutputDir = Prefer(Get("output-dir"), config.Output.OutputDir);
-        config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix);
+        config.Output.OutputNamePrefix = Prefer(Get("output-name-prefix"), config.Output.OutputNamePrefix) ?? "Model";
         if (Has("export-external-learned-baselines")) config.Output.ExportExternalLearnedBaselines = true;
         if (Has("reuse-existing-final-artifacts")) config.Output.ReuseExistingFinalArtifacts = true;
 
-        if (int.TryParse(Get("max-selected-choices-per-bucket"), out var maxSelectedChoicesPerBucket) && maxSelectedChoicesPerBucket > 0)
-            config.Survival.MaxSelectedChoicesPerBucket = maxSelectedChoicesPerBucket;
-
-        if (double.TryParse(Get("survival-meaningful-size-bias-percent"), out var sizeBiasPercent) && sizeBiasPercent >= 0d)
-            config.Survival.MeaningfulSizeBiasPercent = sizeBiasPercent;
-
-        if (double.TryParse(Get("survival-kld-close-call-absolute-epsilon"), out var kldCloseCallAbs) && kldCloseCallAbs >= 0d)
-            config.Survival.KldCloseCallAbsoluteEpsilon = kldCloseCallAbs;
-
-        if (double.TryParse(Get("survival-kld-close-call-relative-fraction"), out var kldCloseCallRelative) && kldCloseCallRelative >= 0d)
-            config.Survival.KldCloseCallRelativeFraction = kldCloseCallRelative;
-
-        if (double.TryParse(Get("survival-ppl-large-difference-percent"), out var pplLargeDiff) && pplLargeDiff >= 0d)
-            config.Survival.PplLargeDifferencePercent = pplLargeDiff;
-
-        if (double.TryParse(Get("survival-trade-score-size-bias-weight"), out var sizeWeight) && sizeWeight >= 0d)
-            config.Survival.TradeScoreSizeBiasWeight = sizeWeight;
-
-        if (double.TryParse(Get("survival-trade-score-ppl-weight"), out var pplWeight) && pplWeight >= 0d)
-            config.Survival.TradeScorePplWeight = pplWeight;
-
         config.Identity.ArchitectureFamilyName = Prefer(Get("architecture-family"), config.Identity.ArchitectureFamilyName);
         if (Has("allow-architecture-family-alias-override")) config.Identity.AllowArchitectureFamilyAliasOverride = true;
+    }
+
+    private static bool TryParseFiniteDouble(string? value, out double result)
+    {
+        result = 0;
+        if (value == null) return false;
+        if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result) || !double.IsFinite(result))
+            throw new ArgumentException($"Invalid numeric option value '{value}'. Use a finite number with a decimal point.");
+        return true;
     }
 
     private static bool TryParseBool(string? value, out bool result)
@@ -446,7 +425,7 @@ public static class MagicQuantYamlLoader
 
         return value
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(x => double.TryParse(x, out var parsed) ? (double?)parsed : null)
+            .Select(x => TryParseFiniteDouble(x, out var parsed) ? (double?)parsed : null)
             .Where(x => x.HasValue)
             .Select(x => x!.Value)
             .ToList();
@@ -494,7 +473,7 @@ public static class MagicQuantYamlLoader
         return roots
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(x => Path.GetFullPath(x.Trim()))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
             .ToList();
     }
     private static string? NormalizeNullOrFullPath(string? value)

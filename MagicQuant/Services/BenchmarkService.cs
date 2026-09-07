@@ -1,3 +1,4 @@
+using MagicQuant.Runtime;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -92,6 +93,9 @@ public class BenchmarkService
         bool forceRediscovery = false,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         await EnsureDynamicExecutionPlanAsync(
             q8ModelPath: q8ModelPath,
             nativeModelPath: q8ModelPath,
@@ -111,6 +115,9 @@ public class BenchmarkService
         bool forceRediscovery = false,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(q8ModelPath))
             throw new ArgumentException("Q8 model path was null or empty.", nameof(q8ModelPath));
         if (string.IsNullOrWhiteSpace(nativeModelPath))
@@ -238,6 +245,9 @@ public class BenchmarkService
         string? preferredPlanModelPath = null,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(q8QuantizationKey))
             throw new ArgumentException("Quantization key was null or empty.", nameof(q8QuantizationKey));
 
@@ -277,6 +287,9 @@ public class BenchmarkService
         int discoveryTokenTarget = 8192,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(baseModelPath))
             throw new ArgumentException("Base model path was null or empty.", nameof(baseModelPath));
 
@@ -308,7 +321,7 @@ public class BenchmarkService
             int? chosen = null;
 
             AnsiConsole.Write(new Rule("[yellow]Clamping Static ngl With Base Model[/]")
-                { Justification = Justify.Left });
+            { Justification = Justify.Left });
             AnsiConsole.MarkupLine($"[grey]Base model:[/] {Markup.Escape(baseModelPath)}");
             AnsiConsole.MarkupLine($"[grey]Starting from Q8-discovered ngl:[/] [cyan]{startingNgl}[/]");
 
@@ -716,12 +729,11 @@ public class BenchmarkService
             probeRoot,
             $"probe_ppl_{phase}_{slot.ProfileName}_gpu{devices}_ngl{fixedNgl}.log");
 
-        string cmd = slot.UsesGpu
-            ? $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {fixedNgl}{BuildTensorSplitArgs(slot, LlamaGpuTool.CommonCli)} -t 4 -c 2048 --file \"{corpusPath}\""
-            : $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl 0 -t 4 -c 2048 --file \"{corpusPath}\"";
+        var cmd = BenchmarkCommands.Perplexity(_bins.Ppl, modelPath, corpusPath, slot.UsesGpu,
+            fixedNgl, BuildTensorSplitArgs(slot, LlamaGpuTool.CommonCli));
 
         var stopwatch = Stopwatch.StartNew();
-        var result = await RunShellCommandAsync(cmd, logFile, slot.BuildProcessEnv());
+        var result = await RunNativeCommandAsync(cmd, logFile, slot.BuildProcessEnv());
         stopwatch.Stop();
 
         if (!result.Success)
@@ -729,8 +741,8 @@ public class BenchmarkService
 
         try
         {
-            var parsed = ParsePerplexity(logFile, allowMissingKld: true);
-            string clean = StripAnsi(result.LogOutput);
+            var parsed = BenchmarkLogParser.ParsePerplexity(logFile, allowMissingKld: true);
+            string clean = BenchmarkLogParser.StripAnsi(result.LogOutput);
             var passMatch = Regex.Match(
                 clean,
                 @"([0-9]+(?:\.[0-9]+)?)\s+seconds per pass",
@@ -1067,18 +1079,17 @@ public class BenchmarkService
             probeRoot,
             $"probe_llamabench_slot{slot.SlotId}_g{slot.DeviceCount}_ngl{fixedNgl}.md");
 
-        string cmd = slot.UsesGpu
-            ? $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -ngl {fixedNgl}{BuildTensorSplitArgs(slot, LlamaGpuTool.LlamaBench)} -o md"
-            : $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -backend cpu -o md";
+        var cmd = BenchmarkCommands.Bench(_bins.Bench, modelPath, slot.UsesGpu,
+            fixedNgl, BuildTensorSplitArgs(slot, LlamaGpuTool.LlamaBench));
 
-        var result = await RunShellCommandAsync(cmd, logFile, slot.BuildProcessEnv());
+        var result = await RunNativeCommandAsync(cmd, logFile, slot.BuildProcessEnv());
 
         if (!result.Success)
             return false;
 
         try
         {
-            var parsed = ParseLlamaBench(logFile);
+            var parsed = BenchmarkLogParser.ParseLlamaBench(logFile);
             return parsed.Tps.HasValue && parsed.Tps.Value > 0;
         }
         catch
@@ -1098,18 +1109,17 @@ public class BenchmarkService
             probeRoot,
             $"probe_ppl_general_slot{slot.SlotId}_g{slot.DeviceCount}_ngl{fixedNgl}.log");
 
-        string cmd = slot.UsesGpu
-            ? $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {fixedNgl}{BuildTensorSplitArgs(slot, LlamaGpuTool.CommonCli)} -t 4 -c 2048 --file \"{corpusPath}\""
-            : $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl 0 -t 4 -c 2048 --file \"{corpusPath}\"";
+        var cmd = BenchmarkCommands.Perplexity(_bins.Ppl, modelPath, corpusPath, slot.UsesGpu,
+            fixedNgl, BuildTensorSplitArgs(slot, LlamaGpuTool.CommonCli));
 
-        var result = await RunShellCommandAsync(cmd, logFile, slot.BuildProcessEnv());
+        var result = await RunNativeCommandAsync(cmd, logFile, slot.BuildProcessEnv());
 
         if (!result.Success)
             return false;
 
         try
         {
-            var parsed = ParsePerplexity(logFile, allowMissingKld: true);
+            var parsed = BenchmarkLogParser.ParsePerplexity(logFile, allowMissingKld: true);
             return parsed.Ppl > 0;
         }
         catch
@@ -1123,6 +1133,9 @@ public class BenchmarkService
         bool allowIndependentTopology,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (_currentPlan == null)
             throw new InvalidOperationException(
                 "Benchmark execution plan has not been initialized. Call EnsureExecutionPlanAsync() first.");
@@ -1434,7 +1447,7 @@ public class BenchmarkService
             LastSuccessfulNgl = initialNgl
         };
         AnsiConsole.MarkupLine(
-            $"[grey]Dynamic NGL:[/] model={Markup.Escape(Path.GetFileName(modelPath))}, size={(modelSizeBytes / 1024d / 1024d / 1024d):F2} GB, q8={( _currentPlan.Q8ModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.Q8StableNgl}, native={(_currentPlan.NativeModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.NativeStableNgl}, slot={Markup.Escape(slot.DisplayName)}, chosen={initialNgl}");
+            $"[grey]Dynamic NGL:[/] model={Markup.Escape(Path.GetFileName(modelPath))}, size={(modelSizeBytes / 1024d / 1024d / 1024d):F2} GB, q8={(_currentPlan.Q8ModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.Q8StableNgl}, native={(_currentPlan.NativeModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.NativeStableNgl}, slot={Markup.Escape(slot.DisplayName)}, chosen={initialNgl}");
 
         var result = new BenchmarkResult
         {
@@ -1515,7 +1528,7 @@ public class BenchmarkService
                     Error = null
                 });
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 sw.Stop();
 
@@ -1590,7 +1603,7 @@ public class BenchmarkService
             LastSuccessfulNgl = initialNgl
         };
         AnsiConsole.MarkupLine(
-            $"[grey]Dynamic NGL:[/] model={Markup.Escape(Path.GetFileName(modelPath))}, size={(modelSizeBytes / 1024d / 1024d / 1024d):F2} GB, q8={( _currentPlan.Q8ModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.Q8StableNgl}, native={(_currentPlan.NativeModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.NativeStableNgl}, slot={Markup.Escape(slot.DisplayName)}, chosen={initialNgl}");
+            $"[grey]Dynamic NGL:[/] model={Markup.Escape(Path.GetFileName(modelPath))}, size={(modelSizeBytes / 1024d / 1024d / 1024d):F2} GB, q8={(_currentPlan.Q8ModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.Q8StableNgl}, native={(_currentPlan.NativeModelSizeBytes / 1024d / 1024d / 1024d):F2} GB/{_currentPlan.NativeStableNgl}, slot={Markup.Escape(slot.DisplayName)}, chosen={initialNgl}");
 
         var result = new BenchmarkResult
         {
@@ -1664,6 +1677,9 @@ public class BenchmarkService
         HybridQuant quantConfig,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         var currentHashStr = Cache.CurrentModelId;
         if (string.IsNullOrWhiteSpace(currentHashStr))
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
@@ -1695,6 +1711,9 @@ public class BenchmarkService
         HybridQuant quant,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         var c = (TensorConfig)quant;
 
         var existing = await db.TensorCombos.FirstOrDefaultAsync(x =>
@@ -1874,7 +1893,7 @@ public class BenchmarkService
 
             await transaction.CommitAsync();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             await transaction.RollbackAsync();
 
@@ -2110,7 +2129,7 @@ public class BenchmarkService
 
         try
         {
-            var parsed = ParseLlamaBench(logPath);
+            var parsed = BenchmarkLogParser.ParseLlamaBench(logPath);
             if (parsed.Tps.HasValue && parsed.Tps.Value > 0)
             {
                 metrics = parsed;
@@ -2140,7 +2159,7 @@ public class BenchmarkService
 
         try
         {
-            var parsed = ParsePerplexity(logPath, allowMissingKld);
+            var parsed = BenchmarkLogParser.ParsePerplexity(logPath, allowMissingKld);
 
             if (parsed.Ppl <= 0)
                 return false;
@@ -2238,9 +2257,8 @@ public class BenchmarkService
     {
         string logFile = Path.Combine(benchDir, "llamabench.md");
 
-        string cmd = slot.UsesGpu
-            ? $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -ngl {fixedNgl}{BuildTensorSplitArgs(slot, LlamaGpuTool.LlamaBench)} -o md"
-            : $"\"{_bins.Bench}\" -m \"{modelPath}\" -p 8 -t 16 -backend cpu -o md";
+        var cmd = BenchmarkCommands.Bench(_bins.Bench, modelPath, slot.UsesGpu,
+            fixedNgl, BuildTensorSplitArgs(slot, LlamaGpuTool.LlamaBench));
 
         await RunFixedCommandWithRetryAsync(
             label: "llama-bench",
@@ -2250,7 +2268,7 @@ public class BenchmarkService
             attempts: 2,
             requirePplMarker: false);
 
-        var parsed = ParseLlamaBench(logFile);
+        var parsed = BenchmarkLogParser.ParseLlamaBench(logFile);
         if (!parsed.Tps.HasValue || parsed.Tps.Value <= 0)
         {
             throw new InvalidOperationException(
@@ -2272,7 +2290,7 @@ public class BenchmarkService
     {
         string logFile = Path.Combine(benchDir, $"perplexity_{domain}.log");
 
-        string kldArgs = "";
+        string? logitsPath = null;
         bool expectKld = false;
 
         if (!string.IsNullOrEmpty(klLogitsDir))
@@ -2281,19 +2299,18 @@ public class BenchmarkService
 
             if (saveLogits)
             {
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\"";
+                logitsPath = logitsFile;
                 expectKld = false;
             }
             else if (File.Exists(logitsFile))
             {
-                kldArgs = $"--kl-divergence-base \"{logitsFile}\" --kl-divergence";
+                logitsPath = logitsFile;
                 expectKld = true;
             }
         }
 
-        string cmd = slot.UsesGpu
-            ? $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl {fixedNgl}{BuildTensorSplitArgs(slot, LlamaGpuTool.CommonCli)} -t 4 -c 2048 --file \"{corpusPath}\" {kldArgs}"
-            : $"\"{_bins.Ppl}\" -m \"{modelPath}\" -ngl 0 -t 4 -c 2048 --file \"{corpusPath}\" {kldArgs}";
+        var cmd = BenchmarkCommands.Perplexity(_bins.Ppl, modelPath, corpusPath, slot.UsesGpu,
+            fixedNgl, BuildTensorSplitArgs(slot, LlamaGpuTool.CommonCli), logitsPath, expectKld);
 
         await RunFixedCommandWithRetryAsync(
             label: $"perplexity-{domain}",
@@ -2304,7 +2321,7 @@ public class BenchmarkService
             requirePplMarker: true);
 
         bool allowMissingKld = !expectKld;
-        var parsed = ParsePerplexity(logFile, allowMissingKld);
+        var parsed = BenchmarkLogParser.ParsePerplexity(logFile, allowMissingKld);
 
         if (expectKld && !HasMeaningfulKld(parsed.Kld))
         {
@@ -2347,7 +2364,7 @@ public class BenchmarkService
                 runtimeNgl.LastSuccessfulNgl = ngl;
                 return metrics;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 lastException = ex;
                 string content = ex.ToString();
@@ -2366,7 +2383,7 @@ public class BenchmarkService
 
     private async Task RunFixedCommandWithRetryAsync(
         string label,
-        string cmd,
+        NativeCommand cmd,
         string logFile,
         BenchmarkSlot slot,
         int attempts,
@@ -2376,7 +2393,7 @@ public class BenchmarkService
 
         for (int attempt = 1; attempt <= attempts; attempt++)
         {
-            last = await RunShellCommandAsync(cmd, logFile, slot.BuildProcessEnv());
+            last = await RunNativeCommandAsync(cmd, logFile, slot.BuildProcessEnv());
 
             string logContent = !string.IsNullOrWhiteSpace(last.LogOutput)
                 ? last.LogOutput
@@ -2420,7 +2437,7 @@ public class BenchmarkService
 
         try
         {
-            var parsed = ParsePerplexity(logFile, allowMissingKld: true);
+            var parsed = BenchmarkLogParser.ParsePerplexity(logFile, allowMissingKld: true);
             return parsed.Ppl > 0;
         }
         catch
@@ -2446,119 +2463,16 @@ public class BenchmarkService
         return false;
     }
 
-    private static int ExtractNglFromCommand(string cmd)
+    private static int ExtractNglFromCommand(NativeCommand cmd)
     {
-        var match = Regex.Match(cmd, @"(?:\s-ngl\s+)(\d+)", RegexOptions.IgnoreCase);
-        if (match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ngl))
-            return ngl;
-
+        for (int i = 0; i < cmd.Arguments.Count - 1; i++)
+            if (cmd.Arguments[i] == "-ngl" && int.TryParse(cmd.Arguments[i + 1], out int ngl)) return ngl;
         return 0;
     }
 
     // ----------------------------------------------------------------
     // Parsers
     // ----------------------------------------------------------------
-
-    private LlamaBenchMetrics ParseLlamaBench(string logPath)
-    {
-        var metrics = new LlamaBenchMetrics { LogPath = GetRelativePath(logPath) };
-        if (!File.Exists(logPath))
-            return metrics;
-
-        var lines = File.ReadAllLines(logPath);
-        int headerIdx = -1;
-        for (int i = 0; i < lines.Length; i++)
-        {
-            if (lines[i].Contains("|") && lines[i].Contains("backend"))
-            {
-                headerIdx = i;
-                break;
-            }
-        }
-
-        if (headerIdx == -1 || lines.Length <= headerIdx + 2)
-            return metrics;
-
-        var headers = lines[headerIdx]
-            .Split('|', StringSplitOptions.RemoveEmptyEntries)
-            .Select(h => h.Trim())
-            .ToList();
-
-        var dataRow = lines[headerIdx + 2]
-            .Split('|', StringSplitOptions.RemoveEmptyEntries)
-            .Select(d => d.Trim())
-            .ToList();
-
-        if (headers.Count != dataRow.Count)
-            return metrics;
-
-        var row = headers
-            .Zip(dataRow, (h, d) => new { Header = h, Data = d })
-            .ToDictionary(x => x.Header, x => x.Data, StringComparer.OrdinalIgnoreCase);
-
-        string tpsStr = row.ContainsKey("t/s")
-            ? row["t/s"]
-            : (row.ContainsKey("tps") ? row["tps"] : "0");
-
-        var match = Regex.Match(tpsStr, @"([0-9.]+)");
-        if (match.Success &&
-            double.TryParse(match.Groups[1].Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double tps))
-        {
-            metrics.Tps = tps;
-            metrics.Backend = row.ContainsKey("backend") ? row["backend"] : "unknown";
-            metrics.Test = row.ContainsKey("test") ? row["test"] : "unknown";
-
-            if (row.ContainsKey("ngl") &&
-                int.TryParse(row["ngl"], NumberStyles.Any, CultureInfo.InvariantCulture, out int ngl))
-            {
-                metrics.Ngl = ngl;
-            }
-        }
-
-        return metrics;
-    }
-
-    private PplMetrics ParsePerplexity(string logPath, bool allowMissingKld)
-    {
-        var metrics = new PplMetrics { LogPath = GetRelativePath(logPath) };
-
-        if (!File.Exists(logPath))
-            throw new FileNotFoundException($"Perplexity log file was not created: {logPath}");
-
-        string text = File.ReadAllText(logPath);
-        string cleanText = StripAnsi(text);
-
-        var pplMatch = Regex.Match(
-            cleanText,
-            @"(?:Mean PPL\(Q\)|PPL)\s*[:=]\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*(?:±|\+/-)\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
-            RegexOptions.IgnoreCase);
-
-        if (!pplMatch.Success)
-        {
-            throw new InvalidOperationException(
-                $"Failed to parse PPL from log: {logPath}\n\nLast log content:\n{cleanText}");
-        }
-
-        metrics.Ppl = double.Parse(pplMatch.Groups[1].Value, CultureInfo.InvariantCulture);
-        metrics.PplError = double.Parse(pplMatch.Groups[2].Value, CultureInfo.InvariantCulture);
-
-        var kldMatch = Regex.Match(
-            cleanText,
-            @"(?:Mean\s+KLD|Mean\s+KL|KL[-_\s]*divergence|KLD|kl[-_\s]*div)\s*[:=]\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
-            RegexOptions.IgnoreCase);
-
-        if (kldMatch.Success)
-        {
-            metrics.Kld = double.Parse(kldMatch.Groups[1].Value, CultureInfo.InvariantCulture);
-        }
-        else if (!allowMissingKld)
-        {
-            throw new InvalidOperationException(
-                $"KLD was expected but could not be parsed from log: {logPath}\n\nLast log content:\n{cleanText}");
-        }
-
-        return metrics;
-    }
 
     // ----------------------------------------------------------------
     // Corpus preparation
@@ -2625,18 +2539,9 @@ with open(out_path, 'w', encoding='utf-8') as f:
         string scriptPath = Path.Combine(Path.GetDirectoryName(outPath)!, $"gen_{domain}.py");
         await File.WriteAllTextAsync(scriptPath, pyScript);
 
-        string pythonExe = _pyManager.GetPythonExecutable();
-        string args = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? $"/c \"{pythonExe}\" \"{scriptPath}\""
-            : $"\"{scriptPath}\"";
-
-        string runner = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd.exe" : pythonExe;
-
         await _pyManager.RunPipInstallAsync("datasets");
-        var generationResult = await RunShellCommandAsync(runner + " " + args, null);
-
-        if (File.Exists(scriptPath))
-            File.Delete(scriptPath);
+        var generationResult = await RunNativeCommandAsync(
+            new NativeCommand(_pyManager.GetPythonExecutable(), [scriptPath]), null);
 
         if (!generationResult.Success)
         {
@@ -2696,75 +2601,19 @@ with open(out_path, 'w', encoding='utf-8') as f:
         public string LogOutput { get; init; } = string.Empty;
     }
 
-    private async Task<CommandRunResult> RunShellCommandAsync(
-        string cmd,
+    private async Task<CommandRunResult> RunNativeCommandAsync(
+        NativeCommand cmd,
         string? logPath,
         IReadOnlyDictionary<string, string>? extraEnv = null)
     {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd.exe" : "/bin/bash",
-            Arguments = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? $"/c {cmd}" : $"-c \"{cmd}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        if (extraEnv != null)
-        {
-            foreach (var kvp in extraEnv)
-            {
-                startInfo.Environment[kvp.Key] = kvp.Value;
-            }
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        FileStream? fs = null;
-        StreamWriter? sw = null;
-
-        if (logPath != null)
-        {
-            fs = new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.Read);
-            sw = new StreamWriter(fs) { AutoFlush = true };
-        }
-
-        process.Start();
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-
-        await process.WaitForExitAsync();
-
-        string stdout = await stdoutTask;
-        string stderr = await stderrTask;
-
-        if (!string.IsNullOrWhiteSpace(stdout))
-            sw?.WriteLine(stdout);
-
-        if (!string.IsNullOrWhiteSpace(stderr))
-            sw?.WriteLine(stderr);
-
-        sw?.Dispose();
-        fs?.Dispose();
-
-        string combinedLog;
-        if (logPath != null && File.Exists(logPath))
-            combinedLog = File.ReadAllText(logPath);
-        else
-            combinedLog = $"{stdout}\n{stderr}";
-
+        var startInfo = cmd.CreateStartInfo(extraEnv);
+        var result = await new MagicQuant.Runtime.ProcessRunner().RunAsync(startInfo, logPath);
         return new CommandRunResult
         {
-            Success = process.ExitCode == 0,
-            ExitCode = process.ExitCode,
-            LogOutput = combinedLog
+            Success = result.Success,
+            ExitCode = result.ExitCode,
+            LogOutput = result.CombinedOutput
         };
-    }
-
-    private string StripAnsi(string text)
-    {
-        return Regex.Replace(text, @"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "");
     }
 
     private string GetRelativePath(string fullPath)

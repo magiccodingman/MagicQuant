@@ -6,7 +6,7 @@
 #
 # General rules:
 # - CLI flags override values from this YAML.
-# - In DEBUG, your dev config may be auto-selected instead.
+# - Debug and Release use this file unless --config is supplied.
 # - Leave values blank when they must be provided per-machine or per-run.
 #
 # Notes:
@@ -20,7 +20,7 @@
 
 paths:
   # Root MagicQuant working directory.
-  # If blank, runtime may fall back to current working directory logic.
+  # If blank, defaults to <user-home>/MagicQuant.
   magic_quant_root:
 
   # REQUIRED for real runs.
@@ -117,14 +117,11 @@ readme:
   #
   # Add more keys freely, such as base_model, datasets, language, pipeline_tag, etc.
   frontmatter:
-    license: apache-2.0
+    # Set license and base_model to match the actual source model before publishing.
     tags:
       - gguf
       - text-generation
       - magicquant
-      - conversational
-    base_model:
-      - Username/Model_Name
 
 hardware:
   # Optional per-GPU usable VRAM limits in GB.
@@ -262,9 +259,9 @@ candidate_selection:
   near_lower_anchor_brutal_zone_fraction_of_pair_span: 0.02
   near_anchor_required_kld_gain_fraction_of_pair_gap: 0.05
 
-  # Default false: do not spend final prediction/build attempts trying to replace
+  # This distributed config enables final prediction/build attempts to replace
   # 8-bit anchors such as Q8_0 during strict dominance or near-anchor replacement.
-  # Q8 is treated as the highest-fidelity practical anchor unless this is enabled.
+  # Set false to keep Q8 as the highest-fidelity practical anchor.
   allow_eight_bit_anchor_replacements: true
 
 anomaly_detection:
@@ -371,15 +368,15 @@ baselines:
   # all
   #   Keep built-in standard baselines active AND allow custom repositories.
   #
-  # standard_only
-  #   Use only built-in baselines. Ignore custom repositories.
+  # selected
+  #   Use the explicit built-in role lists below; empty lists enable none for that role.
   #
-  # custom_only
-  #   Use only custom repositories for learning/carrier/explicit-group roles,
-  #   except for any internal anchors the runtime still requires.
+  # none
+  #   Disable built-in learning/carrier/explicit-group roles. Internal native anchors
+  #   may still be required. Custom repositories are configured independently.
   standard_baselines_mode: all
 
-  # If empty, runtime uses normal built-in defaults for that category.
+  # These lists apply only in selected mode. In all mode, built-in defaults apply.
   #
   # Example:
   # enabled_standard_learning_baselines: [Q8_0, Q6_K, Q5_K, Q4_K_M]

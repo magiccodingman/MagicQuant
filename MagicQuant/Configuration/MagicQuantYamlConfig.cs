@@ -8,79 +8,16 @@ public sealed class MagicQuantYamlConfig
     public RuntimeFlagConfig Flags { get; set; } = new();
     public RuntimeReadmeConfig Readme { get; set; } = new();
     public RuntimeImatrixConfig Imatrix { get; set; } = new();
-    public RuntimeEvolutionConfig Evolution { get; set; } = new();
     public RuntimeIsolationPruningConfig IsolationPruning { get; set; } = new();
     public RuntimePredictionConfig Prediction { get; set; } = new();
     public RuntimeIdentityConfig Identity { get; set; } = new();
     public RuntimeBaselineConfig Baselines { get; set; } = new();
     public RuntimeLearningConfig Learning { get; set; } = new();
     public RuntimeOutputConfig Output { get; set; } = new();
-    public RuntimeSurvivalConfig Survival { get; set; } = new();
     public RuntimeCandidateSelectionConfig CandidateSelection { get; set; } = new();
     public RuntimeAnomalyDetectionConfig AnomalyDetection { get; set; } = new();
     public RuntimeSynergyDetectionConfig SynergyDetection { get; set; } = new();
     public RuntimeHardwareConfig Hardware { get; set; } = new();
-
-    public List<string> SensitivityProbeGroups { get; set; } =
-    [
-        "embeddings",
-        "lm_head",
-        "attn_q",
-        "attn_kv",
-        "attn_output",
-        "ffn_up_gate",
-        "ffn_down"
-    ];
-
-    public List<string> SensitivityProbeGroupsMoe { get; set; } =
-    [
-        "moe_router",
-        "moe_experts"
-    ];
-
-    public List<string> BrainLayers { get; set; } =
-    [
-        "embeddings",
-        "lm_head",
-        "attn_output"
-    ];
-
-    public List<string> CollapsePenaltySchemes { get; set; } =
-    [
-        "IQ1_S",
-        "IQ1_M",
-        "MXFP4",
-        "IQ2_XXS",
-        "IQ2_XS",
-        "IQ2_S"
-    ];
-
-    public List<string> MoeIndicatorTensors { get; set; } =
-    [
-        "blk.*.ffn_up_expert_0.weight",
-        "blk.*.ffn_gate_expert_0.weight",
-        "blk.*.ffn_down_expert_0.weight",
-        "blk.*.ffn_up_exps.weight",
-        "blk.*.ffn_gate_exps.weight",
-        "blk.*.ffn_down_exps.weight",
-        "blk.*.ffn_gate_inp.weight",
-        "router.weight",
-        "gate.weight",
-        "blk.*.router.*",
-        "blk.*.gate_proj.*",
-        "blk.*.gate_inp.*",
-        "model.language_model.layers.*.mlp.experts.gate_up_proj",
-        "model.language_model.layers.*.mlp.experts.down_proj",
-        "model.language_model.layers.*.mlp.gate.weight",
-        "model.language_model.layers.*.mlp.shared_expert.gate_proj.weight",
-        "model.language_model.layers.*.mlp.shared_expert.up_proj.weight",
-        "model.language_model.layers.*.mlp.shared_expert.down_proj.weight",
-        "model.language_model.layers.*.experts.gate_up_proj",
-        "model.language_model.layers.*.experts.down_proj",
-        "model.language_model.layers.*.router.proj.weight",
-        "model.language_model.layers.*.router.per_expert_scale",
-        "model.language_model.layers.*.router.scale"
-    ];
 
     public static MagicQuantYamlConfig CreateDefault() => new();
 }
@@ -120,14 +57,6 @@ public sealed class RuntimeImatrixConfig
     public string? DatasetSplit { get; set; }
     public string? DatasetConfig { get; set; }
     public string? DatasetLocalFile { get; set; }
-}
-
-public sealed class RuntimeEvolutionConfig
-{
-    public int MaxDataCollectedPerCategory { get; set; } = 5;
-    public int MaxSurvivalRounds { get; set; } = 4;
-    public double CollapseMultiplier { get; set; } = 1.5d;
-    public int BruteForceFinalCombinationThreshold { get; set; } = 2_000;
 }
 
 public sealed class RuntimeIsolationPruningConfig
@@ -186,17 +115,6 @@ public sealed class RuntimeOutputConfig
     public bool AttemptMmprojBuild { get; set; } = true;
     public bool RequireMmprojForVisionModels { get; set; } = false;
     public bool ReuseExistingFinalArtifacts { get; set; } = false;
-}
-
-public sealed class RuntimeSurvivalConfig
-{
-    public int MaxSelectedChoicesPerBucket { get; set; } = 5;
-    public double MeaningfulSizeBiasPercent { get; set; } = 1.0d;
-    public double KldCloseCallAbsoluteEpsilon { get; set; } = 0.00075d;
-    public double KldCloseCallRelativeFraction { get; set; } = 0.02d;
-    public double PplLargeDifferencePercent { get; set; } = 0.75d;
-    public double TradeScoreSizeBiasWeight { get; set; } = 1.25d;
-    public double TradeScorePplWeight { get; set; } = 0.15d;
 }
 
 public sealed class RuntimeCandidateSelectionConfig
@@ -400,7 +318,7 @@ public sealed class RuntimeLearningConfig
     public List<string> ForceRelearnStandardBaselines { get; set; } = new();
 
     /// <summary>
-    /// Safety gate for regex/profile mistakes. When true, the evolution run prints
+    /// Safety gate for regex/profile mistakes. When true, the pipeline run prints
     /// native BF16 tensor-group counts and asks before continuing.
     /// </summary>
     public bool ConfirmTensorGroupProfile { get; set; } = true;

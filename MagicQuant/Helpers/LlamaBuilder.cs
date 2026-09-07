@@ -259,27 +259,9 @@ public class LlamaBuilder
         foreach (string arg in args)
             psi.ArgumentList.Add(arg);
 
-        using var p = Process.Start(psi);
-        if (p == null)
-            return false;
-
-        p.OutputDataReceived += (_, e) =>
-        {
-            if (e.Data != null)
-                AnsiConsole.WriteLine(e.Data);
-        };
-
-        p.ErrorDataReceived += (_, e) =>
-        {
-            if (e.Data != null)
-                AnsiConsole.WriteLine(e.Data);
-        };
-
-        p.BeginOutputReadLine();
-        p.BeginErrorReadLine();
-        await p.WaitForExitAsync();
-
-        return p.ExitCode == 0;
+        var result = await new MagicQuant.Runtime.ProcessRunner().RunAsync(psi,
+            onLine: (line, _) => AnsiConsole.WriteLine(line));
+        return result.Success;
     }
 
     private static string ResolveConvertScriptPath(string llamaRoot)

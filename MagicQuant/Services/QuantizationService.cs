@@ -58,7 +58,6 @@ public class QuantizationService
     private readonly TensorGroupingAuditService _tensorGroupingAuditService;
     private readonly TensorLearningDiagnosticWriter _tensorLearningDiagnosticWriter;
 
-    private static readonly SemaphoreSlim BaseModelLock = new(1, 1);
     private const byte UnknownTensorGroupId = 255;
 
     private static readonly Lazy<Dictionary<string, string>> QuantAliasLookup =
@@ -72,10 +71,10 @@ public class QuantizationService
 
         if (string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
             throw new Exception(
-                "Cache.ModelMagicQuantDirectory not set. Evolution must set this before quantization starts.");
+                "Cache.ModelMagicQuantDirectory not set. The pipeline must set this before quantization starts.");
 
         if (string.IsNullOrWhiteSpace(Cache.ModelDirectory))
-            throw new Exception("Cache.ModelDirectory not set. Evolution must set this before quantization starts.");
+            throw new Exception("Cache.ModelDirectory not set. The pipeline must set this before quantization starts.");
 
         if (string.IsNullOrWhiteSpace(Cache.LlamaBin))
             throw new Exception("Cache.LlamaBin not set. Initialization must complete before quantization starts.");
@@ -93,41 +92,13 @@ public class QuantizationService
 
         int threadCount = Cache.SysInfo?.ThreadCount ?? Environment.ProcessorCount;
 
-        // Minimum desired threads per llama-quantize process.
-        // This is used to decide the natural concurrency first.
-        const int minimumQuantThreadsPerProcess = 4;
-
-        // Keep a little workstation breathing room.
-        int reservedThreads = threadCount switch
-        {
-            >= 16 => 2,
-            >= 8 => 2,
-            >= 4 => 1,
-            _ => 0
-        };
-
-        int usableThreads = Math.Max(1, threadCount - reservedThreads);
-
-        // First decide how many quantization processes the CPU budget would naturally allow.
-        int naturalConcurrentQuantizations = Math.Max(
-            1,
-            usableThreads / minimumQuantThreadsPerProcess);
-
-        // Then cap it to avoid hammering the output drive with too many giant writers.
         int scratchWriterCapacity = _scratchStorage.WriterCapacity;
-        _maxConcurrentQuantizations = Math.Max(
-            1,
-            Math.Min(naturalConcurrentQuantizations, scratchWriterCapacity));
-
-        // Divide the usable thread budget evenly across the allowed quantization processes.
-        // Example on 7950X3D:
-        // 32 total - 2 reserved = 30 usable
-        // natural = 30 / 8 = 3
-        // capped = min(2, 3) = 2
-        // threads/process = 30 / 2 = 15
-        _quantThreadsPerProcess = Math.Max(
-            1,
-            usableThreads / _maxConcurrentQuantizations);
+        var cpuPlan = QuantizationConcurrencyPlan.Create(threadCount, scratchWriterCapacity);
+        int reservedThreads = cpuPlan.ReservedThreads;
+        int usableThreads = cpuPlan.UsableThreads;
+        int naturalConcurrentQuantizations = cpuPlan.NaturalConcurrency;
+        _maxConcurrentQuantizations = cpuPlan.Concurrency;
+        _quantThreadsPerProcess = cpuPlan.ThreadsPerProcess;
 
         _cpuQuantLock = new SemaphoreSlim(
             _maxConcurrentQuantizations,
@@ -179,6 +150,9 @@ public class QuantizationService
         StageProgressOptions? progressOptions,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (quants == null)
             throw new ArgumentNullException(nameof(quants));
 
@@ -205,6 +179,9 @@ public class QuantizationService
         StageProgressOptions? progressOptions,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (plans == null)
             throw new ArgumentNullException(nameof(plans));
 
@@ -377,7 +354,7 @@ public class QuantizationService
             progress?.ReportFinished(state, record.ModelName, sw.Elapsed);
             return record;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             sw.Stop();
             record.State = SampleProcessState.Failed;
@@ -431,7 +408,7 @@ public class QuantizationService
                 allowIndependentGpuTopology,
                 ct);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             sw.Stop();
             record.State = SampleProcessState.Failed;
@@ -505,6 +482,9 @@ public class QuantizationService
         bool allowIndependentGpuTopology = true,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         string modelName = GenerateHybridName(quant);
         string modelBenchDir = _paths.GetBenchmarkDir(modelName);
         string baseLogitsDir = GetBaseLogitsDirectory();
@@ -647,7 +627,7 @@ public class QuantizationService
 
                 return SampleProcessState.Completed;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 try
                 {
@@ -749,6 +729,9 @@ public class QuantizationService
 
     private async Task<bool> HasLearnedTruthForBaselineAsync(BaselineQuants baseline, CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (baseline.UniqueId == BaselineQuants.NativeSourceUniqueId)
             return await HasNativeSourceLearnedTruthAsync(ct);
 
@@ -1237,6 +1220,9 @@ public class QuantizationService
         string? error,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
             throw new InvalidOperationException("Cache.CurrentModelId is not set.");
 
@@ -1316,14 +1302,6 @@ public class QuantizationService
         await db.SaveChangesAsync(ct);
     }
 
-    private bool IsProtectedModel(string name)
-    {
-        return name.EndsWith("BF16", StringComparison.OrdinalIgnoreCase) ||
-               name.EndsWith("F16", StringComparison.OrdinalIgnoreCase) ||
-               name.EndsWith("F32", StringComparison.OrdinalIgnoreCase) ||
-               name.EndsWith("Q8_0", StringComparison.OrdinalIgnoreCase);
-    }
-
     // ----------------------------------------------------------------
     // Base/native model helpers
     // ----------------------------------------------------------------
@@ -1356,104 +1334,8 @@ public class QuantizationService
         return outputPath;
     }
 
-    public async Task<string> EnsureBaseModelFileAsync(bool deleteProcess = false)
-    {
-        await BaseModelLock.WaitAsync();
-        try
-        {
-            string modelName = new DirectoryInfo(Cache.ModelDirectory!).Name;
-            var torchType = Cache.TorchType ?? Cache.MainTorchType.BF16;
-            string typeStr = torchType.ToString();
-
-            string fileName = $"{modelName}-{typeStr}.gguf";
-            string outputPath = Path.Combine(_paths.GgufDir, fileName);
-            string successFile = Path.Combine(_paths.GgufDir, $"{fileName}.success.json");
-            string convertLogPath = outputPath + ".convert.log";
-
-            if (deleteProcess)
-            {
-                if (!Directory.Exists(_paths.GgufDir))
-                    Directory.CreateDirectory(_paths.GgufDir);
-
-                var normalizedFileName = Path.GetFileName(fileName);
-                var successFileName = normalizedFileName + ".success.json";
-                var successFilePath = Path.Combine(_paths.GgufDir, successFileName);
-                bool isImmune = File.Exists(successFilePath);
-
-                foreach (var filePath in Directory.EnumerateFiles(_paths.GgufDir, "*.gguf", SearchOption.TopDirectoryOnly))
-                {
-                    var currentFileName = Path.GetFileName(filePath);
-                    var currentModelName = Path.GetFileNameWithoutExtension(currentFileName);
-
-                    if (isImmune &&
-                        string.Equals(currentFileName, normalizedFileName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(currentModelName) && IsProtectedModel(currentModelName))
-                    {
-                        continue;
-                    }
-
-                    await HardDeleteHelper.DeleteFileIfExistsAsync(filePath);
-                }
-            }
-
-            if (!File.Exists(outputPath) || !File.Exists(successFile))
-            {
-                AnsiConsole.MarkupLine($"[bold cyan]Converting to {Markup.Escape(typeStr)}...[/]");
-
-                await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
-
-                string convertScript = Cache.ConvertScript
-                                       ?? throw new Exception("ConvertScript path missing in Cache");
-
-                string outTypeArg = typeStr.ToLowerInvariant();
-
-                string arguments =
-                    $"\"{convertScript}\" \"{Cache.ModelDirectory}\" " +
-                    $"--outtype {outTypeArg} " +
-                    $"--outfile \"{outputPath}\"";
-
-                string python = _python.GetPythonExecutable();
-
-                var psi = new ProcessStartInfo
-                {
-                    FileName = python,
-                    Arguments = arguments,
-                    WorkingDirectory = Cache.LlamaRoot
-                };
-
-                var result = await RunLoggedProcessAsync(psi, convertLogPath);
-
-                if (result.ExitCode != 0)
-                {
-                    await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
-
-                    throw new Exception(
-                        $"{typeStr} conversion failed. ExitCode={result.ExitCode}. See '{convertLogPath}'.");
-                }
-
-                if (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
-                {
-                    await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
-
-                    throw new InvalidOperationException(
-                        $"Conversion exited successfully but produced no valid GGUF output: {outputPath}");
-                }
-
-                await File.WriteAllTextAsync(successFile, "{\"status\":\"success\"}");
-            }
-
-            return outputPath;
-        }
-        finally
-        {
-            BaseModelLock.Release();
-        }
-    }
-
+    public Task<string> EnsureBaseModelFileAsync(bool deleteProcess = false)
+        => new NativeModelConversionService(_paths, _python).EnsureAsync(deleteProcess);
 
     public async Task<string> BuildExportArtifactFromExactTensorMapAsync(
         IReadOnlyDictionary<string, string> tensorTypes,
@@ -1462,6 +1344,9 @@ public class QuantizationService
         bool forceRebuild = false,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (tensorTypes == null || tensorTypes.Count == 0)
             throw new ArgumentException("A clone tensor map must contain at least one tensor entry.",
                 nameof(tensorTypes));
@@ -1474,7 +1359,7 @@ public class QuantizationService
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
-        if (!forceRebuild && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
+        if (!forceRebuild && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0 && File.Exists(outputPath + ".success.json"))
             return outputPath;
 
         if (forceRebuild && File.Exists(outputPath))
@@ -1494,6 +1379,12 @@ public class QuantizationService
             await File.WriteAllTextAsync(outputPath + ".success.json", "{\"status\":\"success\"}", ct);
             return outputPath;
         }
+        catch
+        {
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath + ".success.json");
+            throw;
+        }
         finally
         {
             _cpuQuantLock.Release();
@@ -1506,6 +1397,9 @@ public class QuantizationService
         bool forceRebuild = false,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (quant == null)
             throw new ArgumentNullException(nameof(quant));
 
@@ -1514,7 +1408,7 @@ public class QuantizationService
 
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
-        if (!forceRebuild && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0)
+        if (!forceRebuild && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0 && File.Exists(outputPath + ".success.json"))
             return outputPath;
 
         if (forceRebuild && File.Exists(outputPath))
@@ -1556,6 +1450,12 @@ public class QuantizationService
             await File.WriteAllTextAsync(outputPath + ".success.json", "{\"status\":\"success\"}", ct);
             return outputPath;
         }
+        catch
+        {
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath);
+            await HardDeleteHelper.DeleteFileIfExistsAsync(outputPath + ".success.json");
+            throw;
+        }
         finally
         {
             _cpuQuantLock.Release();
@@ -1565,6 +1465,9 @@ public class QuantizationService
 
     public async Task<ScratchArtifactLease> BuildPureQ8ProbeLeaseAsync(CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         string basePath = await EnsureBaseModelFileAsync();
 
         var pureQ8 = new HybridQuant
@@ -1620,6 +1523,9 @@ public class QuantizationService
         string? metadataWorkingDirectory = null,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
             throw new FileNotFoundException($"Input GGUF not found: {inputFile}");
 
@@ -1662,7 +1568,7 @@ public class QuantizationService
         var args = new List<string>(capacity: concreteOverrides.Count + 8);
 
         foreach (var overrideItem in concreteOverrides)
-            args.Add($"--tensor-type \"{overrideItem.TensorName}={overrideItem.SchemeName}\"");
+            args.AddRange(["--tensor-type", $"{overrideItem.TensorName}={overrideItem.SchemeName}"]);
 
         if (_imatrixService.ShouldUseImatrixForQuant(HybridQuant.CreatePureBaseline(baseQuant)))
         {
@@ -1671,11 +1577,11 @@ public class QuantizationService
                 throw new InvalidOperationException(
                     $"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
 
-            args.Add($"--imatrix \"{imatrixPath}\"");
+            args.AddRange(["--imatrix", imatrixPath]);
         }
 
-        args.Add($"\"{inputFile}\"");
-        args.Add($"\"{outputFile}\"");
+        args.Add(inputFile);
+        args.Add(outputFile);
         args.Add(baseQuant.QuantizeBaseArgumentName);
         args.Add(_quantThreadsPerProcess.ToString());
 
@@ -1688,11 +1594,7 @@ public class QuantizationService
         AnsiConsole.MarkupLine(
             $"[cyan]Quantizing clone artifact:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
 
-        var result = await RunLoggedProcessAsync(new ProcessStartInfo
-        {
-            FileName = bin,
-            Arguments = string.Join(" ", args)
-        }, quantizeLogPath, ct);
+        var result = await RunLoggedProcessAsync(new MagicQuant.Runtime.NativeCommand(bin, args).CreateStartInfo(), quantizeLogPath, ct);
 
         if (result.ExitCode != 0)
         {
@@ -1726,6 +1628,9 @@ public class QuantizationService
         string? metadataWorkingDirectory = null,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(inputFile) || !File.Exists(inputFile))
             throw new FileNotFoundException($"Input GGUF not found: {inputFile}");
 
@@ -1780,7 +1685,7 @@ public class QuantizationService
 
         foreach (var overrideItem in concreteOverrides)
         {
-            args.Add($"--tensor-type \"{overrideItem.TensorName}={overrideItem.SchemeName}\"");
+            args.AddRange(["--tensor-type", $"{overrideItem.TensorName}={overrideItem.SchemeName}"]);
         }
 
         if (ShouldApplyImatrix(quant))
@@ -1790,15 +1695,13 @@ public class QuantizationService
                 throw new InvalidOperationException(
                     $"Imatrix was marked active but canonical artifact is missing: {imatrixPath}");
 
-            args.Add($"--imatrix \"{imatrixPath}\"");
+            args.AddRange(["--imatrix", imatrixPath]);
         }
 
-        args.Add($"\"{inputFile}\"");
-        args.Add($"\"{outputFile}\"");
+        args.Add(inputFile);
+        args.Add(outputFile);
         args.Add(ResolveQuantizeBaseArgument(quant, concreteOverrides));
         args.Add(_quantThreadsPerProcess.ToString());
-
-        string arguments = string.Join(" ", args);
 
         string bin = Path.Combine(
             Cache.LlamaBin!,
@@ -1807,11 +1710,7 @@ public class QuantizationService
         string quantizeLogPath = string.IsNullOrWhiteSpace(logPath) ? outputFile + ".quantize.log" : logPath;
         Directory.CreateDirectory(Path.GetDirectoryName(quantizeLogPath)!);
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = bin,
-            Arguments = arguments
-        };
+        var psi = new MagicQuant.Runtime.NativeCommand(bin, args).CreateStartInfo();
 
         AnsiConsole.MarkupLine(
             $"[cyan]Quantizing:[/] {Markup.Escape(Path.GetFileName(outputFile))} [grey](log: {Markup.Escape(quantizeLogPath)})[/]");
@@ -1882,6 +1781,9 @@ public class QuantizationService
         string ggufPath,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         var meta = await ReadTensorMetadataFromGgufAsync(ggufPath, Path.GetDirectoryName(ggufPath)!);
         return meta.TensorTypes
             .OrderBy(x => x.Key, StringComparer.Ordinal)
@@ -1902,6 +1804,9 @@ public class QuantizationService
 
     public async Task<bool> HasNativeSourceLearnedTruthAsync(CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(Cache.CurrentModelId))
             return false;
 
@@ -1925,6 +1830,9 @@ public class QuantizationService
         string nativeGgufPath,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(nativeGgufPath) || !File.Exists(nativeGgufPath))
             throw new FileNotFoundException($"Native GGUF path not found for learning: {nativeGgufPath}");
 
@@ -2521,7 +2429,7 @@ public class QuantizationService
             });
         }
 
-        if (!hasExplicitGroupOverrides)
+        if (quant.Tensors == null || !hasExplicitGroupOverrides)
             return result;
 
         foreach (var hybrid in quant.Tensors)
@@ -3258,95 +3166,13 @@ public class QuantizationService
     }
 
     private async Task<LoggedProcessResult> RunLoggedProcessAsync(
-        ProcessStartInfo psi,
-        string? logPath,
-        CancellationToken ct = default)
+        ProcessStartInfo psi, string? logPath, CancellationToken ct = default)
     {
-        psi.RedirectStandardOutput = true;
-        psi.RedirectStandardError = true;
-        psi.UseShellExecute = false;
-        psi.CreateNoWindow = true;
-
-        using var process = new Process
-        {
-            StartInfo = psi,
-            EnableRaisingEvents = true
-        };
-
-        var stdoutBuilder = new StringBuilder();
-        var stderrBuilder = new StringBuilder();
-        object sync = new();
-
-        var stdoutClosed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var stderrClosed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        StreamWriter? logWriter = null;
-        FileStream? logStream = null;
-
-        if (!string.IsNullOrWhiteSpace(logPath))
-        {
-            logStream = new FileStream(logPath, FileMode.Create, FileAccess.Write, FileShare.Read);
-            logWriter = new StreamWriter(logStream) { AutoFlush = true };
-        }
-
-        void HandleLine(string? line, bool isError)
-        {
-            if (line == null)
-            {
-                if (isError)
-                    stderrClosed.TrySetResult(true);
-                else
-                    stdoutClosed.TrySetResult(true);
-
-                return;
-            }
-
-            lock (sync)
-            {
-                if (isError)
-                    stderrBuilder.AppendLine(line);
-                else
-                    stdoutBuilder.AppendLine(line);
-
-                logWriter?.WriteLine(line);
-            }
-
-            if (Cache.VerboseProcessOutput)
-                AnsiConsole.WriteLine(line);
-        }
-
-        process.OutputDataReceived += (_, e) => HandleLine(e.Data, isError: false);
-        process.ErrorDataReceived += (_, e) => HandleLine(e.Data, isError: true);
-
-        if (!process.Start())
-            throw new InvalidOperationException($"Failed to start process: {psi.FileName}");
-
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using var ctr = ct.Register(() =>
-        {
-            try
-            {
-                if (!process.HasExited)
-                    process.Kill(entireProcessTree: true);
-            }
-            catch
-            {
-            }
-        });
-
-        await process.WaitForExitAsync(ct);
-        await Task.WhenAll(stdoutClosed.Task, stderrClosed.Task);
-
-        logWriter?.Dispose();
-        logStream?.Dispose();
-
-        return new LoggedProcessResult
-        {
-            ExitCode = process.ExitCode,
-            StdOut = stdoutBuilder.ToString(),
-            StdErr = stderrBuilder.ToString()
-        };
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
+        var result = await new MagicQuant.Runtime.ProcessRunner().RunAsync(psi, logPath,
+            (line, _) => { if (Cache.VerboseProcessOutput) AnsiConsole.WriteLine(line); }, ct);
+        return new LoggedProcessResult { ExitCode = result.ExitCode, StdOut = result.StdOut, StdErr = result.StdErr };
     }
 }

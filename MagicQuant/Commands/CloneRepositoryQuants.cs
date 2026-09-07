@@ -69,7 +69,9 @@ public sealed class CloneRepositoryQuants : ICommand
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new ExternalBaselineCacheCleanupService().CleanupStaleArtifactsAsync();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;
@@ -99,6 +101,7 @@ public sealed class CloneRepositoryQuants : ICommand
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(Cache.ModelDirectory);
         AnsiConsole.MarkupLine($"[green]Model ID Created/Found:[/] [cyan]{Markup.Escape(Cache.CurrentModelId)}[/]");
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await EnsureSqliteReadyAsync();
 
         var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
@@ -108,6 +111,7 @@ public sealed class CloneRepositoryQuants : ICommand
         string? sourceRepo = Get(args, "source-repo") ?? Get(args, "clone-repo");
         string? sourceJson = Get(args, "source-json") ?? Get(args, "clone-json");
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var (manifest, manifestLocalPath, sourceDescription) = await manifestService.ResolveAsync(
             sourceRepo,
             sourceJson,
@@ -124,15 +128,20 @@ public sealed class CloneRepositoryQuants : ICommand
         string baseModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
         var sidecarService = new ModelSidecarArtifactService(pyManager);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await sidecarService.EnsureMmprojArtifactAvailableAsync();
 
         var architectureFamilyService = new ArchitectureFamilyService(pyManager);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(baseModelGgufPath);
 
         var tensorGroupProfileService = new TensorGroupProfileService();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await tensorGroupProfileService.EnsureCurrentProfileAsync();
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var resolvedCustomBaselines = await hf.PrecheckAndRegisterConfiguredBaselinesAsync();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new TargetedRelearnService().PlanConfirmAndExecuteAsync(resolvedCustomBaselines);
 
         var imatrixRequest = new ImatrixRequest
@@ -148,6 +157,7 @@ public sealed class CloneRepositoryQuants : ICommand
             MagicQuantDirectory = Cache.ModelMagicQuantDirectory!
         };
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var imatrixEnsureResult = await imatrixService.EnsureImatrixAsync(imatrixRequest);
         RuntimeSearchSpace.SetImatrixAvailability(imatrixEnsureResult.Available);
 
@@ -161,8 +171,10 @@ public sealed class CloneRepositoryQuants : ICommand
             benchmarkCache: preCleanBenchmarkCache,
             records: out var reusableRecords);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await CleanOutputDirectoryAsync(Cache.OutputDirectory!, Config.ReuseExistingFinalArtifacts);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var archivedManifestFiles = await CopySourceManifestFilesAsync(
             outputDirectory: Cache.OutputDirectory!,
             sourceManifestLocalPath: manifestLocalPath,
@@ -175,6 +187,7 @@ public sealed class CloneRepositoryQuants : ICommand
         manifest.SourceRepository = sourceRepo;
         manifest.SourceJson = string.IsNullOrWhiteSpace(sourceRepo) ? sourceDescription : manifest.SourceJson;
         string outputCloneManifestPath = MagicQuantManifestPathService.GetManifestFilePath(Cache.OutputDirectory!, MagicQuantManifestPathService.CloneConfigsFileName);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await File.WriteAllTextAsync(outputCloneManifestPath, JsonSerializer.Serialize(manifest, JsonOptions));
         archivedManifestFiles.Add(MagicQuantManifestPathService.CloneConfigsFileName);
 
@@ -304,11 +317,16 @@ public sealed class CloneRepositoryQuants : ICommand
 
         ApplyCloneReferencePplDeltas(records);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await CopyModelAdjacentFilesAsync(Cache.OutputDirectory!);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await CopyImatrixArtifactsAsync(Cache.OutputDirectory!);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await sidecarService.CopyMmprojArtifactsAsync(Cache.OutputDirectory!);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await WriteCloneBenchmarkSummaryAsync(Cache.OutputDirectory!, records);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await WriteResolvedCloneConfigManifestAsync(
             outputCloneManifestPath,
             records,
@@ -318,6 +336,7 @@ public sealed class CloneRepositoryQuants : ICommand
             hasMissingManifestBaseQuantOverride);
         archivedManifestFiles.Add(MagicQuantManifestPathService.CloneBenchmarksFileName);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new CloneReadmeGenerationService().GenerateAsync(
             Cache.OutputDirectory!,
             new DirectoryInfo(Cache.ModelDirectory!).Name,
@@ -326,6 +345,7 @@ public sealed class CloneRepositoryQuants : ICommand
             records,
             archivedManifestFiles);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await CleanCloneExportSidecarsAsync(Cache.OutputDirectory!);
 
         AnsiConsole.MarkupLine("[bold green]Repository quant clone complete.[/]");
@@ -1029,13 +1049,8 @@ public sealed class CloneRepositoryQuants : ICommand
     private static string ResolveAndValidateOutputDirectory(IReadOnlyCollection<CliArg> args)
     {
         string? explicitOutput = Get(args, "output-dir");
-        string outputDir = !string.IsNullOrWhiteSpace(explicitOutput)
-            ? explicitOutput!
-            : !string.IsNullOrWhiteSpace(Config.OutputDirectory)
-                ? Config.OutputDirectory!
-                : Path.Combine(Cache.ModelMagicQuantDirectory!, "FinalOutput");
-
-        outputDir = Path.GetFullPath(outputDir);
+        string outputDir = OutputPathService.Clone(
+            Cache.ModelMagicQuantDirectory!, explicitOutput, Config.OutputDirectory);
         Directory.CreateDirectory(outputDir);
         return outputDir;
     }
@@ -1046,10 +1061,10 @@ public sealed class CloneRepositoryQuants : ICommand
     private static void ShowHelp()
     {
         AnsiConsole.MarkupLine("[bold yellow]Command: clone-repository-quants[/]");
-        AnsiConsole.MarkupLine("Rebuilds the final GGUF list from a MagicQuant-compatible tensor config manifest without running the evolution/search pipeline.");
+        AnsiConsole.MarkupLine("Rebuilds the final GGUF list from a MagicQuant-compatible tensor config manifest without running the discovery pipeline.");
         AnsiConsole.MarkupLine("Usage:");
-        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-repo \"owner/repo\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
-        AnsiConsole.MarkupLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-json \"<path-or-url>\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
+        AnsiConsole.WriteLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-repo \"owner/repo\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
+        AnsiConsole.WriteLine("  mq clone-repository-quants --model-dir \"<path>\" --architecture-family \"<family>\" --source-json \"<path-or-url>\" [--output-dir \"<path>\"] [--reuse-existing-final-artifacts]");
         AnsiConsole.MarkupLine("Options:");
         AnsiConsole.MarkupLine($"  --source-repo       Hugging Face repo containing {MagicQuantManifestPathService.RelativeManifestPath(MagicQuantManifestPathService.CloneConfigsFileName)} or legacy root {MagicQuantManifestPathService.CloneConfigsFileName}");
         AnsiConsole.MarkupLine("  --source-json       Local or http(s) path to magicquant.clone-configs.json");

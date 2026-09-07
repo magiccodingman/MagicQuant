@@ -14,7 +14,6 @@ namespace MagicQuant.Services;
 
 public class QuantDatabaseService
 {
-    private const string DbFileNamePrefix = "MagicQuant_Combinations";
     private const string TableName = CombinationDuckDbSchema.TableName;
 
     private static readonly string[] ExpectedColumnTypes = CombinationDuckDbSchema.ExpectedColumnTypes;
@@ -116,31 +115,11 @@ public class QuantDatabaseService
         return results;
     }
 
-    private static string GetDuckDbDirectory()
-    {
-        if (!string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
-            return Cache.ModelMagicQuantDirectory!;
-
-        if (!string.IsNullOrWhiteSpace(Cache.MagicQuantDirectory))
-            return Cache.MagicQuantDirectory!;
-
-        throw new InvalidOperationException(
-            "Neither Cache.ModelMagicQuantDirectory nor Cache.MagicQuantDirectory is set.");
-    }
-
-    private static string BuildContextAwareDuckDbFileName()
-    {
-        string model = string.IsNullOrWhiteSpace(Cache.CurrentModelId) ? "unknown-model" : Cache.CurrentModelId;
-        string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixIdentityHash ?? "imatrix-unknown") : "no-imatrix";
-        string hp = RuntimeSearchSpace.AllowHighPrecisionHybrids ? "hp-on" : "hp-off";
-        return $"{DbFileNamePrefix}_{model}_{imatrix}_{hp}.duckdb";
-    }
-
-    private string ConnectionString => $"Data Source={Path.Combine(GetDuckDbDirectory(), BuildContextAwareDuckDbFileName())}";
+    private string ConnectionString => $"Data Source={CombinationDatabasePathService.GetPath()}";
 
     public async Task InitializeAsync(bool forceRebuild = false, CancellationToken ct = default)
     {
-        var duckDbDirectory = GetDuckDbDirectory();
+        var duckDbDirectory = CombinationDatabasePathService.GetDirectory();
         Directory.CreateDirectory(duckDbDirectory);
 
         using var connection = new DuckDBConnection(ConnectionString);

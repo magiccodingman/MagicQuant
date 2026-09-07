@@ -13,8 +13,8 @@ namespace MQ.DB.Models.DbModels;
 public class AiModelHash : ISQLiteEntity<AiModelHash>
 {
     public uint Id { get; set; }
-    public string UniqueHash { get; set; }
-    
+    public string UniqueHash { get; set; } = null!; // Required; assigned by EF or model registration.
+
     public void Configure(EntityTypeBuilder<AiModelHash> builder)
     {
         builder.HasKey(x => x.Id);

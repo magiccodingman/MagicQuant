@@ -12,7 +12,7 @@
       <PackageReference Include="DuckDB.NET.Data.Full" Version="1.4.3" />
       <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
       <PackageReference Include="Spectre.Console" Version="0.54.0" />
-      <PackageReference Include="System.Management" Version="10.0.1" />
+      <PackageReference Include="System.Management" Version="10.0.11" />
       <PackageReference Include="YamlDotNet" Version="17.0.1" />
     </ItemGroup>
 
@@ -23,19 +23,6 @@
       <None Update="config.default.yaml">
         <CopyToOutputDirectory>Always</CopyToOutputDirectory>
       </None>
-      <None Update="config.dev.yaml">
-        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-      </None>
-      <None Update="config.clone-unsloth.dev.yaml">
-        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-      </None>
-      <None Update="Configs\config.dev.yaml">
-        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-      </None>
-    </ItemGroup>
-
-    <ItemGroup>
-      <Folder Include="DuckDB\" />
     </ItemGroup>
 
     <ItemGroup>

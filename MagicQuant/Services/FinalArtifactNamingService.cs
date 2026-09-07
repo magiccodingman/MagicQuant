@@ -396,7 +396,7 @@ public sealed class FinalArtifactNamingService
             ? (snapshot.IsHybrid ? "MagicQuant" : HybridBenchmarkRepository.ResolveProviderName(snapshot.Quant, exportNaming: false))
             : string.Empty);
 
-        string resolvedFamily = quantFamily;
+        string? resolvedFamily = quantFamily;
         if (string.IsNullOrWhiteSpace(resolvedFamily) && snapshot != null)
             resolvedFamily = snapshot.BaselineFamily;
         if (string.IsNullOrWhiteSpace(resolvedFamily) && snapshot != null && context != null)

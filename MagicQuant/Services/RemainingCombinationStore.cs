@@ -10,12 +10,11 @@ namespace MagicQuant.Services;
 
 public sealed class RemainingCombinationStore
 {
-    private const string DbFileNamePrefix = "MagicQuant_Combinations";
     private const string TableName = CombinationDuckDbSchema.TableName;
 
-    private static string ConnectionString => $"Data Source={GetDatabaseFilePathInternal()}";
+    private static string ConnectionString => $"Data Source={CombinationDatabasePathService.GetPath()}";
 
-    public string GetDatabaseFilePath() => GetDatabaseFilePathInternal();
+    public string GetDatabaseFilePath() => CombinationDatabasePathService.GetPath();
 
     public async Task<long> CountAsync(CancellationToken ct = default)
     {
@@ -801,35 +800,6 @@ LIMIT ?;";
         await createCmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static string GetDuckDbDirectory()
-    {
-        if (!string.IsNullOrWhiteSpace(Cache.ModelMagicQuantDirectory))
-            return Cache.ModelMagicQuantDirectory!;
-
-        if (!string.IsNullOrWhiteSpace(Cache.MagicQuantDirectory))
-            return Cache.MagicQuantDirectory!;
-
-        throw new InvalidOperationException(
-            "Neither Cache.ModelMagicQuantDirectory nor Cache.MagicQuantDirectory is set.");
-    }
-
-    private static string GetDatabaseFilePathInternal()
-    {
-        return Path.Combine(GetDuckDbDirectory(), BuildContextAwareDuckDbFileName());
-    }
-
-    private static string BuildContextAwareDuckDbFileName()
-    {
-        // IMPORTANT: this must stay byte-for-byte compatible with QuantDatabaseService
-        // unless both services are changed together. The previous patch made only the
-        // prediction reader profile-aware, which opened a brand-new empty DuckDB file
-        // after stage-1 had populated the original file.
-        string model = string.IsNullOrWhiteSpace(Cache.CurrentModelId) ? "unknown-model" : Cache.CurrentModelId;
-        string imatrix = Cache.IsImatrixAvailable ? (Cache.ActiveImatrixIdentityHash ?? "imatrix-unknown") : "no-imatrix";
-        string hp = RuntimeSearchSpace.AllowHighPrecisionHybrids ? "hp-on" : "hp-off";
-        return $"{DbFileNamePrefix}_{model}_{imatrix}_{hp}.duckdb";
-    }
-
     private static async Task EnsureTensorConfigsTableExistsAsync(DuckDBConnection connection, CancellationToken ct)
     {
         using var cmd = connection.CreateCommand();
@@ -841,7 +811,7 @@ LIMIT ?;";
             return;
 
         throw new InvalidOperationException(
-            $"DuckDB search-space table '{TableName}' does not exist in '{GetDatabaseFilePathInternal()}'. " +
+            $"DuckDB search-space table '{TableName}' does not exist in '{CombinationDatabasePathService.GetPath()}'. " +
             "This almost always means the generator and prediction reader are using different DuckDB filenames, " +
             "or prediction started before QuantDatabaseService initialized/rebuilt the search-space table.");
     }

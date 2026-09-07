@@ -2,6 +2,9 @@ using MQ.DB;
 
 namespace MagicQuant.Services;
 
+/// <summary>
+/// Initializes model-scoped cache locations after the command has selected its source model.
+/// </summary>
 public static class ModelRuntimePathService
 {
     public static void InitializeForCurrentModel()

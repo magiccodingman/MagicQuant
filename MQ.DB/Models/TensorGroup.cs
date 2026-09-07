@@ -7,7 +7,7 @@ namespace MQ.DB.Models;
 
 public class TensorGroupInfo
 {
-    public TensorGroup Group { get; set; }
+    public TensorGroup Group { get; set; } = null!;
 }
 
 /// <summary>

@@ -1,0 +1,9 @@
+# Supply --source-json or --source-repo on the command line.
+paths:
+  model_dir: /data/models/my-compatible-model
+identity:
+  architecture_family_name: my-model-family
+output:
+  output_dir: /data/exports/my-cloned-model
+  output_name_prefix: MyClonedModel
+  reuse_existing_final_artifacts: true
