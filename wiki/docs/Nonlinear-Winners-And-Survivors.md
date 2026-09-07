@@ -211,6 +211,30 @@ MagicQuant avoids keeping candidates that only provide negligible improvement, r
 
 ---
 
+## The Evidence Archive Is Not the Release Menu
+
+Meaningful spacing is a presentation decision. Strict dominance is a measured fact.
+
+Those should be stored separately:
+
+```text
+full measured nondominated archive
+    => every real point that survives strict dominance
+
+curated release menu
+    => a smaller set chosen for useful user-facing spacing
+```
+
+A candidate removed only by spacing can still be scientifically important. It may become relevant when compared with a future run, when a user wants finer high-fidelity choices, or when the curation policy changes.
+
+The current spacing rule uses a fraction of the global survivor size span. This keeps a release clean, but a very wide frontier can cause useful points in a dense high-quality region to be hidden.
+
+MagicQuant should therefore preserve the unspaced nondominated evidence before creating the release view.
+
+For a complete source-aware comparison example and the reproducibility rules, see [Pareto Archives, Release Curation, and Reproducibility](./Pareto-Archives-And-Reproducibility.md).
+
+---
+
 ## Baselines Still Often Win
 
 MagicQuant hybrids do not always beat pure baselines.

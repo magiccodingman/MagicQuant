@@ -1,10 +1,12 @@
 # MagicQuant Prediction Engine
 
-## Rank-Safe Isolation Prediction, Practical Gravity, and Contextual Anomaly Learning
+## Rank-Safe Isolation Prediction, Practical Gravity, and Controlled Context Learning
 
 MagicQuant is a **prediction-guided validation system** for GGUF hybrid quantization. It measures a small number of physically real tensor-group samples, uses those samples to build a rank-safe prediction space, searches that compressed space for candidates that could meaningfully improve the final frontier, then builds and benchmarks only the candidates that deserve a real test.
 
 The main path is the DuckDB/rank-safe prediction engine. A newer secondary path, the **smart baseline-tuning fallback**, runs only after a normal dominance, premium, or interior discovery attempt fails to validate a winner. That fallback does not pretend to out-predict the full engine. It uses the same isolated measurements more conservatively, looking for small MDA-backed “free lunch” swaps and tightly budgeted protection trades that may have been intentionally pruned away from the main prediction space.
+
+MagicQuant can also repeat a bounded number of useful comparisons inside controlled high-, mid-, and low-fidelity blankets. These probes do not replace normal isolation. They test whether an isolation ranking transfers when the surrounding model enters a different compression regime. The complete design is documented in [Regime-Aware Tensor Search](./Regime-Aware-Search.md).
 
 The prediction engine is allowed to be approximate because it is not the final judge. Its job is to decide where compute should be spent. The real benchmark remains the final authority.
 
@@ -2106,33 +2108,44 @@ Anomaly probing asks:
 Does this lower-fidelity movement behave differently in a real quantized context?
 ```
 
-## Known blind spot: high-bit truth does not always transfer downward
+## Controlled fidelity regimes: testing whether truth transfers downward
 
 Anomaly detection is powerful, but it is not omniscient.
 
-Normal isolation and the current anomaly probes intentionally sample a limited number of high-signal contexts. That keeps MagicQuant practical. Testing every possible low-bit blanket, every pair, every triple, and every surrounding quantization condition would explode the sample count.
+Normal isolation and anomaly probes intentionally sample a limited number of high-signal contexts. Testing every low-bit blanket, pair, triple, and surrounding quantization condition would explode the sample count.
 
-A useful example shape is a group where `IQ4_NL` looks unusually strong in isolation or in a 4-bit-and-above context. It may beat `Q4_K` by a meaningful amount when the surrounding groups are Q8/native exact or otherwise high fidelity.
+A useful example is a group where `IQ4_NL` looks unusually strong in isolation or in a 4-bit-and-above context. It may beat `Q4_K_M` by a meaningful amount when the surrounding groups are Q8/native exact or otherwise high fidelity. That does not guarantee the relationship survives in 3-bit-or-lower territory.
 
-But that does not guarantee the relationship survives in 3-bit-or-lower territory.
+In a much lower-fidelity context, the surrounding damage field changes. The local ranking can reverse.
 
-In very low-bit contexts, the surrounding damage field changes. A quant that hit above its weight class near Q8/BF16 may stop doing so once other groups are also heavily compressed. In that territory, a `Q4_K` choice that looked worse in high-bit isolation can become the better practical companion.
-
-This is an accepted blind spot of the current practical engine:
+MagicQuant now tests this risk with bounded controlled context strata:
 
 ```text
-high-bit isolation truth is highly useful
-but it is not a complete map of low-bit emergent behavior
+high fidelity: Q6/Q5 reference blankets
+mid fidelity:  Q4 reference blanket
+low fidelity:  IQ3 reference blanket, opt-in
 ```
 
-MagicQuant could add more low-bit context isolation in the future, such as 3-bit blanket probes or targeted low-bit transfer checks. The tradeoff is sample growth. At present, the system chooses the practical path: respect the limited truth it has, acknowledge where that truth can fail, and let the other mechanisms — bit-stress fitting, anomaly probes, synergy second chance, fallback attempts, and real validation — power through most cases without brute-forcing the entire universe.
-
-The important contract remains:
+For exploratory rank checks, it compares:
 
 ```text
-prediction may miss some low-bit context flips
-real benchmark truth still decides what survives
+isolation winner
+versus
+closest-size same-bit non-equivalent alternative
 ```
+
+Both candidates are measured inside the same blanket. This provides evidence about transfer without replaying an old final mixture or brute-forcing every pair.
+
+The resulting rule is matched against the effective non-selected surrounding groups, not merely the candidate's carrier label. Evidence can be beneficial, harmful, or suppression-only. Weak or noisy changes can therefore block unsafe promotion without creating an optimistic boost.
+
+This closes part of the earlier blind spot, but it does not turn a handful of blankets into a complete map:
+
+```text
+controlled regime probes improve transfer knowledge
+they do not eliminate combinatorics
+```
+
+Low-fidelity probing remains opt-in because the extra real builds are most valuable when Q3-or-lower artifacts are an important release target.
 
 ## Movement classification
 
@@ -2839,7 +2852,9 @@ Reject invalid sparse/native-exact anomaly configs.
 
 Require quantized contextual twins.
 
-Remember the scope limit: anomaly smoke is not an exhaustive low-bit context map.
+Also identify justified context rank pairs: the isolation winner and the closest-size same-bit non-equivalent alternative for the selected group.
+
+Remember the scope limit: anomaly smoke and controlled strata are not an exhaustive low-bit context map.
 
 ## Step 18: Probe anomaly candidates
 
@@ -2854,6 +2869,8 @@ full changed set
 
 Benchmark probe and reference twin.
 
+For transfer and exploratory rank probes, rebuild both sides inside the same configured high-, mid-, or opt-in low-fidelity blanket.
+
 Classify as beneficial, harmful, normal gravity, or suppression-only.
 
 ## Step 19: Persist anomaly rules
@@ -2865,6 +2882,8 @@ Beneficial rules reorder candidates beneath matching twins.
 Harmful rules demote matching rows.
 
 Suppression-only rules prevent repeated wasted probing.
+
+Scope transfer rules to the measured effective surrounding-group context, excluding the groups changed by the rule itself. Do not use the carrier label as a substitute for the actual context.
 
 ## Step 20: Query frontier candidates
 
@@ -3284,6 +3303,16 @@ Reject BF16/native-exact anomaly configs.
 
 Probe subsets of changed groups.
 
+Add bounded controlled context strata when transfer behavior matters:
+
+```text
+high-fidelity Q6/Q5 blankets
+mid-fidelity Q4 blanket
+opt-in low-fidelity IQ3 blanket
+```
+
+For exploratory rank pairs, compare the isolation winner with the closest-size same-bit non-equivalent alternative inside the same blanket.
+
 Classify:
 
 ```text
@@ -3292,6 +3321,8 @@ harmful
 normal gravity
 suppression-only
 ```
+
+Match learned rules against effective non-selected surrounding groups. Do not replay historical final winners and do not treat a search-row carrier label as sufficient context identity.
 
 ## Anomaly prediction adjustment
 
@@ -3332,7 +3363,7 @@ It does not brute-force the universe.
 
 It also does not blindly trust a simplistic predictor.
 
-Instead, it builds a practical prediction space from isolated tensor-group measurements, stabilizes that space with monotonic rank projection, uses fitted interaction correction where enough truth exists, keeps subtle bad-trade-adjacent ideas out of the main ranking space, recovers a few of them through guarded smart fallback when prediction fails, detects contextual violations of gravity through Q8-style quantized twins, and validates every serious candidate with real benchmarks.
+Instead, it builds a practical prediction space from isolated tensor-group measurements, stabilizes that space with monotonic rank projection, uses fitted interaction correction where enough truth exists, keeps subtle bad-trade-adjacent ideas out of the main ranking space, recovers a few of them through guarded smart fallback when prediction fails, detects contextual violations of gravity through quantized twins and controlled fidelity strata, and validates every serious candidate with real benchmarks.
 
 The system’s deepest idea is not merely:
 

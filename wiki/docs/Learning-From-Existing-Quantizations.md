@@ -285,6 +285,63 @@ without brute-forcing the entire combinatorial space.
 
 ---
 
+## Historical Sources: Learn the Vocabulary, Not the Old Winner
+
+An older source revision can contain tensor recipes that a newer revision no longer publishes.
+
+That makes historical sources useful, but only at the correct level of abstraction.
+
+MagicQuant should learn:
+
+```text
+which tensor assignments existed
+which group recipes are independently testable
+which quant families are available to the current search
+```
+
+It should not learn:
+
+```text
+this old final mixture won before
+therefore replay the same mixture now
+```
+
+Replaying historical winners would bias the current frontier toward a previous model, imatrix, benchmark corpus, and search campaign. Instead, MagicQuant digests the tensor vocabulary, rebuilds those choices under the current controlled conditions, and makes every group behavior earn support again.
+
+The principle is:
+
+> **Learn what configurations exist. Relearn what they do.**
+
+## Pin Every External Revision
+
+A provider label such as “Unsloth Dynamic v2” or “v3” is not a reproducible source identity.
+
+Repositories change. Files can be replaced while retaining familiar names. MagicQuant should therefore record:
+
+- repository identity
+- exact revision or commit hash
+- artifact filename
+- artifact checksum where practical
+
+The repository configuration supports an immutable revision directly:
+
+```yaml
+baselines:
+  custom_repositories:
+    - repo_id: provider/model-gguf
+      revision: exact-commit-or-repository-revision
+      enabled: true
+      allow_as_learning_baseline: true
+```
+
+Historical vocabulary sources can remain learning-only by disabling their use as global carriers and explicit group candidates. Their learned group recipes can then be considered through the controlled search without multiplying the carrier space or replaying the source artifact as a winner.
+
+This matters both for future reruns and for cross-run comparisons. Numeric SQLite IDs are local bookkeeping values, not globally stable identities. Two runs can assign the same number to different source recipes.
+
+For the wider evidence and identity rules, see [Pareto Archives, Release Curation, and Reproducibility](./Pareto-Archives-And-Reproducibility.md).
+
+---
+
 ## Why This Approach Works
 
 MagicQuant avoids one of the hardest problems in quantization:

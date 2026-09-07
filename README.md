@@ -113,6 +113,8 @@ The goal is not to flood the space with near-duplicates offering negligible KLD 
 
 MagicQuant is built around transparency, honesty, maintainability, and most importantly trust. As it evaluates new architectures and quant families, it doesn’t invent quantization schemes in isolation. Instead, it learns from proven tensor assignments provided by trusted sources like llama.cpp and Unsloth. If those baselines are stable, MagicQuant operates within that same safe space, extending rather than reinventing.
 
+Historical sources expand that tensor vocabulary; they do not vote on the current winner. MagicQuant pins the source revision, rebuilds the available recipes under current controlled conditions, and relearns their effects rather than replaying an old final mixture.
+
 That said, the system is designed to adapt. Edge cases can exist, but the architecture is intentionally flexible to handle them.
 
 ### How MagicQuant Works
@@ -181,6 +183,7 @@ That said, the system is designed to adapt. Edge cases can exist, but the archit
         │ ───────────────────────── │
         │ - Group-level testing      │
         │ - Rank-safe prediction     │
+        │ - Controlled context tests │
         └────────────┬──────────────┘
                      │
                      │ Build real GGUF
@@ -190,6 +193,7 @@ That said, the system is designed to adapt. Edge cases can exist, but the archit
         │ ───────────────────────── │
         │ - KLD (primary)            │
         │ - PPL (secondary)          │
+        │ - Measured GPU scheduling  │
         └────────────┬──────────────┘
                      │
                      │ Final decision
@@ -202,3 +206,17 @@ That said, the system is designed to adapt. Edge cases can exist, but the archit
         │ - Spacing collapse         │
         └────────────────────────────┘
 ```
+
+The controlled context tests check whether a promising group choice still behaves the same way when the surrounding model moves from a Q4-or-better regime into more aggressive compression. They are bounded and evidence-driven because exhaustive context testing would recreate the full combinatorial problem.
+
+GPU scheduling is also measured rather than assumed. A large benchmark can use multiple GPUs in one shared process, while batches of smaller candidates can run concurrently on independent GPUs when that produces higher aggregate throughput.
+
+The final release is a curated survivor menu. Research campaigns and cross-run audits should preserve the full nondominated evidence frontier before applying spacing, so that a presentation decision does not erase valid results.
+
+## Deep Dive Documentation
+
+- [Wiki index](./wiki/index.md)
+- [Prediction Engine](./wiki/docs/Prediction-Engine.md)
+- [Regime-Aware Tensor Search](./wiki/docs/Regime-Aware-Search.md)
+- [GPU Benchmark Scheduling](./wiki/docs/GPU-Benchmark-Scheduling.md)
+- [Pareto Archives and Reproducibility](./wiki/docs/Pareto-Archives-And-Reproducibility.md)
