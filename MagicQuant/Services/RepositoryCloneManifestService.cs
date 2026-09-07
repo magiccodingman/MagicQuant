@@ -26,6 +26,9 @@ public sealed class RepositoryCloneManifestService
         string modelMagicQuantDirectory,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(sourceRepo) && string.IsNullOrWhiteSpace(sourceJson))
             throw new InvalidOperationException("Clone mode requires --source-repo <hf/repo> or --source-json <path-or-url>.");
 
@@ -108,7 +111,7 @@ public sealed class RepositoryCloneManifestService
                 AnsiConsole.MarkupLine($"[green]Downloaded clone manifest:[/] {Markup.Escape(repoId)}/{Markup.Escape(candidate)}");
                 return localPath;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 errors.Add($"{candidate}: {ex.Message}");
             }

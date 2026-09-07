@@ -16,7 +16,7 @@ public static class DependencyManager
     public static async Task EnsureDependenciesAsync(SystemInfo sysInfo)
     {
         // 1. Check CMake (Download if missing on Windows)
-        string cmakePath = GetCmakePath();
+        string? cmakePath = GetCmakePath();
         if (cmakePath == null)
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -55,7 +55,7 @@ public static class DependencyManager
                     AnsiConsole.MarkupLine("[red]CUDA Toolkit not found![/]");
                     AnsiConsole.MarkupLine("To use your NVIDIA GPU, you must install the CUDA Toolkit.");
                     AnsiConsole.MarkupLine("[link]https://developer.nvidia.com/cuda-downloads[/]");
-                    
+
                     if (!AnsiConsole.Confirm("Have you installed the CUDA Toolkit and are ready to retry?"))
                     {
                         throw new Exception("CUDA Toolkit required for Nvidia build.");
@@ -70,12 +70,12 @@ public static class DependencyManager
         }
         else if (sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Intel)
         {
-             if (!CheckCommandExists("icx")) // Intel OneAPI Compiler
-             {
-                 AnsiConsole.MarkupLine("[yellow]Warning: Intel OneAPI Base Toolkit not found.[/]");
-                 AnsiConsole.MarkupLine("For optimal Intel performance (SYCL), install OneAPI: [blue]https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html[/]");
-                 AnsiConsole.MarkupLine("Proceeding with CPU/Vulkan fallback if build fails.");
-             }
+            if (!CheckCommandExists("icx")) // Intel OneAPI Compiler
+            {
+                AnsiConsole.MarkupLine("[yellow]Warning: Intel OneAPI Base Toolkit not found.[/]");
+                AnsiConsole.MarkupLine("For optimal Intel performance (SYCL), install OneAPI: [blue]https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html[/]");
+                AnsiConsole.MarkupLine("Proceeding with CPU/Vulkan fallback if build fails.");
+            }
         }
         // AMD on Linux usually handled by "sudo apt install hipcc" or rocm libs
     }
@@ -88,7 +88,7 @@ public static class DependencyManager
         if (CheckCommandExists("cmake")) return "cmake";
 
         // 2. Check Local 'MagicQuant/cmake/bin'
-        string localPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), 
+        string localPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                                         MagicConstants.MagicQuantFolder, "cmake", "bin", "cmake.exe");
         return File.Exists(localPath) ? localPath : null;
     }
@@ -99,7 +99,7 @@ public static class DependencyManager
         string zipPath = Path.Combine(magicPath, "cmake.zip");
         string extractPath = Path.Combine(magicPath, "cmake");
 
-        AnsiConsole.Status().Start("Downloading CMake...", ctx => 
+        AnsiConsole.Status().Start("Downloading CMake...", ctx =>
         {
             using var client = new HttpClient();
             var bytes = client.GetByteArrayAsync(CmakeWinUrl).Result;
@@ -108,13 +108,13 @@ public static class DependencyManager
 
         AnsiConsole.MarkupLine("Extracting CMake...");
         if (Directory.Exists(extractPath)) Directory.Delete(extractPath, true);
-        
+
         ZipFile.ExtractToDirectory(zipPath, magicPath);
-        
+
         // Rename the extracted folder (e.g., cmake-3.29-windows...) to just "cmake"
         var extractedDir = Directory.GetDirectories(magicPath, "cmake-*").First();
         Directory.Move(extractedDir, extractPath);
-        
+
         File.Delete(zipPath);
         AnsiConsole.MarkupLine("[green]CMake installed successfully.[/]");
     }
@@ -132,7 +132,7 @@ public static class DependencyManager
         AnsiConsole.Write(new Rule("[red]Missing Visual Studio[/]"));
         AnsiConsole.MarkupLine("MagicQuant requires [bold]Visual Studio Build Tools 2022[/] with C++ Desktop Development.");
         AnsiConsole.MarkupLine("[blue]https://visualstudio.microsoft.com/downloads/#build-tools[/]");
-        
+
         if (!AnsiConsole.Confirm("Have you installed Visual Studio Build Tools?"))
         {
             throw new Exception("Visual Studio is required to compile on Windows.");
@@ -141,7 +141,7 @@ public static class DependencyManager
 
     private static bool CheckCommandExists(string cmd)
     {
-        try 
+        try
         {
             var psi = new ProcessStartInfo
             {

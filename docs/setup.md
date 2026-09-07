@@ -2,7 +2,7 @@
 
 ## Development requirements
 
-All three projects target `net10.0`. Use the .NET 10 SDK. NuGet restore downloads the managed packages and native SQLite/DuckDB assets. The solution includes `MagicQuant`, `MQ.DB`, and `MagicQuant.Tests`.
+All solution projects target `net10.0`. Use the .NET 10 SDK. NuGet restore downloads the managed packages and native SQLite/DuckDB assets. The solution includes `MagicQuant`, `MQ.DB`, `MagicQuant.Tests`, and the offline `MagicQuant.ProcessFixture` test helper.
 
 ```sh
 dotnet restore MagicQuant-Pipeline.sln

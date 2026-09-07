@@ -29,7 +29,7 @@ public class InitializeLlamaCpp : ICommand
         // 1. Argument Parsing & Path Validation
         // ---------------------------------------------------------
         bool update = args.Any(a => a.Name?.ToLower() == "update");
-        
+
         string? convertScript = args.FirstOrDefault(a => a.Name?.ToLower() == "convert-script")?.Value;
         string? llamaBin = args.FirstOrDefault(a => a.Name?.ToLower() == "llama-bin")?.Value;
         string? llamaRoot = args.FirstOrDefault(a => a.Name?.ToLower() == "llama-root")?.Value;
@@ -65,7 +65,7 @@ public class InitializeLlamaCpp : ICommand
         }
         else if (!string.IsNullOrEmpty(convertScript) || !string.IsNullOrEmpty(llamaBin))
         {
-             throw new ArgumentException("Partial llama.cpp paths provided. Provide all three custom paths or none.");
+            throw new ArgumentException("Partial llama.cpp paths provided. Provide all three custom paths or none.");
         }
 
         // ---------------------------------------------------------
@@ -85,12 +85,12 @@ public class InitializeLlamaCpp : ICommand
         // ---------------------------------------------------------
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
-            var requiredPackages = new List<string> 
-            { 
-                "build-essential", "cmake", "ninja-build", "git", 
-                "python3", "python3-venv", "python3-pip", "libcurl4-openssl-dev" 
+            var requiredPackages = new List<string>
+            {
+                "build-essential", "cmake", "ninja-build", "git",
+                "python3", "python3-venv", "python3-pip", "libcurl4-openssl-dev"
             };
-            
+
             if (sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Nvidia) requiredPackages.Add("nvidia-cuda-toolkit");
 
             // Check if updates are needed
@@ -98,13 +98,13 @@ public class InitializeLlamaCpp : ICommand
             {
                 AnsiConsole.MarkupLine("[yellow]System dependencies are missing or update requested.[/]");
                 AnsiConsole.MarkupLine("[grey]Sudo permissions are required to install system packages via apt.[/]");
-                
+
                 // A. Ask for Sudo permission upfront
-                try 
+                try
                 {
                     await RefreshSudoCredentialsAsync();
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     throw new InvalidOperationException("Sudo access denied or cancelled. Cannot install system dependencies.", ex);
                 }
@@ -112,7 +112,7 @@ public class InitializeLlamaCpp : ICommand
                 // B. Run Install WITH sudo
                 AnsiConsole.MarkupLine("[cyan]Installing/Updating System Dependencies (sudo apt)...[/]");
                 string aptArgs = "install -y " + string.Join(" ", requiredPackages);
-                
+
                 // We run 'sudo' directly here
                 await RunSimpleProcess("sudo", "apt " + aptArgs);
             }
@@ -149,7 +149,7 @@ public class InitializeLlamaCpp : ICommand
         AnsiConsole.Write(new Rule("[yellow]Installing Python Libraries[/]") { Justification = Justify.Left });
 
         // Helper to decide if we need to install
-        async Task EnsurePackage(string name, string installCmd, Dictionary<string,string>? env = null)
+        async Task EnsurePackage(string name, string installCmd, Dictionary<string, string>? env = null)
         {
             if (!update)
             {
@@ -160,7 +160,7 @@ public class InitializeLlamaCpp : ICommand
                     return;
                 }
             }
-            
+
             AnsiConsole.MarkupLine($"[cyan]Installing {name}...[/]");
             await pyManager.RunPipInstallAsync(installCmd, env);
         }
@@ -175,7 +175,7 @@ public class InitializeLlamaCpp : ICommand
         // B. Install PyTorch (Hardware Specific & Dynamic)
         string torchCmd = "torch torchvision torchaudio";
         bool isNvidia = sysInfo.GpuInfo.FirstOrDefault()?.GpuVendor == GpuVendor.Nvidia;
-        
+
         if (isNvidia)
         {
             double cudaVer = HardwareHelper.GetCudaVersion();
@@ -205,15 +205,15 @@ public class InitializeLlamaCpp : ICommand
 
         // C. Install Core Utilities
         string coreDeps = "gguf tokenizers transformers mistral-common sentencepiece datasets huggingface_hub";
-        
+
         if (!update && await pyManager.GetInstalledVersionAsync("transformers") != null)
         {
-             AnsiConsole.MarkupLine("[green]✔ Core utilities (transformers, etc.) are installed.[/]");
+            AnsiConsole.MarkupLine("[green]✔ Core utilities (transformers, etc.) are installed.[/]");
         }
         else
         {
-             AnsiConsole.MarkupLine("[cyan]Installing Core Utilities...[/]");
-             await pyManager.RunPipInstallAsync($"--upgrade --no-cache-dir {coreDeps}");
+            AnsiConsole.MarkupLine("[cyan]Installing Core Utilities...[/]");
+            await pyManager.RunPipInstallAsync($"--upgrade --no-cache-dir {coreDeps}");
         }
 
         // D. Install llama-cpp-python
@@ -229,8 +229,8 @@ public class InitializeLlamaCpp : ICommand
             llamaEnv["FORCE_CMAKE"] = "1";
         }
 
-        await EnsurePackage("llama-cpp-python", 
-            "--upgrade --force-reinstall --no-cache-dir llama-cpp-python", 
+        await EnsurePackage("llama-cpp-python",
+            "--upgrade --force-reinstall --no-cache-dir llama-cpp-python",
             llamaEnv);
 
         AnsiConsole.MarkupLine("[bold green]Initialization Complete![/]");
@@ -255,33 +255,12 @@ public class InitializeLlamaCpp : ICommand
 
     private static async Task RunSimpleProcess(string exe, string args)
     {
-        var startInfo = new ProcessStartInfo(exe, args) { UseShellExecute = false, CreateNoWindow = true };
-        using var p = Process.Start(startInfo)
-            ?? throw new InvalidOperationException($"Could not start {exe}.");
-        await p.WaitForExitAsync();
-        if (p.ExitCode != 0)
-            throw new InvalidOperationException($"{exe} failed with exit code {p.ExitCode}.");
+        var result = await new MagicQuant.Runtime.ProcessRunner().RunAsync(new ProcessStartInfo(exe, args),
+            onLine: (line, _) => AnsiConsole.WriteLine(line));
+        if (!result.Success) throw new InvalidOperationException($"{exe} failed with exit code {result.ExitCode}.");
     }
 
-    private async Task RefreshSudoCredentialsAsync()
-    {
-        // "sudo -v" updates the user's cached credentials.
-        // It will prompt for a password if necessary in the standard input.
-        var psi = new ProcessStartInfo
-        {
-            FileName = "sudo",
-            Arguments = "-v",
-            UseShellExecute = false // Required to handle password prompt
-        };
-        
-        var p = Process.Start(psi);
-        await p!.WaitForExitAsync();
-        
-        if (p.ExitCode != 0)
-        {
-            throw new Exception("Sudo access denied.");
-        }
-    }
+    private static Task RefreshSudoCredentialsAsync() => LinuxHelper.RefreshSudoCredentialsAsync();
 
     private bool AreLinuxPackagesInstalled(List<string> packages)
     {

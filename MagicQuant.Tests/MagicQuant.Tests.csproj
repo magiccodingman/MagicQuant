@@ -14,5 +14,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MagicQuant\MagicQuant.csproj" />
+    <ProjectReference Include="..\MagicQuant.ProcessFixture\MagicQuant.ProcessFixture.csproj" />
   </ItemGroup>
 </Project>

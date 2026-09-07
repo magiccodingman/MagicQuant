@@ -22,6 +22,9 @@ public sealed class HuggingFaceBaselineService
 
     public async Task<IReadOnlyList<ResolvedCustomBaselineSpec>> PrecheckAndRegisterConfiguredBaselinesAsync(CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         await EnsureHubSupportAsync();
 
         int architectureFamilyId = Cache.CurrentArchitectureFamilyId
@@ -294,6 +297,9 @@ public sealed class HuggingFaceBaselineService
 
     public async Task<string> DownloadBaselineAsync(BaselineQuants baseline, string destinationPath, bool forceRedownload = false, CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         if (!baseline.IsExternalRepositoryBaseline)
             throw new InvalidOperationException($"Baseline '{baseline.Names[0]}' is not an external repository baseline.");
 
@@ -519,6 +525,9 @@ public sealed class HuggingFaceBaselineService
         bool forceRedownload = true,
         CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         await EnsureHubSupportAsync();
 
         if (string.IsNullOrWhiteSpace(repoId))

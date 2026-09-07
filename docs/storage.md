@@ -15,6 +15,7 @@ The runtime root and model work directory are different things. With default set
     GGUF/                   # durable native/base artifacts
     Benchmarks/             # measurements, corpora, reference logits
     Logs/Quantization/      # quantization process logs
+    Runs/<run-id>/run.json   # local campaign provenance and terminal status
     ExternalBaselines/      # durable downloaded external GGUFs
     MagicQuant_Combinations_<model>_<imatrix>_<hp>.duckdb
     Final_Outputs/          # pipeline default export directory
@@ -45,3 +46,9 @@ External baseline downloads are durable and managed separately from transient qu
 ## Reproducibility
 
 Retain the exact command, selected YAML, program commit, llama.cpp revision, model source revision/hash, external repository revision pins, imatrix identity/source, hardware plan, and emitted manifests/benchmark reports for a release. Custom repository `revision` can pin a branch, tag, or commit; a commit avoids moving references. Reusing output does not replace recording these inputs.
+
+## Local run provenance
+
+After preflight, each real command creates a unique `Runs/<run-id>/run.json` under the model work directory (or runtime root for setup). It snapshots argv, normalized input configuration, config SHA-256, program/.NET versions, and timestamps. Available llama.cpp revision, Python version/package inventory, final model/profile/imatrix identities, output path, and completion/failure/cancellation status are recorded as execution progresses. An unfinalized `running` record may indicate abrupt termination.
+
+Writes replace the manifest atomically. Records are separate from export cleanup and are **not published automatically**: argv/config may include private paths or URLs. Review before sharing. A missing tool-version field means it could not be obtained, not that the tool had a known default version.

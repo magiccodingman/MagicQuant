@@ -1,0 +1,41 @@
+name: Model smoke (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: Complete source model on the trusted runner
+        required: true
+      llama_root:
+        description: Existing llama.cpp checkout on the trusted runner
+        required: true
+      runtime_root:
+        description: Existing MagicQuant runtime with Python dependencies
+        required: true
+      output_root:
+        description: Dedicated smoke output directory on the trusted runner
+        required: true
+permissions:
+  contents: read
+jobs:
+  smoke:
+    # Never trigger self-hosted execution automatically from untrusted pull requests.
+    runs-on: [self-hosted, magicquant-smoke]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore MagicQuant-Pipeline.sln --locked-mode
+      - run: dotnet test MagicQuant.Tests -c Release --no-restore --filter Category=ModelSmoke --logger trx --results-directory TestResults
+        env:
+          MQ_RUN_MODEL_SMOKE: '1'
+          MQ_SMOKE_MODEL: ${{ inputs.model_path }}
+          MQ_SMOKE_LLAMA_ROOT: ${{ inputs.llama_root }}
+          MQ_SMOKE_RUNTIME_ROOT: ${{ inputs.runtime_root }}
+          MQ_SMOKE_OUTPUT: ${{ inputs.output_root }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test-results
+          path: TestResults/*.trx

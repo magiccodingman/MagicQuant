@@ -59,4 +59,8 @@ The normal pipeline can reuse scoped measurements, but final export normally cle
 
 No arguments, `help`, `--help`, or `-h` display top-level help. `<command> --help` and `<command> -h` display command help without config loading, cleanup, database access, or dependency installation.
 
-The host returns `0` on normal completion/help, `2` for an unknown command, and `1` for an exception caught at the command boundary. Services may handle individual candidate failures and continue a campaign, so also inspect the reported sample failures and final artifacts.
+The host returns `0` on normal completion/help, `2` for an unknown command, `130` for cooperative cancellation, and `1` for an exception caught at the command boundary. Services may handle individual candidate failures and continue a campaign, so also inspect the reported sample failures and final artifacts.
+
+Use `--check-config` on a normal command to validate local inputs without running it.
+Use `--strict-config` to reject unknown/inactive YAML settings rather than warning.
+See [testing](testing.md) for the opt-in real-model workflow.

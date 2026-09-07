@@ -60,10 +60,32 @@ public sealed class CliStartupTests
         Assert.IsAssignableFrom<QuantizationPipeline>(new Evolution());
     }
 
-    private static async Task<(int ExitCode, string Output, string[] CreatedFiles)> RunAsync(string[] args)
+    [Fact]
+    public async Task Invalid_model_fails_before_config_application_or_dependency_setup()
+    {
+        var result = await RunAsync(["pipeline", "--config", "bad.yaml"], directory =>
+            File.WriteAllText(Path.Combine(directory, "bad.yaml"), "paths:\n  magic_quant_root: runtime-must-not-exist\n  model_dir: missing-model\n"));
+        Assert.Equal(1, result.ExitCode);
+        Assert.DoesNotContain("Using config:", result.Output);
+        Assert.DoesNotContain("Checking environment", result.Output);
+        Assert.Single(result.CreatedFiles);
+    }
+
+    [Fact]
+    public async Task Check_config_does_not_initialize_or_clean_runtime_state()
+    {
+        var result = await RunAsync(["initialize-llama-cpp", "--config", "check.yaml", "--check-config", "--strict-config"], directory =>
+            File.WriteAllText(Path.Combine(directory, "check.yaml"), "paths:\n  magic_quant_root: runtime-must-not-exist\n"));
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("No runtime setup was performed", result.Output);
+        Assert.Single(result.CreatedFiles);
+    }
+
+    private static async Task<(int ExitCode, string Output, string[] CreatedFiles)> RunAsync(string[] args, Action<string>? setup = null)
     {
         string directory = Path.Combine(Path.GetTempPath(), $"mq-cli-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
+        setup?.Invoke(directory);
         try
         {
             var start = new ProcessStartInfo("dotnet")

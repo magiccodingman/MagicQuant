@@ -8,9 +8,11 @@ public class LlamaBinaries
     public string Ppl { get; }
     public string Cli { get; }
 
-    public LlamaBinaries(string root)
+    public LlamaBinaries(string? root)
     {
-        var binDir = Cache.LlamaBin;
+        var binDir = !string.IsNullOrWhiteSpace(Cache.LlamaBin) ? Cache.LlamaBin
+            : !string.IsNullOrWhiteSpace(root) ? Path.Combine(root, "build", "bin")
+            : throw new InvalidOperationException("Set the llama.cpp binary directory before constructing LlamaBinaries.");
         Bench = Path.Combine(binDir, "llama-bench");
         Ppl = Path.Combine(binDir, "llama-perplexity");
         Cli = Path.Combine(binDir, "llama-cli");

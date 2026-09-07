@@ -32,44 +32,13 @@ public class PythonManager
             $"except Exception:\n" +
             $"    print('NONE')\n";
 
-        string python = GetPythonExecutable();
-        string exe, args;
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            exe = "cmd.exe";
-            args = $"/c \"{python}\" -c \"{script}\"";
-        }
-        else
-        {
-            exe = python;
-            args = $"-c \"{script}\"";
-        }
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = exe,
-            Arguments = args,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var proc = Process.Start(psi)
-                         ?? throw new InvalidOperationException("Failed to start Python process");
-
-        string stdout = await proc.StandardOutput.ReadToEndAsync();
-        string stderr = await proc.StandardError.ReadToEndAsync();
-
-        await proc.WaitForExitAsync();
-
-        if (proc.ExitCode != 0)
-        {
-            throw new Exception(
-                $"Python package check failed for '{packageName}'.\n{stderr}"
-            );
-        }
+        var psi = new ProcessStartInfo(GetPythonExecutable());
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add(script);
+        var result = await new MagicQuant.Runtime.ProcessRunner().RunAsync(psi);
+        if (!result.Success)
+            throw new InvalidOperationException($"Python package check failed for '{packageName}'.\n{result.StdErr}");
+        string stdout = result.StdOut;
 
         string version = stdout.Trim();
 
@@ -140,7 +109,7 @@ public class PythonManager
         File.Delete(zipPath);
 
         // Modify .pth file to allow importing site-packages (Crucial for pip)
-        string pthFile = Directory.GetFiles(_envPath, "*._pth").FirstOrDefault();
+        string? pthFile = Directory.GetFiles(_envPath, "*._pth").FirstOrDefault();
         if (pthFile != null)
         {
             var lines = await File.ReadAllLinesAsync(pthFile);
@@ -170,7 +139,7 @@ public class PythonManager
         {
             AnsiConsole.MarkupLine("[yellow]Warning: pip_runner.py not found in Helpers.[/]");
         }
-        
+
         string python = GetPythonExecutable();
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -213,24 +182,20 @@ public class PythonManager
 
     public Task RunPythonScriptAsync(string scriptPath, string args = "", Dictionary<string, string>? envVars = null)
     {
-        string python = GetPythonExecutable();
-        string exe, finalArgs;
-
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            exe = "cmd.exe";
-            finalArgs = $"/c \"\"{python}\" \"{scriptPath}\" {args}\"";
-        }
-        else
-        {
-            exe = python;
-            finalArgs = $"\"{scriptPath}\" {args}";
-        }
-
-        return RunShellCommand(exe, finalArgs, _envPath, envVars);
+        return RunShellCommand(GetPythonExecutable(), $"\"{scriptPath}\" {args}", _envPath, envVars);
     }
 
-    // The Method Signature causing the issue
+    public async Task RunPythonScriptAsync(string scriptPath, IReadOnlyList<string> args,
+        Dictionary<string, string>? envVars = null, CancellationToken ct = default)
+    {
+        var start = new MagicQuant.Runtime.NativeCommand(GetPythonExecutable(), [scriptPath, .. args]).CreateStartInfo(envVars);
+        start.WorkingDirectory = _envPath;
+        var result = await new MagicQuant.Runtime.ProcessRunner().RunAsync(start,
+            onLine: (line, _) => AnsiConsole.WriteLine(line), ct: ct);
+        if (!result.Success) throw new InvalidOperationException($"Python script '{scriptPath}' failed (exit {result.ExitCode}). {result.StdErr}");
+    }
+
+    // Legacy string arguments are retained here; ProcessRunner owns native lifetime.
     private async Task RunShellCommand(string exe, string args, string workingDir,
         Dictionary<string, string>? envVars = null)
     {
@@ -251,24 +216,9 @@ public class PythonManager
             foreach (var kvp in envVars)
                 psi.Environment[kvp.Key] = kvp.Value;
 
-        using var proc = Process.Start(psi);
-        if (proc == null) throw new InvalidOperationException($"Failed to start: {exe}");
-
-        proc.OutputDataReceived += (s, e) =>
-        {
-            if (e.Data != null) AnsiConsole.MarkupLine($"[grey]{Markup.Escape(e.Data)}[/]");
-        };
-        proc.ErrorDataReceived += (s, e) =>
-        {
-            if (e.Data != null) AnsiConsole.MarkupLine($"[red]{Markup.Escape(e.Data)}[/]");
-        };
-
-        proc.BeginOutputReadLine();
-        proc.BeginErrorReadLine();
-
-        await proc.WaitForExitAsync();
-
-        if (proc.ExitCode != 0)
-            throw new Exception($"Command failed (exit {proc.ExitCode}): {exe} {args}");
+        var result = await new MagicQuant.Runtime.ProcessRunner().RunAsync(psi,
+            onLine: (line, error) => AnsiConsole.MarkupLine($"[{(error ? "red" : "grey")}]{Markup.Escape(line)}[/]"));
+        if (!result.Success)
+            throw new InvalidOperationException($"Command failed (exit {result.ExitCode}): {exe} {args}");
     }
 }

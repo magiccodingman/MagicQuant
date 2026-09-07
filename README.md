@@ -16,11 +16,11 @@ dotnet run --project MagicQuant -c Release --no-build -- --help
 dotnet run --project MagicQuant -c Release --no-build -- pipeline --help
 ```
 
-Building, testing, and viewing help do not require model weights or llama.cpp. Running without arguments also shows help, in both Debug and Release.
+Ordinary tests skip the explicitly opt-in model smoke test. Building, ordinary testing, and viewing help do not require model weights or llama.cpp. Running without arguments also shows help, in both Debug and Release.
 
 ## Run a model
 
-Real quantization needs a complete local Hugging Face model directory (top-level `.safetensors`, model configuration, and tokenizer assets), llama.cpp, a Python environment, and enough RAM/VRAM and disk space for native GGUFs, baselines, logits, and exports. Hardware requirements depend on the model. Linux with an apt-based distribution is the primary automatic setup path; Windows has setup code but is not covered by the Linux CI job. Automatic macOS setup is not implemented.
+Real quantization needs a complete local Hugging Face model directory (top-level `.safetensors`, model configuration, and tokenizer assets), llama.cpp, a Python environment, and enough RAM/VRAM and disk space for native GGUFs, baselines, logits, and exports. Hardware requirements depend on the model. Linux with an apt-based distribution is the primary automatic setup path; Windows has setup code but is not exercised by the model smoke test. Automatic macOS setup is not implemented.
 
 1. Copy the distributed tuning profile and edit the paths and model identity:
 
@@ -38,7 +38,13 @@ Real quantization needs a complete local Hugging Face model directory (top-level
 
    This can download/build llama.cpp, install Python packages, and request sudo for apt packages on Linux. It uses `<user-home>/MagicQuant`. To use existing llama.cpp files, configure **all three** of `paths.llama_root`, `paths.llama_bin`, and `paths.convert_script`, and pass `--config config.local.yaml`. See [setup](docs/setup.md) for Python requirements and custom runtime roots.
 
-3. Start the campaign:
+3. Validate before starting the campaign:
+
+   ```sh
+   dotnet run --project MagicQuant -c Release --no-build -- pipeline --config config.local.yaml --check-config --strict-config
+   ```
+
+   Then start it:
 
    ```sh
    dotnet run --project MagicQuant -c Release --no-build -- pipeline --config config.local.yaml
@@ -68,11 +74,13 @@ Append `--help` to any command. Arguments after `--` belong to MagicQuant, not `
 - [Commands and workflows](docs/commands.md)
 - [Architecture and code map](docs/architecture.md)
 - [Storage, caching, and reruns](docs/storage.md)
-- [Contributing and tests](CONTRIBUTING.md)
+- [Contributing](CONTRIBUTING.md)
+- [Tests, model smoke workflow, and merge checks](docs/testing.md)
+- [Worked contributor examples](docs/extending.md)
 - [Compatibility notes for existing users](docs/migration.md)
 
 The small [example configurations](examples/) demonstrate the required fields. They use C# defaults for omitted settings; they are **not** merged with `config.default.yaml`. Copy the full default file when you want its distributed tuning values.
 
 ## Project status
 
-The research pipeline is active software with model- and hardware-dependent integration requirements. Unit/regression tests run without quantizing a model; a passing test suite alone does not establish numerical parity for a full hardware campaign. The repository does not yet contain a software license; the maintainer must choose one before an open-source release. A generated model card's license field does not license this program.
+The research pipeline is active software with model- and hardware-dependent integration requirements. Ordinary unit/regression tests run without quantizing a model; a passing test suite alone does not establish numerical parity for a full hardware campaign. The repository does not yet contain a software license; the maintainer must choose one before an open-source release. A generated model card's license field does not license this program.

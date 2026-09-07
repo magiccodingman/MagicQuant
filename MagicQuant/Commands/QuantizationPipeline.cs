@@ -66,7 +66,9 @@ public class QuantizationPipeline : ICommand
         Cache.ModelDirectory = fullModelPath;
         Cache.ModelMagicQuantDirectory = Path.Combine(fullModelPath, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new ExternalBaselineCacheCleanupService().CleanupStaleArtifactsAsync();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
         Cache.ForceRefreshHardwareProbe = Config.Current.Flags.ForceRefreshHardwareProbe;
         Cache.UseImatrix = Config.Current.Flags.UseImatrix;
@@ -101,6 +103,7 @@ public class QuantizationPipeline : ICommand
 
         var pyManager = new PythonManager(Cache.MagicQuantDirectory!);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await EnsureSqliteReadyAsync();
 
         var benchmarkService = new BenchmarkService(pyManager);
@@ -108,26 +111,32 @@ public class QuantizationPipeline : ICommand
         var imatrixService = new ImatrixService();
 
         string q8QuantizationKey = BaselineQuants.Q8_0.Names[0];
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var bf16ModelGgufPath = await quantizationService.EnsureBaseModelFileAsync(true);
 
         var sidecarService = new ModelSidecarArtifactService(pyManager);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await sidecarService.EnsureMmprojArtifactAvailableAsync();
 
         // Review the active regex profile against the native/BF16 tensor list before
         // architecture/profile-scoped learning truth is persisted or reused. This is
         // the early "do these groups look sane?" gate for catching YAML regex mistakes.
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new TensorGroupReviewService().ReviewNativeTensorGroupingAsync(
             quantizationService: quantizationService,
             nativeGgufPath: bf16ModelGgufPath,
             requireConfirmation: Cache.ConfirmTensorGroupProfile);
 
         var architectureFamilyService = new ArchitectureFamilyService(pyManager);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await architectureFamilyService.EnsureCurrentArchitectureFamilyAsync(bf16ModelGgufPath);
 
         var tensorGroupProfileService = new TensorGroupProfileService();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await tensorGroupProfileService.EnsureCurrentProfileAsync();
 
         var customBaselineService = new HuggingFaceBaselineService(pyManager);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var resolvedCustomBaselines = await customBaselineService.PrecheckAndRegisterConfiguredBaselinesAsync();
 
         if (Config.Current.Baselines.CustomRepositories.Any(x => x.Enabled) && resolvedCustomBaselines.Count == 0)
@@ -136,6 +145,7 @@ public class QuantizationPipeline : ICommand
                 "Custom baseline repositories were enabled, but no custom baselines resolved into the runtime registry.");
         }
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new TargetedRelearnService().PlanConfirmAndExecuteAsync(resolvedCustomBaselines);
 
         var imatrixRequest = new ImatrixRequest
@@ -151,7 +161,8 @@ public class QuantizationPipeline : ICommand
             MagicQuantDirectory = Cache.ModelMagicQuantDirectory!
         };
 
-        var imatrixEnsureResult = await imatrixService.EnsureImatrixAsync(imatrixRequest, ct: default);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
+        var imatrixEnsureResult = await imatrixService.EnsureImatrixAsync(imatrixRequest, ct: MagicQuant.Runtime.RunCancellation.Token);
 
         if (imatrixEnsureResult.Enabled)
         {
@@ -207,6 +218,7 @@ public class QuantizationPipeline : ICommand
 
         var baseModelQuant = HybridQuant.CreatePureBaseline(BaselineQuants.GetBF16Quant());
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await EnsureNativeBenchmarkEnvironmentReadyAsync(
             benchmarkService: benchmarkService,
             quantizationService: quantizationService,
@@ -218,6 +230,7 @@ public class QuantizationPipeline : ICommand
             nativeTruthAlreadyLearned: nativeTruthAlreadyLearned);
 
         var compatibilityService = new ModelCompatibilityService(pyManager);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await compatibilityService.RunCompatibilityCheckAsync(bf16ModelGgufPath);
 
         // Compatibility must not be allowed to silently downgrade the live policy flags for the
@@ -239,6 +252,7 @@ public class QuantizationPipeline : ICommand
 
         AnsiConsole.MarkupLine($"[grey]Queued initial startup samples:[/] [cyan]{initialPlan.TotalCount:N0}[/]");
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var initialSummary = await quantizationService.ProcessHybridBatchAsync(
             initialPlan.Plans,
             new StageProgressOptions
@@ -261,6 +275,7 @@ public class QuantizationPipeline : ICommand
         var isolationOptimizer = new IsolationOptimizationService();
 
         AnsiConsole.Write(new Rule("[yellow]Initial Probe Analysis[/]") { Justification = Justify.Left });
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var initialAnalysis = await isolationOptimizer.AnalyzeInitialIsolationProbesAsync(initialPlan);
 
         AnsiConsole.Write(new Rule("[yellow]Initial Probe Group Decisions[/]") { Justification = Justify.Left });
@@ -317,6 +332,7 @@ public class QuantizationPipeline : ICommand
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space Before Final Isolation Optimization");
 
         AnsiConsole.Write(new Rule("[yellow]Final Isolation Optimization[/]") { Justification = Justify.Left });
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var isolationResult = await isolationOptimizer.AnalyzeAndApplyFinalAsync(mergedPlan);
 
         SearchSpaceDebugPrinter.PrintCurrentSearchSpace("Search Space After Final Isolation Optimization");
@@ -341,6 +357,7 @@ public class QuantizationPipeline : ICommand
         var comboCountAfterRulePruning = ComboCounter.CountAll();
 
         var dbService = new QuantDatabaseService();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await dbService.InitializeAsync(forceRebuild: true);
 
         // The old MDA/predicted-size ceiling pass is intentionally removed.
@@ -417,10 +434,11 @@ public class QuantizationPipeline : ICommand
         var finalIsolationManifestPlan = mergedPlan.MergeWith(archivalCoveragePlan);
 
         var survivalPipeline = new CombinationSurvivalPipelineService(quantizationService);
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         var finalizationResult = await survivalPipeline.RunAsync(
             isolationSamplePlan: finalIsolationManifestPlan,
             isolationOptimizationResult: isolationResult,
-            ct: default);
+            ct: MagicQuant.Runtime.RunCancellation.Token);
 
         AnsiConsole.Write(new Rule("[yellow]Export Summary[/]") { Justification = Justify.Left });
         AnsiConsole.MarkupLine($"[green]Export directory:[/] [blue]{Markup.Escape(Cache.OutputDirectory ?? "n/a")}[/]");

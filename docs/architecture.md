@@ -2,7 +2,7 @@
 
 ## Execution flow
 
-`Program.cs` dispatches through `CommandCatalog`. Help returns before runtime initialization. A normal command loads YAML into `Config.Current`, applies run state to `MQ.DB.Cache`, cleans stale scratch artifacts, validates invariants/dependencies, and invokes an `ICommand`.
+`Program.cs` dispatches through `CommandCatalog`. Help returns before runtime initialization. A normal command reads and validates YAML/CLI/input paths before loading `Config.Current` and run state into `MQ.DB.Cache`. It records provenance, cleans stale scratch, checks dependencies, and invokes an `ICommand`. `--check-config` exits before those runtime changes.
 
 `Commands/QuantizationPipeline.cs` coordinates full discovery. `Evolution.cs` preserves the historical C# entry point and the CLI registry keeps `evolution` as an alias. The orchestrator should describe stage order; reusable behavior belongs in services.
 
@@ -26,14 +26,16 @@ The [research wiki](https://github.com/magiccodingman/MagicQuant-Wiki) is the so
 | Baseline identity and roles | `MQ.DB/Models/BaselineQuants.cs`, `BaselineDefinitionResolver`, `HuggingFaceBaselineService` |
 | Tensor grouping and profile review | `MQ.DB/tensor_groups.yaml`, `TensorGroupReviewService`, `TensorGroupProfileService`, `TensorGroupRebucketService` |
 | Process/tool setup | `InitializeLlamaCpp`, `Helpers/LlamaBuilder`, `Helpers/PythonManager`, `HardwareHelper` |
-| Native conversion and quantization | `QuantizationService`, `ExternalBaselineTensorParity`, `CloneManifestTensorMapBuildService` |
-| Benchmark execution and GPU planning | `BenchmarkService`, `BenchmarkGpuPlanning`, `LlamaGpuArgumentBuilder` |
+| Native conversion and quantization | `NativeModelConversionService`, `QuantizationService`, `ExternalBaselineTensorParity`, `CloneManifestTensorMapBuildService` |
+| Benchmark execution and GPU planning | `BenchmarkCommands`, `BenchmarkLogParser`, `BenchmarkService`, `BenchmarkGpuPlanning`, `LlamaGpuArgumentBuilder` |
 | Isolation sampling and policy | `IsolationPlanningService`, `IsolationOptimizationService`, `Helpers/RuntimeSearchSpace` |
 | SQLite measured truth | `MQ.DB/Data/MagicQuantContext.cs`, `MQ.DB/Models/DbModels`, `HybridBenchmarkRepository` |
 | DuckDB candidate data | `QuantDatabaseService`, `RemainingCombinationStore`, `CombinationDuckDbSchema` |
 | KLD prediction and final selection | `RankSafeKldPredictionService`, `PredictionGuidedHybridSelectionService`, `SmartBaselineTuningFallbackService` |
 | Contextual anomaly/synergy evidence | `AnomalyWorkflowService`, `AnomalyRuleRepository`, `AnomalyAdjustedPredictionService` |
 | Release artifacts | `HybridArtifactExportService`, `FinalArtifactNamingService`, `FinalReleaseMetadataService`, `ReadmeGenerationService` |
+| Native process lifetime | `Runtime/ProcessRunner`, `NativeCommand`, `RunCancellation` |
+| Run provenance | `RunProvenanceService` |
 | Paths and lifecycle | `ModelArtifactPathService`, `ModelRuntimePathService`, `OutputPathService`, `CombinationDatabasePathService`, `ScratchStorageService` |
 
 ## Invariants worth protecting
@@ -52,3 +54,5 @@ The [research wiki](https://github.com/magiccodingman/MagicQuant-Wiki) is the so
 Tests currently disable parallel execution because these globals are shared. Tests that change them must save and restore the prior state in `finally`, use unique temporary directories, and clean up only those directories. Prefer testing a pure policy/path helper when possible. Executable-level CLI tests protect the entry point separately from command implementation tests.
 
 Large benchmark, quantization, and selection services remain candidates for incremental extraction. Extract a cohesive responsibility behind regression tests instead of splitting files by arbitrary line count or changing numerical policy during a readability patch.
+
+`NativeModelConversionService` owns native artifact completion, while `QuantizationConcurrencyPlan` computes CPU/storage limits without IO. `IProcessRunner` permits failure/cancellation tests at that boundary. `RunCancellation` is an async-scoped bridge for legacy service APIs; new APIs should accept explicit cancellation tokens as well. Numerical policy and persisted evidence remain in their existing services.

@@ -12,7 +12,7 @@ This cleanup retains numerical selection policy, SQLite schemas/migrations, mani
 
 ## Removed inactive surfaces
 
-The old evolution/survival knobs and unused sensitivity, brain-layer, collapse-penalty, and MoE-indicator config lists had no active runtime consumers. Their typed properties and inactive CLI overrides were removed. Legacy YAML keys remain ignored by the permissive loader; they never tuned the current chooser. Use `prediction`, `candidate_selection`, `anomaly_detection`, and `synergy_detection` for current policy.
+The old evolution/survival knobs and unused sensitivity, brain-layer, collapse-penalty, and MoE-indicator config lists had no active runtime consumers. Their typed properties and inactive CLI overrides were removed. Legacy YAML keys warn (or fail with `--strict-config`); they never tuned the current chooser. Use `prediction`, `candidate_selection`, `anomaly_detection`, and `synergy_detection` for current policy.
 
 Startup no longer enumerates the entire combination universe merely to compare it with a count. That diagnostic helper remains available for explicit development checks. Actual pipeline generation and policy checks remain in place.
 
@@ -33,3 +33,11 @@ git show <pre-cleanup-commit>:MagicQuant/config.dev.yaml > config.local.yaml
 
 Then continue with `pipeline --config config.local.yaml` and your explicit model/family
 arguments. The change to DEBUG startup does not change values inside that saved YAML.
+
+## Deeper readiness changes
+
+CLI typos/duplicate options and missing values now fail before work; unknown YAML keys warn, and `--strict-config` makes them errors. `--check-config` performs read-only preflight. Unsafe managed/output overlaps and missing model inputs fail before dependency setup or cleanup. Numeric CLI parsing uses an invariant decimal point.
+
+Native processes now share cancellation/log cleanup and use literal argv for benchmark and quantization launches. CPU llama-bench uses `-ngl 0` because the tested native version rejects the historical `-backend cpu` argument. Native conversion and low-level export require completion markers for reuse; partial/canceled builds are removed. Existing higher-level benchmark-size reuse checks remain in place.
+
+.NET package references were updated within the 10.0 patch line to remove the previously reported transitive vulnerabilities. Package lock files are committed. Database schemas and research selection formulas were not changed.

@@ -86,7 +86,7 @@ internal sealed class GgufMetadataReader
                               """;
 
             await File.WriteAllTextAsync(scriptPath, py, ct);
-            await _python.RunPythonScriptAsync(scriptPath, $"\"{payloadPath}\"");
+            await _python.RunPythonScriptAsync(scriptPath, [payloadPath], ct: ct);
 
             var result = JsonSerializer.Deserialize<GgufTensorReadResult>(
                 await File.ReadAllTextAsync(resultPath, ct));

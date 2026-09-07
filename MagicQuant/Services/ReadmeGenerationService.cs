@@ -201,7 +201,7 @@ public sealed class ReadmeGenerationService
         sb.AppendLine("</details>");
         sb.AppendLine();
         //}
-        
+
         sb.AppendLine("<details>");
         sb.AppendLine("<summary>Re-Uploading External Provider Baselines</summary>");
         sb.AppendLine();
@@ -272,7 +272,9 @@ public sealed class ReadmeGenerationService
         if (string.IsNullOrWhiteSpace(key))
             return false;
 
-        return replacementHints.TryGetValue(key.Trim(), out replaced) && replaced.Count > 0;
+        if (!replacementHints.TryGetValue(key.Trim(), out var found) || found.Count == 0) return false;
+        replaced = found;
+        return true;
     }
 
     private static Dictionary<string, IReadOnlyList<string>> LoadCloneReplacementHints(string outputDirectory)

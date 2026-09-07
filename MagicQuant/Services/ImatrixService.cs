@@ -19,6 +19,9 @@ public sealed class ImatrixService
 
     public async Task<ImatrixEnsureResult> EnsureImatrixAsync(ImatrixRequest request, CancellationToken ct = default)
     {
+        using var runCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, MagicQuant.Runtime.RunCancellation.Token);
+        ct = runCancellation.Token;
+        ct.ThrowIfCancellationRequested();
         AnsiConsole.MarkupLine("[grey]Imatrix: starting ensure flow...[/]");
 
         if (!request.UseImatrix)
@@ -489,8 +492,8 @@ with open(args.out, 'w', encoding='utf-8') as f:
                 $"-m \"{baseModelPath}\" " +
                 $"-f \"{datasetPath}\" " +
                 $"-o \"{datPath}\" " +
-               // $"-b 128 " +
-               // $"-ub 64 " +
+                // $"-b 128 " +
+                // $"-ub 64 " +
                 $"-fa off",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -498,9 +501,9 @@ with open(args.out, 'w', encoding='utf-8') as f:
         };
 
         psi.Environment["GGML_CUDA_DISABLE_GRAPHS"] = "1";
-        
+
         string launchedCommand = $"\"{imatrixBin}\" {psi.Arguments}";
-        
+
         AnsiConsole.MarkupLine($"[grey]Imatrix: launching command:[/] [cyan]{Markup.Escape(launchedCommand)}[/]");
 
         using var p = System.Diagnostics.Process.Start(psi)
@@ -608,10 +611,9 @@ with open(args.out, 'w', encoding='utf-8') as f:
         if (ext == ".jsonl")
         {
             using var reader = new StreamReader(datasetPath, Encoding.UTF8);
-            while (!reader.EndOfStream)
+            while (await reader.ReadLineAsync(ct) is { } line)
             {
                 ct.ThrowIfCancellationRequested();
-                string? line = await reader.ReadLineAsync();
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
 

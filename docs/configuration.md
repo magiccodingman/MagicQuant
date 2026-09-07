@@ -6,9 +6,9 @@
 
 The loader deserializes the selected file into `MagicQuantYamlConfig`, whose property initializers supply omitted fields, applies supported CLI overrides, normalizes values, and updates `Config.Current` and `MQ.DB.Cache`. It does **not** merge a custom file with `config.default.yaml`. The distributed YAML intentionally differs from C# defaults for some research tuning settings. Copy that whole file to reproduce its profile.
 
-CLI string options generally override nonblank YAML values. Many boolean switches only enable a feature; use YAML to disable it unless a specific negative CLI switch exists. Use `--name value` or `--name=value`; quote paths with spaces using normal shell quoting.
+Unknown CLI options, duplicate options, missing values, and values supplied to presence-only flags are rejected. CLI string options generally override nonblank YAML values. Many boolean switches only enable a feature; use YAML to disable it unless a specific negative CLI switch exists. Use `--name value` or `--name=value`; quote paths with spaces using normal shell quoting.
 
-Unknown YAML keys are currently ignored for compatibility. This means misspellings can be silently ignored. Compare with the commented default file and `MagicQuant/Configuration/MagicQuantYamlConfig.cs`. CI strictly parses the distributed examples so their keys cannot silently drift.
+Unknown or inactive YAML keys produce a warning with their setting path and line number; `--strict-config` rejects them. Compare with the commented default file and `MagicQuant/Configuration/MagicQuantYamlConfig.cs`. CI strictly parses the distributed examples so their keys cannot silently drift.
 
 ## Main sections
 
@@ -52,4 +52,12 @@ These historical output differences are preserved for existing campaigns. `Outpu
 
 `readme.frontmatter` accepts arbitrary scalar/list metadata. Set `license`, `base_model`, and other provenance fields for the actual exported model; no model license is inferred for you.
 
-The old `evolution`, `survival`, sensitivity-group, brain-layer, and collapse-penalty config surfaces had no active consumers and have been removed from the typed configuration. Old YAML containing them is still tolerated, but they do not tune the current algorithm. See `candidate_selection` and the research wiki for current selection policy.
+The old `evolution`, `survival`, sensitivity-group, brain-layer, and collapse-penalty config surfaces had no active consumers and have been removed from the typed configuration. Old YAML containing them is tolerated with warnings unless `--strict-config` is selected; they do not tune the current algorithm. See `candidate_selection` and the research wiki for current selection policy.
+
+## Preflight and cancellation
+
+Normal runs validate local inputs before applying global state, creating runtime directories, installing dependencies, or cleaning artifacts. `--check-config` performs only this check. Non-finite numeric values and null required sections are rejected. Clone preflight requires one source manifest/repository, and model discovery requires explicit architecture-family identity.
+
+Exports cannot contain the source model/runtime root or overlap protected model work directories such as GGUF, Benchmarks, Logs, Runs, and ExternalBaselines. Physical symlink targets are considered. These guards do not make arbitrary existing export contents safe: still choose a dedicated directory.
+
+Ctrl+C requests cooperative cancellation, stops active native work, and returns status 130. A second Ctrl+C requests immediate OS termination. Process/lease cleanup is cooperative; forced termination or power loss can still require stale-artifact cleanup on the next run.

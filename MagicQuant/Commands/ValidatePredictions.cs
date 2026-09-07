@@ -35,13 +35,16 @@ public sealed class ValidatePredictions : ICommand
         Cache.ModelDirectory = modelDir;
         Cache.ModelMagicQuantDirectory = Path.Combine(modelDir, "MagicQuant");
         ModelRuntimePathService.InitializeForCurrentModel();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new ExternalBaselineCacheCleanupService().CleanupStaleArtifactsAsync();
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await new ScratchStorageService(new ModelArtifactPathService()).CleanupStaleScratchArtifactsAsync();
         Directory.CreateDirectory(Cache.ModelMagicQuantDirectory);
 
         Cache.CurrentModelId = MagicQuantModelId.GetOrCreateModelId(modelDir);
         JsonHelper.DetectAndSetTorchType(Cache.ModelDirectory);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await ResolveArchitectureFamilyFromConfigAsync();
 
         ApplyOptionalImatrixContext(args);
@@ -54,6 +57,7 @@ public sealed class ValidatePredictions : ICommand
         var prediction = new RankSafeKldPredictionService(repository, effectiveResolver);
         var validator = new PredictionValidationService(repository, prediction);
 
+        MagicQuant.Runtime.RunCancellation.Token.ThrowIfCancellationRequested();
         await validator.ExportAsync(outputDir);
     }
 

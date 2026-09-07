@@ -27,6 +27,19 @@ if (!commands.TryGetValue(commandInput, out var commandInfo))
 
 List<CliArg> parsedArgs = CliHelpers.ParseArguments(args.Skip(1));
 
+using var cancellation = new CancellationTokenSource();
+using var cancellationScope = MagicQuant.Runtime.RunCancellation.Use(cancellation.Token);
+ConsoleCancelEventHandler onCancel = (_, e) =>
+{
+    // First Ctrl+C cooperatively unwinds leases/processes; a second uses OS termination.
+    e.Cancel = !cancellation.IsCancellationRequested;
+    cancellation.Cancel();
+};
+Console.CancelKeyPress += onCancel;
+RunProvenanceService? provenance = null;
+string completionStatus = "failed";
+string? completionError = null;
+
 try
 {
     // Help is a read-only operation: do not load config, clean caches, install
@@ -38,7 +51,18 @@ try
         return;
     }
 
-    var loadedConfig = MagicQuantYamlLoader.LoadAndApply(commandInput, parsedArgs);
+    CliOptionValidator.Validate(parsedArgs);
+    var loaded = MagicQuantYamlLoader.Read(parsedArgs);
+    CommandPreflight.Validate(commandInput, loaded.Settings, parsedArgs);
+    if (parsedArgs.Any(a => string.Equals(a.Name, "check-config", StringComparison.OrdinalIgnoreCase)))
+    {
+        foreach (string warning in loaded.Warnings) AnsiConsole.WriteLine(warning);
+        AnsiConsole.WriteLine("Configuration and input paths are valid. No runtime setup was performed.");
+        return;
+    }
+    MagicQuantYamlLoader.Apply(loaded);
+    var loadedConfig = loaded.Settings;
+    provenance = new RunProvenanceService(commandInput, args, loaded);
     var startupScratch = new ScratchStorageService();
     await startupScratch.CleanupStaleScratchArtifactsAsync();
 
@@ -71,11 +95,34 @@ try
         AnsiConsole.WriteLine();
     }
 
+    if (!commandInput.Equals("initialize-llama-cpp", StringComparison.OrdinalIgnoreCase))
+        await provenance.CaptureToolchainAsync();
+    cancellation.Token.ThrowIfCancellationRequested();
     var commandInstance = commandInfo.Factory();
     await commandInstance.Run(parsedArgs);
+    if (commandInput.Equals("initialize-llama-cpp", StringComparison.OrdinalIgnoreCase))
+        await provenance.CaptureToolchainAsync();
+    cancellation.Token.ThrowIfCancellationRequested();
+    completionStatus = "completed";
+}
+catch (OperationCanceledException)
+{
+    AnsiConsole.WriteLine("Run canceled. Active native work has been stopped.");
+    Environment.ExitCode = 130;
+    completionStatus = "canceled";
 }
 catch (Exception ex)
 {
+    completionError = ex.Message;
     AnsiConsole.WriteException(ex);
     Environment.ExitCode = 1;
+}
+finally
+{
+    Console.CancelKeyPress -= onCancel;
+    try { provenance?.Complete(completionStatus, completionError); }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        AnsiConsole.WriteLine($"Could not finalize local run provenance: {ex.Message}");
+    }
 }

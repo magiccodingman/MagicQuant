@@ -5,14 +5,14 @@ Start with the [architecture map](docs/architecture.md), [configuration rules](d
 ## Local workflow
 
 ```sh
-dotnet restore MagicQuant-Pipeline.sln
+dotnet restore MagicQuant-Pipeline.sln --locked-mode
 dotnet build MagicQuant-Pipeline.sln -c Debug --no-restore
 dotnet test MagicQuant-Pipeline.sln -c Debug --no-build
 dotnet build MagicQuant-Pipeline.sln -c Release --no-restore
 dotnet test MagicQuant-Pipeline.sln -c Release --no-build
 ```
 
-CI runs both configurations on Linux. Use `--filter FullyQualifiedName~YourTestClass` to focus a test run during development. Tests run serially because configuration and runtime registries are global. Source-contract regression tests assume the normal repository/build layout; run the suite from the checkout rather than copying the test DLL elsewhere.
+CI runs both configurations on Linux and Windows with warnings treated as errors and locked package restores. Use `--filter FullyQualifiedName~YourTestClass` to focus a test run during development. Tests run serially because configuration and runtime registries are global. Source-contract regression tests assume the normal repository/build layout; run the suite from the checkout rather than copying the test DLL elsewhere.
 
 Keep personal settings in an ignored `config.local.yaml` and pass `--config` explicitly. Do not add machine paths or automatic DEBUG campaigns to `Program.cs`. Use IDE run arguments for your campaign. Never commit weights, runtime databases, exported GGUFs, credentials, or local logs.
 
@@ -38,3 +38,7 @@ For documentation or path refactoring, verify examples against actual help and p
 Describe the concrete problem and resulting behavior, relevant compatibility effects, and validation performed. Separate numerical policy changes from mechanical cleanup when possible. Mention untested hardware/platform paths and any remaining compiler warnings. Prefer focused commits that can be reviewed without reconstructing the conversation that led to them.
 
 The maintainer still needs to choose a software license before an open-source release; do not infer one from generated model metadata or dependency licenses.
+
+See [testing and merge checks](docs/testing.md) for the manual small-model workflow,
+package lock updates, and required-check setup. [Worked examples](docs/extending.md)
+show how to add configuration and test native/process/path changes.
