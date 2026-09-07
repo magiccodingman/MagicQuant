@@ -31,7 +31,7 @@ try
 {
     // Help is a read-only operation: do not load config, clean caches, install
     // dependencies, or open databases just to explain a command.
-    if (parsedArgs.Any(a => a.Name.Equals("help", StringComparison.OrdinalIgnoreCase)) ||
+    if (parsedArgs.Any(a => string.Equals(a.Name, "help", StringComparison.OrdinalIgnoreCase)) ||
         args.Skip(1).Any(a => a == "-h"))
     {
         await commandInfo.Factory().Run([new CliArg { Name = "help", Value = string.Empty }]);
