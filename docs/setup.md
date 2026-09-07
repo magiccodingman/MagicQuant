@@ -5,9 +5,9 @@
 All solution projects target `net10.0`. Use the .NET 10 SDK. NuGet restore downloads the managed packages and native SQLite/DuckDB assets. The solution includes `MagicQuant`, `MQ.DB`, `MagicQuant.Tests`, and the offline `MagicQuant.ProcessFixture` test helper.
 
 ```sh
-dotnet restore MagicQuant-Pipeline.sln
-dotnet build MagicQuant-Pipeline.sln -c Release
-dotnet test MagicQuant-Pipeline.sln -c Release --no-build
+dotnet restore MagicQuant.sln
+dotnet build MagicQuant.sln -c Release
+dotnet test MagicQuant.sln -c Release --no-build
 ```
 
 These commands do not install llama.cpp or Python packages. Some regression tests create temporary SQLite databases and inspect local hardware. Tests do not require CUDA or model weights.

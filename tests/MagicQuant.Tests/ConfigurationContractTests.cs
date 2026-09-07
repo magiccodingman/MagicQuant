@@ -22,12 +22,12 @@ public sealed class ConfigurationContractTests
     }
 
     [Theory]
-    [InlineData("MagicQuant/config.default.yaml")]
+    [InlineData("src/MagicQuant/config.default.yaml")]
     [InlineData("examples/pipeline.yaml")]
     [InlineData("examples/clone.yaml")]
     public void Distributed_configs_have_no_unknown_keys(string relativePath)
     {
-        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../.."));
+        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
         var config = new DeserializerBuilder()
             .WithNamingConvention(UnderscoredNamingConvention.Instance)
             .Build()

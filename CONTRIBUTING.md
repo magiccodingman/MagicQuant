@@ -5,11 +5,11 @@ Start with the [architecture map](docs/architecture.md), [configuration rules](d
 ## Local workflow
 
 ```sh
-dotnet restore MagicQuant-Pipeline.sln --locked-mode
-dotnet build MagicQuant-Pipeline.sln -c Debug --no-restore
-dotnet test MagicQuant-Pipeline.sln -c Debug --no-build
-dotnet build MagicQuant-Pipeline.sln -c Release --no-restore
-dotnet test MagicQuant-Pipeline.sln -c Release --no-build
+dotnet restore MagicQuant.sln --locked-mode
+dotnet build MagicQuant.sln -c Debug --no-restore
+dotnet test MagicQuant.sln -c Debug --no-build
+dotnet build MagicQuant.sln -c Release --no-restore
+dotnet test MagicQuant.sln -c Release --no-build
 ```
 
 CI runs both configurations on Linux and Windows with warnings treated as errors and locked package restores. Use `--filter FullyQualifiedName~YourTestClass` to focus a test run during development. Tests run serially because configuration and runtime registries are global. Source-contract regression tests assume the normal repository/build layout; run the suite from the checkout rather than copying the test DLL elsewhere.

@@ -13,7 +13,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\MagicQuant\MagicQuant.csproj" />
+    <ProjectReference Include="..\..\src\MagicQuant\MagicQuant.csproj" />
     <ProjectReference Include="..\MagicQuant.ProcessFixture\MagicQuant.ProcessFixture.csproj" />
   </ItemGroup>
 </Project>

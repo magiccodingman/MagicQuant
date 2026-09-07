@@ -5,7 +5,7 @@ Run these examples from the repository root after a Release build. Replace paths
 ## Full discovery pipeline
 
 ```sh
-dotnet run --project MagicQuant -c Release --no-build -- pipeline \
+dotnet run --project src/MagicQuant -c Release --no-build -- pipeline \
   --config config.local.yaml \
   --model-dir /data/models/my-model \
   --architecture-family my-model-family \
@@ -20,7 +20,7 @@ The pipeline converts/loads the native source, reviews tensor groups, resolves i
 ## Clone known tensor configurations
 
 ```sh
-dotnet run --project MagicQuant -c Release --no-build -- clone-repository-quants \
+dotnet run --project src/MagicQuant -c Release --no-build -- clone-repository-quants \
   --config config.local.yaml \
   --model-dir /data/models/compatible-model \
   --architecture-family my-model-family \
@@ -35,7 +35,7 @@ By default the manifest must match the target tensor inventory. `--allow-missing
 ## Validate predictions against existing measurements
 
 ```sh
-dotnet run --project MagicQuant -c Release --no-build -- validate-predictions \
+dotnet run --project src/MagicQuant -c Release --no-build -- validate-predictions \
   --config config.local.yaml \
   --model-dir /data/models/my-model \
   --architecture-family my-model-family \
@@ -49,7 +49,7 @@ For imatrix measurements supply `--imatrix-path /data/imatrix.dat` or `--imatrix
 ## Rerun and reuse
 
 ```sh
-dotnet run --project MagicQuant -c Release --no-build -- pipeline \
+dotnet run --project src/MagicQuant -c Release --no-build -- pipeline \
   --config config.local.yaml --reuse-existing-final-artifacts
 ```
 

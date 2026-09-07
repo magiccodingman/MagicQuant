@@ -3,9 +3,9 @@
 ## Ordinary checks
 
 ```sh
-dotnet restore MagicQuant-Pipeline.sln --locked-mode -warnaserror
-dotnet build MagicQuant-Pipeline.sln -c Release --no-restore -warnaserror
-dotnet test MagicQuant-Pipeline.sln -c Release --no-build
+dotnet restore MagicQuant.sln --locked-mode -warnaserror
+dotnet build MagicQuant.sln -c Release --no-restore -warnaserror
+dotnet test MagicQuant.sln -c Release --no-build
 ```
 
 Repeat with `-c Debug` when changing startup or compilation-dependent behavior. CI runs both configurations on Linux and Windows. It restores the committed NuGet lock files, treats warnings as errors, runs all ordinary tests, and uploads TRX reports. `MagicQuant.ProcessFixture` is a small offline executable used to test native process exit, full stdout/stderr pipes, literal arguments, and cancellation; it is not a user command.
@@ -15,13 +15,13 @@ The suite covers CLI startup/preflight, YAML contracts, managed/output path cont
 To update dependencies intentionally, edit package versions, run an unlocked `dotnet restore`, review `packages.lock.json` changes, and rerun the suite. Audit with:
 
 ```sh
-dotnet list MagicQuant-Pipeline.sln package --vulnerable --include-transitive
+dotnet list MagicQuant.sln package --vulnerable --include-transitive
 ```
 
 ## Read-only campaign validation
 
 ```sh
-dotnet run --project MagicQuant -c Release -- pipeline \
+dotnet run --project src/MagicQuant -c Release -- pipeline \
   --config config.local.yaml --check-config --strict-config
 ```
 
@@ -37,7 +37,7 @@ MQ_SMOKE_MODEL=/data/models/small-model \
 MQ_SMOKE_LLAMA_ROOT=/opt/llama.cpp \
 MQ_SMOKE_RUNTIME_ROOT=/data/MagicQuant \
 MQ_SMOKE_OUTPUT=/data/test-results/magicquant \
-dotnet test MagicQuant.Tests -c Release --filter Category=ModelSmoke
+dotnet test tests/MagicQuant.Tests -c Release --filter Category=ModelSmoke
 ```
 
 The runtime root must contain `MagicQuant-Env` with the converter/gguf dependencies already installed. The test does not install dependencies or download a model. It copies source metadata and links weights into a unique test model directory containing spaces, then exercises native conversion/reuse, Q8 scratch leases, export/reuse, GGUF metadata parity, the native CPU benchmark, and manifest-path writing. It has a 20-minute cancellation deadline. It removes generated GGUFs and input weight links and retains logs plus `smoke-result.json` beneath the output parent. The sample tensor-map JSON is a smoke artifact, not a full clone/release manifest.

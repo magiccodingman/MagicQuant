@@ -1,12 +1,12 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant", "MagicQuant\MagicQuant.csproj", "{9259012B-0EB2-4AD8-81E5-807FD4465AA3}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant", "src\MagicQuant\MagicQuant.csproj", "{9259012B-0EB2-4AD8-81E5-807FD4465AA3}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MQ.DB", "MQ.DB\MQ.DB.csproj", "{A97D6992-2659-47F9-9AC9-99425D2677A4}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MQ.DB", "src\MQ.DB\MQ.DB.csproj", "{A97D6992-2659-47F9-9AC9-99425D2677A4}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant.Tests", "MagicQuant.Tests\MagicQuant.Tests.csproj", "{D106FC82-5FD7-4C95-BF20-0940C64A234C}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant.Tests", "tests\MagicQuant.Tests\MagicQuant.Tests.csproj", "{D106FC82-5FD7-4C95-BF20-0940C64A234C}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant.ProcessFixture", "MagicQuant.ProcessFixture\MagicQuant.ProcessFixture.csproj", "{6F77FCF7-A105-44A9-A708-2B9F9F2B3B6D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MagicQuant.ProcessFixture", "tests\MagicQuant.ProcessFixture\MagicQuant.ProcessFixture.csproj", "{6F77FCF7-A105-44A9-A708-2B9F9F2B3B6D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

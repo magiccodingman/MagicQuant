@@ -26,8 +26,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet restore MagicQuant-Pipeline.sln --locked-mode
-      - run: dotnet test MagicQuant.Tests -c Release --no-restore --filter Category=ModelSmoke --logger trx --results-directory TestResults
+      - run: dotnet restore MagicQuant.sln --locked-mode
+      - run: dotnet test tests/MagicQuant.Tests -c Release --no-restore --filter Category=ModelSmoke --logger trx --results-directory TestResults
         env:
           MQ_RUN_MODEL_SMOKE: '1'
           MQ_SMOKE_MODEL: ${{ inputs.model_path }}

@@ -19,9 +19,9 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet restore MagicQuant-Pipeline.sln --locked-mode -warnaserror
-      - run: dotnet build MagicQuant-Pipeline.sln --configuration ${{ matrix.configuration }} --no-restore -warnaserror
-      - run: dotnet test MagicQuant-Pipeline.sln --configuration ${{ matrix.configuration }} --no-build --logger trx --results-directory TestResults
+      - run: dotnet restore MagicQuant.sln --locked-mode -warnaserror
+      - run: dotnet build MagicQuant.sln --configuration ${{ matrix.configuration }} --no-restore -warnaserror
+      - run: dotnet test MagicQuant.sln --configuration ${{ matrix.configuration }} --no-build --logger trx --results-directory TestResults
       - uses: actions/upload-artifact@v4
         if: always()
         with:

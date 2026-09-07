@@ -9,11 +9,11 @@ This repository contains the .NET command-line application. The [MagicQuant rese
 Install the .NET 10 SDK, then run from the repository root:
 
 ```sh
-dotnet restore MagicQuant-Pipeline.sln
-dotnet build MagicQuant-Pipeline.sln -c Release
-dotnet test MagicQuant-Pipeline.sln -c Release --no-build
-dotnet run --project MagicQuant -c Release --no-build -- --help
-dotnet run --project MagicQuant -c Release --no-build -- pipeline --help
+dotnet restore MagicQuant.sln
+dotnet build MagicQuant.sln -c Release
+dotnet test MagicQuant.sln -c Release --no-build
+dotnet run --project src/MagicQuant -c Release --no-build -- --help
+dotnet run --project src/MagicQuant -c Release --no-build -- pipeline --help
 ```
 
 Ordinary tests skip the explicitly opt-in model smoke test. Building, ordinary testing, and viewing help do not require model weights or llama.cpp. Running without arguments also shows help, in both Debug and Release.
@@ -25,7 +25,7 @@ Real quantization needs a complete local Hugging Face model directory (top-level
 1. Copy the distributed tuning profile and edit the paths and model identity:
 
    ```sh
-   cp MagicQuant/config.default.yaml config.local.yaml
+   cp src/MagicQuant/config.default.yaml config.local.yaml
    ```
 
    Set `paths.model_dir` and `identity.architecture_family_name`. Choose a dedicated `output.output_dir` and set `output.output_name_prefix`. Before publishing generated model cards, set `readme.frontmatter` to the source model's actual license and metadata. Use absolute paths for a portable campaign invocation.
@@ -33,7 +33,7 @@ Real quantization needs a complete local Hugging Face model directory (top-level
 2. Prepare dependencies:
 
    ```sh
-   dotnet run --project MagicQuant -c Release --no-build -- initialize-llama-cpp
+   dotnet run --project src/MagicQuant -c Release --no-build -- initialize-llama-cpp
    ```
 
    This can download/build llama.cpp, install Python packages, and request sudo for apt packages on Linux. It uses `<user-home>/MagicQuant`. To use existing llama.cpp files, configure **all three** of `paths.llama_root`, `paths.llama_bin`, and `paths.convert_script`, and pass `--config config.local.yaml`. See [setup](docs/setup.md) for Python requirements and custom runtime roots.
@@ -41,13 +41,13 @@ Real quantization needs a complete local Hugging Face model directory (top-level
 3. Validate before starting the campaign:
 
    ```sh
-   dotnet run --project MagicQuant -c Release --no-build -- pipeline --config config.local.yaml --check-config --strict-config
+   dotnet run --project src/MagicQuant -c Release --no-build -- pipeline --config config.local.yaml --check-config --strict-config
    ```
 
    Then start it:
 
    ```sh
-   dotnet run --project MagicQuant -c Release --no-build -- pipeline --config config.local.yaml
+   dotnet run --project src/MagicQuant -c Release --no-build -- pipeline --config config.local.yaml
    ```
 
    Review the tensor grouping prompt before allowing learning to continue. The run learns/reuses benchmark truth and exports its selected survivors. Runtime dependency validation may perform setup when using the default environment.
