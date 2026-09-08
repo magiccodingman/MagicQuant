@@ -1,0 +1,40 @@
+# Optional provider template, NOT a ready-to-run model preset.
+# Replace ALL placeholders and confirm the exact model/revision/file match.
+# For the bundled research tuning profile, first run magicquant init-config,
+# then copy the baselines/anomaly sections below into your generated config.
+# Loading this file directly uses typed defaults for omitted sections.
+paths:
+  model_dir: /data/models/YOUR-SOURCE-MODEL
+identity:
+  architecture_family_name: YOUR-MODEL-FAMILY
+output:
+  output_dir: /data/exports/YOUR-MODEL-MagicQuant
+  output_name_prefix: YOUR-MODEL
+  # Prefer upstream links when the provider hosts the same model.
+  export_external_learned_baselines: false
+baselines:
+  standard_baselines_mode: all
+  custom_repositories:
+    - repo_id: unsloth/YOUR-EXACT-MODEL-GGUF
+      revision: PROVIDER_COMMIT_SHA
+      enabled: true
+      short_source_name: UD
+      source_kind: huggingface_gguf_repository
+      require_all_includes_to_resolve: true
+      validate_tensor_names_against_source_model: true
+      delete_partial_or_dirty_downloads: true
+      resume_or_retry_downloads: true
+      includes:
+        - file_name: YOUR-EXACT-MODEL-UD-Q6_K_XL.gguf
+          baseline_family: Q6_K
+          quantize_base_name: Q6_K
+          display_name: UD_Q6_K_XL
+          allow_as_learning_baseline: true
+          allow_as_combination_carrier: true
+          allow_as_explicit_group_candidate: true
+# Optional: include the configured external baseline in the small expansion pass
+# around confirmed anomalies. This is not required just to learn from a provider.
+anomaly_detection:
+  confirmed_anomaly_expansion:
+    allowed_reference_quants: [Q8_0]
+    allowed_candidate_quants: [Q6_K, Q5_K, UD_Q6_K_XL]

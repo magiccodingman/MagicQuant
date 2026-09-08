@@ -1,0 +1,12 @@
+# Supply --source-json or --source-repo on the command line.
+# Clone rebuilds all manifest entries, including external-derived baselines.
+# output.export_external_learned_baselines is a pipeline-only export choice;
+# it is not needed to include those entries when cloning to a model variant.
+paths:
+  model_dir: /data/models/my-compatible-model
+identity:
+  architecture_family_name: my-model-family
+output:
+  output_dir: /data/exports/my-cloned-model
+  output_name_prefix: MyClonedModel
+  reuse_existing_final_artifacts: true

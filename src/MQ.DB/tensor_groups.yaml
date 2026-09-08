@@ -1,0 +1,392 @@
+schema_version: 1
+
+groups:
+  embeddings:
+    description: "Token embedding matrices."
+    patterns:
+      # Top-level GGUF / llama.cpp forms.
+      - "^token_embd\\.weight$"
+
+      # Common HF / framework forms.
+      - "^model\\.embed_tokens\\.weight$"
+      - "^embed_tokens\\.weight$"
+      - "^tok_embeddings\\.weight$"
+      - "^word_embeddings\\.weight$"
+      - "^transformer\\.wte\\.weight$"
+      - "^wte\\.weight$"
+
+  lm_head:
+    description: "Final output/logit projection tensors. Keep these anchored so blk.N.attn_output.weight never collides with lm_head."
+    patterns:
+      # Top-level GGUF output head only.
+      # Important: do NOT use unanchored output\.weight here, because it also
+      # matches blk.N.attn_output.weight when Regex.IsMatch is used.
+      - "^output\\.weight$"
+
+      # Common HF / framework forms.
+      - "^lm_head\\.weight$"
+      - "^final_logits_proj\\.weight$"
+      - "^model\\.embed_out\\.weight$"
+      - "^lm_head\\.decoder\\.weight$"
+
+  attn_q:
+    description: "Attention query projection tensors. Fused QKV tensors are assigned here as the representative attention-projection owner because MagicQuant currently has no separate attn_qkv group."
+    patterns:
+      # llama.cpp GGUF query form.
+      - "^blk\\..*\\.attn_q\\.weight$"
+
+      # Qwen3.6 / hybrid attention form.
+      # This is a fused query/key/value tensor. It is material and should not be
+      # an exception. If MagicQuant later gains a dedicated attn_qkv group, move
+      # this pattern there.
+      - "^blk\\..*\\.attn_qkv\\.weight$"
+
+      # LLaMA / Qwen / Mistral / modern HF forms.
+      - ".*q_proj.*weight$"
+      - ".*self_attn\\.q_proj\\.weight$"
+
+      # BERT / encoder style forms.
+      - ".*query\\.weight$"
+      - ".*attention\\.self\\.query\\.weight$"
+
+      # T5 / miscellaneous forms.
+      - ".*SelfAttention\\.q\\.weight$"
+
+      # Fused QKV HF forms.
+      # These may intentionally match broader attention tensors and should be
+      # handled carefully by the learning/ambiguity layer.
+      - ".*c_attn\\.weight$"
+      - ".*query_key_value\\.weight$"
+
+  attn_kv:
+    description: "Attention key/value projection tensors."
+    patterns:
+      # llama.cpp GGUF forms.
+      - "^blk\\..*\\.attn_k\\.weight$"
+      - "^blk\\..*\\.attn_v\\.weight$"
+
+      # LLaMA / Qwen / Mistral / modern HF forms.
+      - ".*k_proj.*weight$"
+      - ".*v_proj.*weight$"
+      - ".*self_attn\\.k_proj\\.weight$"
+      - ".*self_attn\\.v_proj\\.weight$"
+
+      # BERT / encoder style forms.
+      - ".*key\\.weight$"
+      - ".*value\\.weight$"
+      - ".*attention\\.self\\.key\\.weight$"
+      - ".*attention\\.self\\.value\\.weight$"
+
+      # T5 / encoder-decoder style forms.
+      - ".*SelfAttention\\.k\\.weight$"
+      - ".*SelfAttention\\.v\\.weight$"
+      - ".*EncDecAttention\\.k\\.weight$"
+      - ".*EncDecAttention\\.v\\.weight$"
+
+  attn_output:
+    description: "Attention output projection tensors."
+    patterns:
+      # llama.cpp GGUF form.
+      - "^blk\\..*\\.attn_output\\.weight$"
+
+      # LLaMA / Qwen / Mistral / modern HF forms.
+      - ".*out_proj.*weight$"
+      - ".*o_proj.*weight$"
+      - ".*self_attn\\.out_proj\\.weight$"
+
+      # GPT-style attention output.
+      # Note: c_proj can also appear in MLPs on some architectures, so this may
+      # require architecture-aware disambiguation or strict ambiguity reporting.
+      - ".*attn.*c_proj\\.weight$"
+      - ".*attention.*c_proj\\.weight$"
+
+      # BERT / encoder style forms.
+      - ".*attention\\.output\\.dense\\.weight$"
+      - ".*self_attention\\.dense\\.weight$"
+      - ".*attention\\.proj\\.weight$"
+
+      # T5 / miscellaneous forms.
+      - ".*SelfAttention\\.o\\.weight$"
+
+  ffn_up_gate:
+    description: "Dense FFN up/gate tensors only. Expert-path tensors are intentionally excluded and should be owned by moe_experts."
+    patterns:
+      # llama.cpp GGUF dense FFN forms.
+      - "^blk\\..*\\.ffn_up\\.weight$"
+      - "^blk\\..*\\.ffn_gate\\.weight$"
+
+      # BERT / encoder style forms.
+      - ".*intermediate\\.dense\\.weight$"
+
+      # GPT / MLP style forms.
+      - ".*mlp.*c_fc\\.weight$"
+      - ".*mlp.*fc1\\.weight$"
+      - ".*fc1\\.weight$"
+      - ".*fc_in\\.weight$"
+      - ".*dense_h_to_4h\\.weight$"
+
+      # T5 / gated FFN style forms.
+      - ".*wi\\.weight$"
+      - ".*wi_0\\.weight$"
+      - ".*wi_1\\.weight$"
+      - ".*DenseReluDense\\.wi_0\\.weight$"
+      - ".*DenseReluDense\\.wi_1\\.weight$"
+
+      # LLaMA / Qwen / Mistral / modern dense MLP forms.
+      - ".*mlp\\.up_proj\\.weight$"
+      - ".*mlp\\.gate_proj\\.weight$"
+
+      # Do NOT add expert/shared-expert patterns here.
+      # Qwen3.5 / Qwen3.6 expert forms such as:
+      #   blk.N.ffn_up_exps.weight
+      #   blk.N.ffn_gate_exps.weight
+      #   blk.N.ffn_up_shexp.weight
+      #   blk.N.ffn_gate_shexp.weight
+      # are MoE expert-path tensors and belong to moe_experts.
+      # GGUF MoE routed/shared expert FFN up/gate payloads.
+      - "^blk\\..*\\.ffn_up_exps\\.weight$"
+      - "^blk\\..*\\.ffn_gate_exps\\.weight$"
+      - "^blk\\..*\\.ffn_up_shexp\\.weight$"
+      - "^blk\\..*\\.ffn_gate_shexp\\.weight$"
+      
+      # HF / framework expert forms.
+      - ".*experts?\\..*wi_0.*"
+      - ".*experts?\\..*wi_1.*"
+      - ".*experts?\\..*fc1.*"
+      - ".*experts?\\..*dense_h_to_4h.*"
+      - ".*experts?\\..*up_proj.*"
+      - ".*experts?\\..*gate_proj.*"
+      - ".*mlp\\.experts\\.gate_up_proj.*"
+      - ".*mlp\\.experts\\.gate_proj.*"
+      - ".*mlp\\.experts\\.up_proj.*"
+      - ".*mlp\\.shared_expert\\.gate_proj\\.weight$"
+      - ".*mlp\\.shared_expert\\.up_proj\\.weight$"
+      - ".*layers\\..*\\.experts\\.gate_up_proj.*"
+      - ".*layers\\..*\\.experts\\.gate_proj.*"
+      - ".*layers\\..*\\.experts\\.up_proj.*"
+
+  ffn_down:
+    description: "Dense FFN down-projection tensors only. Expert-path tensors are intentionally excluded and should be owned by moe_experts."
+    patterns:
+      # llama.cpp GGUF dense FFN form.
+      - "^blk\\..*\\.ffn_down\\.weight$"
+
+      # BERT / encoder style form.
+      # Keep this scoped to avoid catching attention.output.dense if that should
+      # be owned by attn_output.
+      - ".*mlp.*output\\.dense\\.weight$"
+      - ".*ffn.*output\\.dense\\.weight$"
+
+      # GPT / MLP style forms.
+      # c_proj can also appear as attention output on some architectures.
+      # Scope it toward MLP where possible to avoid attn_output ambiguity.
+      - ".*mlp.*c_proj\\.weight$"
+      - ".*mlp.*fc2\\.weight$"
+      - ".*fc2\\.weight$"
+      - ".*fc_out\\.weight$"
+      - ".*dense_4h_to_h\\.weight$"
+
+      # T5 / gated FFN style forms.
+      - ".*wo\\.weight$"
+      - ".*DenseReluDense\\.wo\\.weight$"
+
+      # LLaMA / Qwen / Mistral / modern dense MLP form.
+      - ".*mlp\\.down_proj\\.weight$"
+
+      # Do NOT add expert/shared-expert patterns here.
+      # Qwen3.5 / Qwen3.6 expert forms such as:
+      #   blk.N.ffn_down_exps.weight
+      #   blk.N.ffn_down_shexp.weight
+      # are MoE expert-path tensors and belong to moe_experts.
+      # GGUF MoE routed/shared expert FFN down payloads.
+      - "^blk\\..*\\.ffn_down_exps\\.weight$"
+      - "^blk\\..*\\.ffn_down_shexp\\.weight$"
+      
+      # HF / framework expert forms.
+      - ".*experts?\\..*wo.*"
+      - ".*experts?\\..*fc2.*"
+      - ".*experts?\\..*dense_4h_to_h.*"
+      - ".*experts?\\..*down_proj.*"
+      - ".*mlp\\.experts\\.down_proj.*"
+      - ".*mlp\\.shared_expert\\.down_proj\\.weight$"
+      - ".*layers\\..*\\.experts\\.down_proj.*"
+
+  moe_experts:
+    description: "MoE expert-path tensors, including routed experts and shared experts. These own *_exps and *_shexp forms so they do not collide with dense FFN groups."
+    patterns:
+      - ".*experts?\\..*"
+      # llama.cpp GGUF MoE routed expert tensors.
+      #- "^blk\\..*\\.ffn_.*expert.*$"
+      #- "^blk\\..*\\.ffn_.*exps.*$"
+      #- "^blk\\..*\\.ffn_up_exps\\.weight$"
+      #- "^blk\\..*\\.ffn_gate_exps\\.weight$"
+      #- "^blk\\..*\\.ffn_down_exps\\.weight$"
+
+      # Qwen3.6 shared-expert GGUF tensors.
+      # These are material expert-path matrices and should not fall back through
+      # base_quant_exceptions.
+      #- "^blk\\..*\\.ffn_up_shexp\\.weight$"
+      #- "^blk\\..*\\.ffn_gate_shexp\\.weight$"
+      #- "^blk\\..*\\.ffn_down_shexp\\.weight$"
+
+      # Generic expert container forms used by several HF architectures.
+      #- ".*experts?\\..*wi_0.*"
+      #- ".*experts?\\..*wi_1.*"
+      #- ".*experts?\\..*wo.*"
+      #- ".*experts?\\..*fc1.*"
+      #- ".*experts?\\..*fc2.*"
+      #- ".*experts?\\..*dense_h_to_4h.*"
+      #- ".*experts?\\..*dense_4h_to_h.*"
+      #- ".*experts?\\..*up_proj.*"
+      #- ".*experts?\\..*gate_proj.*"
+      #- ".*experts?\\..*down_proj.*"
+
+      # Qwen3.5 / Qwen3.6 / modern HF MoE forms.
+      #- ".*mlp\\.experts\\.gate_up_proj.*"
+      #- ".*mlp\\.experts\\.gate_proj.*"
+      #- ".*mlp\\.experts\\.up_proj.*"
+      #- ".*mlp\\.experts\\.down_proj.*"
+
+      # Shared experts are still MoE expert-path tensors, not normal dense FFN.
+      # Keeping them here prevents them from double-counting as generic FFN.
+      #- ".*mlp\\.shared_expert\\.gate_proj\\.weight$"
+      #- ".*mlp\\.shared_expert\\.up_proj\\.weight$"
+      #- ".*mlp\\.shared_expert\\.down_proj\\.weight$"
+
+      # Gemma-style MoE forms.
+      #- ".*layers\\..*\\.experts\\.gate_up_proj.*"
+      #- ".*layers\\..*\\.experts\\.gate_proj.*"
+      #- ".*layers\\..*\\.experts\\.up_proj.*"
+      #- ".*layers\\..*\\.experts\\.down_proj.*"
+
+  moe_router:
+    description: "MoE router/gating tensors. Keep this MoE-specific so dense FFN gates, attention gates, and Qwen3.6 hybrid/SSM gates do not masquerade as routers."
+    patterns:
+      # Top-level router/gating forms.
+      # These are intentionally anchored to names that begin with router/gating/routing.
+      - "^router.*"
+      - "^gating.*"
+      - "^routing.*"
+
+      # Generic MoE-specific gate/router forms.
+      # Important: do NOT use a broad pattern like .*gate\.weight$ here.
+      # That catches dense FFN gates, attention gates, and hybrid SSM gates.
+      - ".*moe_gate\\.weight$"
+      - ".*moe\\.gate\\.weight$"
+      - ".*moe\\.router.*"
+      - ".*gating_network\\.weight$"
+
+      # llama.cpp GGUF MoE router/gate forms.
+      # ffn_gate_inp is the router/gate input tensor, not the dense ffn_gate payload.
+      - "^blk\\..*\\.ffn_gate_inp\\.weight$"
+      - "^blk\\..*\\.gate_inp\\.weight$"
+      - "^blk\\..*\\.router.*"
+      - "^blk\\..*\\.router_fc.*"
+
+      # Qwen3.6 shared-expert gate input.
+      # This appears alongside *_shexp expert tensors and is F32 in the failure
+      # log. Treat it as router/gating control, not as expert matrix payload.
+      - "^blk\\..*\\.ffn_gate_inp_shexp\\.weight$"
+
+      # Qwen3.5 / Qwen3.6 native HF MoE router.
+      # Keep this scoped to mlp.gate, but be aware that some dense architectures
+      # may use gate_proj for ordinary gated MLP. gate_proj belongs to FFN/expert
+      # groups above, not this router group.
+      - ".*mlp\\.gate\\.weight$"
+
+      # Gemma-style router tensors.
+      - ".*layers\\..*\\.router\\.proj\\.weight$"
+      - ".*layers\\..*\\.router\\.per_expert_scale$"
+      - ".*layers\\..*\\.router\\.scale$"
+
+      # Do NOT add:
+      #   - ".*gate\\.weight$"
+      #   - ".*(?<!ffn_)gate\\.weight$"
+      #
+      # Those are too broad. They catch tensors like:
+      #   blk.N.attn_gate.weight
+      # which are not MoE routers on dense/hybrid Qwen3.6-style models.
+
+  ssm:
+    description: "State-space / hybrid sequence-mixing tensors used by Qwen3.6-style hybrid architectures. These are material tensors when the runtime supports the group, but may also be allowed to fall back through base_quant_exceptions when this semantic group is not active."
+    patterns:
+      # Qwen3.6 GGUF SSM forms seen in the tensor learning failure log.
+      - "^blk\\..*\\.ssm_a$"
+      - "^blk\\..*\\.ssm_alpha\\.weight$"
+      - "^blk\\..*\\.ssm_beta\\.weight$"
+      - "^blk\\..*\\.ssm_conv1d\\.weight$"
+      - "^blk\\..*\\.ssm_dt\\.bias$"
+      - "^blk\\..*\\.ssm_out\\.weight$"
+
+      # Qwen3.6 / hybrid attention-state gate.
+      # This is a gate tensor, but not an MoE router. Keep it here so it does not
+      # get vacuumed into moe_router by generic gate patterns.
+      - "^blk\\..*\\.attn_gate\\.weight$"
+
+      # Broader architecture-aware SSM / state-space catch-alls.
+      # Keep these below the exact GGUF names so the known forms are obvious.
+      - ".*\\.ssm_.*\\.weight$"
+      - ".*\\.ssm_.*\\.bias$"
+      - ".*state_space.*weight$"
+      - ".*mamba.*weight$"
+      - ".*conv1d.*weight$"
+
+base_quant_exceptions:
+  description: "Tensor patterns that are allowed to fall back to the artifact BaseQuant instead of belonging to a semantic tensor group. These should only be checked after zero semantic groups match."
+  patterns:
+    # Small scale / calibration / architecture-helper tensors.
+    # Keep this intentionally conservative. If any scale tensor becomes large or
+    # materially impacts KLD/PPL/TPS, promote it to a real tensor group instead.
+    - ".*scale.*"
+
+    # Zero-point / quantization-helper tensors.
+    - ".*zero.*"
+
+    # Normalization tensors.
+    # These are usually tiny, structurally important, and not useful as search groups.
+    - ".*norm.*"
+
+    # Positional / position-helper tensors.
+    - ".*position.*"
+
+    # Qwen3.6 / hybrid state-space tensors.
+    # These are duplicated with the ssm group intentionally:
+    #   - If the runtime profile supports ssm as an active group, they are learned there.
+    #   - If the runtime profile does not support ssm yet, they safely fall back to BaseQuant.
+    # This avoids false assignment into unrelated groups such as moe_router.
+    - "^blk\\..*\\.ssm_a$"
+    - "^blk\\..*\\.ssm_alpha\\.weight$"
+    - "^blk\\..*\\.ssm_beta\\.weight$"
+    - "^blk\\..*\\.ssm_conv1d\\.weight$"
+    - "^blk\\..*\\.ssm_dt\\.bias$"
+    - "^blk\\..*\\.ssm_out\\.weight$"
+
+    # Qwen3.6 / hybrid attention-state gate.
+    # This is not a dense FFN gate and not an MoE router. If ssm is not active,
+    # allow it to fallback rather than being misclassified.
+    - "^blk\\..*\\.attn_gate\\.weight$"
+    
+    # Gemma 4 / AltUp-style architecture-helper tensors.
+    # These are not attention projections, dense FFN matrices, MoE routers, or
+    # MoE expert payloads. Keep them in BaseQuant unless MagicQuant later gains
+    # explicit architecture-aware handling for this Gemma helper path.
+    # Important: do NOT add broad patterns such as .*gate\.weight$ or
+    # .*proj\.weight$ to semantic groups; those would collide with dense MLP,
+    # attention, MoE router, and miscellaneous projection tensors.
+    - "^blk\\..*\\.inp_gate\\.weight$"
+    - "^blk\\..*\\.proj\\.weight$"
+    - "^per_layer_model_proj\\.weight$"
+    - "^per_layer_token_embd\\.weight$"
+    - "^rope_freqs\\.weight$"
+    
+    # Qwen3.5 / Qwen3.6 MTP / NEXTN speculative decoding tensors.
+    # Keep these protected. They should not be assigned to embeddings,
+    # lm_head, FFN, attention, SSM, or MoE groups.
+    - "^blk\\..*\\.nextn\\..*$"
+    - ".*nextn.*"
+    - ".*mtp.*"
+    - ".*eh_proj.*"
+    - ".*shared_head.*"
+    - ".*shared_head_norm.*"
+    - ".*pre_fc_norm.*"
+  

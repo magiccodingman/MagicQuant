@@ -1,0 +1,10 @@
+# Retain every default detector. This exact tensor fixture is not an API key.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Exact native/external tensor-name fixture, including its historical path"
+condition = "AND"
+paths = ['''(^|/)MagicQuant.Tests/ExternalBaselineTensorParityTests\.cs$''']
+regexTarget = "line"
+regexes = ['''^\s*var (native|external) = Metadata\(nextnLayers: 1, "token_embd\.weight", "blk\.0\.attn_q\.weight", "blk\.64\.nextn\.eh_proj\.weight"\);$''']
