@@ -7,21 +7,27 @@
 [![Build and tests](https://github.com/magiccodingman/MagicQuant/actions/workflows/dotnet.yml/badge.svg)](https://github.com/magiccodingman/MagicQuant/actions/workflows/dotnet.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://github.com/magiccodingman/MagicQuant/blob/main/LICENSE)
 
-**Discover better GGUF size/fidelity tradeoffs. Benchmark the results. Share the tensor recipes.**
+**Find better ways to compress an LLM. Measure the gains. Share the recipes.**
 
-MagicQuant is a **benchmark-driven LLM quantization, mixed-precision hybrid discovery, and tensor-configuration cloning system for llama.cpp**. It learns from existing quantization strategies, explores combinations across tensor groups, builds promising GGUFs, and measures which ones deserve a place in the final release.
+MagicQuant discovers **mixed-precision GGUF quantizations for llama.cpp** that offer better measured tradeoffs between model size and fidelity. It learns tensor configurations from existing quantizations, combines promising choices into new hybrids, and benchmarks the resulting models. The output is a selection of useful GGUFs with the measurements and reproducible recipes behind them.
 
-A campaign gives you more than another quantized file: **a measured selection of useful models, an explanation of what survived and why, and manifests that let other people rebuild those configurations.**
+**The opportunity is inside the model.** Tensor groups do not all respond to compression in the same way: an attention group may benefit from a higher-precision recipe while a feed-forward group tolerates a smaller one. Their behavior can also change with the surrounding quantization choices. Existing llama.cpp baselines and external quantizations such as Unsloth provide valuable starting recipes; recombining their strengths can uncover choices that a familiar Q4, Q5, or Q6 label alone does not reveal.
+
+MagicQuant investigates those opportunities for your model. It measures group changes, predicts promising combinations, then builds and benchmarks actual GGUFs to find out which improvements hold up. **Predictions guide the search; measured results decide what earns a place.**
+
+The discoveries can travel, too. Publish the generated manifests alongside your GGUFs, and others can **clone the tensor recipes onto compatible fine-tunes and related models**, rebuilding and benchmarking a useful starting set without repeating the full discovery search.
 
 [Browse the models](https://huggingface.co/collections/magiccodingman/magic-quant) · [See the results](#magicquant-in-the-wild) · [Install](#install-and-run) · [Clone a release](#clone-the-recipes-onto-your-own-model) · [Read the research](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/index.md)
 
-## Which quants are actually worth keeping?
+## How the search turns into useful models
 
-Q8, Q6, Q5, Q4: familiar names tell you roughly how a model was compressed. They do not tell you whether a particular model has a better trade hiding between those choices—or whether two downloads offer almost the same thing.
+1. **Learn the starting recipes.** Read the actual tensor assignments inside baseline and optional external GGUFs, preserving their choices within architecture-aware groups.
+2. **Measure where changes matter.** Benchmark isolated group changes to learn which recipe substitutions help or hurt. Bounded context probes can investigate interactions that isolated measurements miss.
+3. **Search the combinations worth testing.** Use that evidence to predict promising hybrids and focus the build and benchmark budget on candidates likely to improve the size/fidelity trade.
+4. **Keep measured wins.** Compare real GGUF sizes and output-distribution divergence (KLD). A winner can deliver lower KLD at the same or smaller size, or a disproportionately useful fidelity improvement for additional storage—a **nonlinear win**.
+5. **Export results others can use.** Produce GGUFs, a model card, measurements, replacement explanations, and exact tensor maps for cloning.
 
-MagicQuant investigates that space. It can combine one baseline's attention recipe with another's feed-forward recipe, protect groups that are expensive to damage, and compress groups where the measurements justify it. Candidates earn a place by reducing size and KLD together, delivering an unusually worthwhile fidelity improvement for a small size premium, or beating the expected trade between neighboring choices.
-
-**Every survivor has to earn its slot.** The final selection can contain llama.cpp baselines, configurations learned from Unsloth, and MagicQuant hybrids. The goal is a release where each download represents a meaningful choice.
+**Every survivor has to earn its slot.** The final selection can contain llama.cpp baselines, configurations learned from Unsloth, and MagicQuant hybrids. Redundant and poor trades are removed so each download represents a meaningful choice. The [worked example below](#nonlinear-wins-more-fidelity-for-the-extra-bytes) shows what beating the expected trade looks like in practice.
 
 ## Support the project
 
