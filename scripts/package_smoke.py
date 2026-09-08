@@ -32,11 +32,16 @@ def main():
         for native in ["libe_sqlite3.so", "e_sqlite3.dll", "libduckdb.so", "duckdb.dll"]:
             assert any(n.endswith('/'+native) for n in names), f"Missing native asset: {native}"
         assert any(n.startswith("licenses/") for n in names), "Missing third-party license texts"
+        repository = Path(__file__).resolve().parent.parent
+        assert archive.read("README.md") == (repository / "README.md").read_bytes(), "Package README differs from the root README"
+        assert archive.read("icon.png") == (repository / "assets/icon.png").read_bytes(), "Package icon differs from the repository icon"
         root = ET.fromstring(archive.read("MagicQuant.nuspec"))
         ns = {"n": root.tag.split("}")[0][1:]}
         meta = root.find("n:metadata", ns)
         version = meta.find("n:version", ns).text
         assert meta.find("n:license", ns).text == "AGPL-3.0-only"
+        assert meta.find("n:readme", ns).text == "README.md"
+        assert meta.find("n:icon", ns).text == "icon.png"
     with tempfile.TemporaryDirectory(prefix="magicquant package smoke ") as temp:
         root = Path(temp)
         feed = root / "feed"

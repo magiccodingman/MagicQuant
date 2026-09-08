@@ -3,7 +3,7 @@
 [![NuGet version](https://img.shields.io/nuget/v/MagicQuant.svg)](https://www.nuget.org/packages/MagicQuant/)
 [![NuGet downloads](https://img.shields.io/nuget/dt/MagicQuant.svg)](https://www.nuget.org/packages/MagicQuant/)
 [![Build and tests](https://github.com/magiccodingman/MagicQuant/actions/workflows/dotnet.yml/badge.svg)](https://github.com/magiccodingman/MagicQuant/actions/workflows/dotnet.yml)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://github.com/magiccodingman/MagicQuant/blob/main/LICENSE)
 
 **Benchmark-driven GGUF quantization and mixed-precision hybrid discovery for llama.cpp.**
 
@@ -18,7 +18,7 @@ It is a .NET command-line application that orchestrates llama.cpp and Python too
 3. **Discover hybrids.** Use measured evidence and predictions to explore mixed-precision combinations with promising size/fidelity tradeoffs.
 4. **Validate and select.** Measure candidates, reject poor or redundant trades, and export survivors with metadata and local provenance.
 
-KLD and perplexity help evaluate fidelity; throughput and file size provide additional context. The results depend on the model, calibration/evaluation data, configuration, and hardware. A smaller KLD in one campaign is not a universal claim about downstream task quality. Read the [research overview](wiki/index.md) for the selection policy and its assumptions.
+KLD and perplexity help evaluate fidelity; throughput and file size provide additional context. The results depend on the model, calibration/evaluation data, configuration, and hardware. A smaller KLD in one campaign is not a universal claim about downstream task quality. Read the [research overview](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/index.md) for the selection policy and its assumptions.
 
 ## Support the project
 
@@ -36,7 +36,7 @@ magicquant --version
 magicquant init-config --output config.yaml
 ```
 
-The package becomes available after the first successful release publication; until then use the [source installation instructions](docs/setup.md#build-from-source).
+The package becomes available after the first successful release publication; until then use the [source installation instructions](https://github.com/magiccodingman/MagicQuant/blob/main/docs/setup.md#build-from-source).
 
 Edit the generated config for your source model, architecture identity, export destination, and storage. Initialize the external toolchain, validate the config, then start the campaign:
 
@@ -46,7 +46,7 @@ magicquant pipeline --config ./config.yaml --check-config --strict-config
 magicquant pipeline --config ./config.yaml
 ```
 
-Initialization can download/build llama.cpp and install Python dependencies. NuGet installs MagicQuant, not model weights or a complete GPU toolchain. Follow the [installation guide](docs/setup.md) for native prerequisites, GPU setup, custom toolchains, and environment paths.
+Initialization can download/build llama.cpp and install Python dependencies. NuGet installs MagicQuant, not model weights or a complete GPU toolchain. Follow the [installation guide](https://github.com/magiccodingman/MagicQuant/blob/main/docs/setup.md) for native prerequisites, GPU setup, custom toolchains, and environment paths.
 
 For updates: `dotnet tool update --global MagicQuant`. For reproducible runs, install a particular release with `--version X.Y.Z` and retain your config, model revision, and run provenance.
 
@@ -69,30 +69,31 @@ learning:
   confirm_tensor_group_profile: true
 ```
 
-Custom YAML uses typed defaults for omitted values; it does not merge with the bundled tuning profile. Start with `init-config` when you want that complete profile. See [configuration](docs/configuration.md), [examples](examples), and the [command reference](docs/commands.md).
+Custom YAML uses typed defaults for omitted values; it does not merge with the bundled tuning profile. Start with `init-config` when you want that complete profile. See [configuration](https://github.com/magiccodingman/MagicQuant/blob/main/docs/configuration.md), [examples](https://github.com/magiccodingman/MagicQuant/tree/main/examples), and the [command reference](https://github.com/magiccodingman/MagicQuant/blob/main/docs/commands.md).
 
-**Plan scratch storage early.** Quantization writes and rereads large intermediate models, and storage can be a major throughput limitation. Fast SSD/NVMe scratch disks, especially separate physical devices, can materially improve throughput when IO is the bottleneck. Multiple folders on the same device still share its bandwidth. Allow space for concurrent intermediate artifacts and keep unrelated data out of managed scratch/export directories. See [storage](docs/storage.md) and [best practices](docs/best-practices.md).
+**Plan scratch storage early.** Quantization writes and rereads large intermediate models, and storage can be a major throughput limitation. Fast SSD/NVMe scratch disks, especially separate physical devices, can materially improve throughput when IO is the bottleneck. Multiple folders on the same device still share its bandwidth. Allow space for concurrent intermediate artifacts and keep unrelated data out of managed scratch/export directories. See [storage](https://github.com/magiccodingman/MagicQuant/blob/main/docs/storage.md) and [best practices](https://github.com/magiccodingman/MagicQuant/blob/main/docs/best-practices.md).
 
 ## Learning from external quantizations
 
 External providers are optional. MagicQuant can run using its local baseline choices alone, but compatible external tensor assignments can provide valuable additional evidence.
 
-**Unsloth is the maintainer's recommended starting point** for external GGUF baselines. MagicQuant can learn their tensor-group patterns, rebuild a controlled equivalent from your local source model, and benchmark it in your campaign. It does not simply trust an external file's label or score. Choose the exact matching model and revision, and review its license. See the [Unsloth configuration walkthrough](docs/best-practices.md#optional-unsloth-baselines) and [research explanation](wiki/docs/Learning-From-Existing-Quantizations.md).
+**Unsloth is the maintainer's recommended starting point** for external GGUF baselines. MagicQuant can learn their tensor-group patterns, rebuild a controlled equivalent from your local source model, and benchmark it in your campaign. It does not simply trust an external file's label or score. Choose the exact matching model and revision, and review its license. See the [Unsloth configuration walkthrough](https://github.com/magiccodingman/MagicQuant/blob/main/docs/best-practices.md#optional-unsloth-baselines) and [research explanation](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/docs/Learning-From-Existing-Quantizations.md).
 
-For the same model, prefer linking to the original provider's surviving baselines. For a compatible variant they do not host, cloning can rebuild the full selected set locally. Learning tensor assignments does not automatically reproduce a provider's other processing techniques. See [publishing and cloning guidance](docs/best-practices.md#link-upstream-for-the-same-model-build-locally-for-variants).
+For the same model, prefer linking to the original provider's surviving baselines. For a compatible variant they do not host, cloning can rebuild the full selected set locally. Learning tensor assignments does not automatically reproduce a provider's other processing techniques. See [publishing and cloning guidance](https://github.com/magiccodingman/MagicQuant/blob/main/docs/best-practices.md#link-upstream-for-the-same-model-build-locally-for-variants).
 
 ## Documentation
 
 | Start here | What you will find |
 | --- | --- |
-| [Installation](docs/setup.md) | NuGet, native prerequisites, custom environments, source builds |
-| [Configuration](docs/configuration.md) | YAML, overrides, read-only validation, profiles |
-| [Commands](docs/commands.md) | Pipeline, setup, cloning, prediction validation |
-| [Best practices](docs/best-practices.md) | Scratch disks, Unsloth, reproducibility, first campaigns |
-| [Storage](docs/storage.md) | Persistent data, scratch leases, cache and output ownership |
-| [Research](wiki/index.md) | Measurements, prediction, pruning, hybrid selection |
-| [Contributing](CONTRIBUTING.md) | Development workflow, tests, code boundaries |
-| [Releases](docs/releases.md) | Automatic versions and NuGet trusted publishing |
+| [Installation](https://github.com/magiccodingman/MagicQuant/blob/main/docs/setup.md) | NuGet, native prerequisites, custom environments, source builds |
+| [Configuration](https://github.com/magiccodingman/MagicQuant/blob/main/docs/configuration.md) | YAML, overrides, read-only validation, profiles |
+| [Commands](https://github.com/magiccodingman/MagicQuant/blob/main/docs/commands.md) | Pipeline, setup, cloning, prediction validation |
+| [Best practices](https://github.com/magiccodingman/MagicQuant/blob/main/docs/best-practices.md) | Scratch disks, Unsloth, reproducibility, first campaigns |
+| [Manifests and cloning](https://github.com/magiccodingman/MagicQuant/blob/main/docs/manifests-and-cloning.md) | Publish a reproducible release; rebuild from another MagicQuant repository |
+| [Storage](https://github.com/magiccodingman/MagicQuant/blob/main/docs/storage.md) | Persistent data, scratch leases, cache and output ownership |
+| [Research](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/index.md) | Measurements, prediction, pruning, hybrid selection |
+| [Contributing](https://github.com/magiccodingman/MagicQuant/blob/main/CONTRIBUTING.md) | Development workflow, tests, code boundaries |
+| [Releases](https://github.com/magiccodingman/MagicQuant/blob/main/docs/releases.md) | Automatic versions and NuGet trusted publishing |
 
 ## Development and history
 
@@ -100,6 +101,6 @@ Application code lives in `src/`, tests in `tests/`, operational guides in `docs
 
 ## License
 
-MagicQuant's original code and documentation are licensed under **GNU AGPL version 3 only** (`AGPL-3.0-only`). Commercial use is permitted subject to its terms. Distribution and remote interaction with modified versions carry source-availability obligations; the [license text](LICENSE) controls the details.
+MagicQuant's original code and documentation are licensed under **GNU AGPL version 3 only** (`AGPL-3.0-only`). Commercial use is permitted subject to its terms. Distribution and remote interaction with modified versions carry source-availability obligations; the [license text](https://github.com/magiccodingman/MagicQuant/blob/main/LICENSE) controls the details.
 
-This does not automatically relicense model weights or generated GGUFs. Model, dataset, external-provider, and third-party dependency licenses still apply. See [third-party notices](THIRD-PARTY-NOTICES.md).
+This does not automatically relicense model weights or generated GGUFs. Model, dataset, external-provider, and third-party dependency licenses still apply. See [third-party notices](https://github.com/magiccodingman/MagicQuant/blob/main/THIRD-PARTY-NOTICES.md).
