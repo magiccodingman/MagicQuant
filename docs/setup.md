@@ -1,16 +1,43 @@
 # Setup and troubleshooting
 
-## Development requirements
+## Install from NuGet
 
-All solution projects target `net10.0`. Use the .NET 10 SDK. NuGet restore downloads the managed packages and native SQLite/DuckDB assets. The solution includes `MagicQuant`, `MQ.DB`, `MagicQuant.Tests`, and the offline `MagicQuant.ProcessFixture` test helper.
+Linux is the tested campaign platform. Windows CI covers builds, ordinary tests and installed-package startup; full Windows campaigns remain unvalidated. Install the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) first.
 
 ```sh
-dotnet restore MagicQuant.sln
-dotnet build MagicQuant.sln -c Release
-dotnet test MagicQuant.sln -c Release --no-build
+dotnet tool install --global MagicQuant
+magicquant --version
+magicquant init-config --output config.yaml
 ```
 
-These commands do not install llama.cpp or Python packages. Some regression tests create temporary SQLite databases and inspect local hardware. Tests do not require CUDA or model weights.
+NuGet publication begins with the first successful release. If the package is not yet listed, use the source-build route below. The CLI command is `magicquant`; `dotnet add package` is not the installation command for this application.
+
+If your shell cannot find `magicquant`, ensure the .NET tools directory is on `PATH`: `$HOME/.dotnet/tools` on Linux or `%USERPROFILE%\.dotnet\tools` on Windows, then reopen the shell. Use `dotnet tool update --global MagicQuant` to update, `dotnet tool uninstall --global MagicQuant` to remove the tool, or add `--version X.Y.Z` to install an exact version. Removing/updating the tool does not remove model/runtime data.
+
+Edit the generated YAML; set `paths.model_dir`, `identity.architecture_family_name`, `output.output_dir`, and dedicated `paths.scratch_roots`. For a first run:
+
+```sh
+magicquant initialize-llama-cpp
+magicquant pipeline --config ./config.yaml --check-config --strict-config
+magicquant pipeline --config ./config.yaml
+```
+
+`init-config` copies the full bundled tuning profile and refuses to overwrite existing files. `--check-config` is read-only. The actual pipeline can perform dependency setup and write model/runtime artifacts. Fast scratch disks are especially valuable for the repeated large GGUF writes; read [best practices](best-practices.md) before a large campaign.
+
+## Build from source
+
+All solution projects target `net10.0`. The solution includes `src/MagicQuant`, `src/MQ.DB`, `tests/MagicQuant.Tests`, and the offline `tests/MagicQuant.ProcessFixture` helper.
+
+```sh
+git clone https://github.com/magiccodingman/MagicQuant.git
+cd MagicQuant
+dotnet restore MagicQuant.sln --locked-mode -warnaserror
+dotnet build MagicQuant.sln -c Release --no-restore -warnaserror
+dotnet test MagicQuant.sln -c Release --no-build
+dotnet run --project src/MagicQuant -c Release --no-build -- init-config --output config.yaml
+```
+
+For source execution, replace `magicquant` in the other examples with `dotnet run --project src/MagicQuant -c Release --no-build --`. Build/test commands do not install llama.cpp or Python packages; ordinary tests do not require CUDA or weights. To exercise the actual package locally, see [testing](testing.md).
 
 ## Runtime setup
 

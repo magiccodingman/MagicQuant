@@ -35,6 +35,26 @@ public sealed class ConfigurationContractTests
         Assert.NotNull(config.Paths);
         Assert.NotNull(config.CandidateSelection);
     }
+    [Theory]
+    [InlineData("README.md")]
+    [InlineData("docs/best-practices.md")]
+    public void Onboarding_yaml_examples_match_the_configuration_contract(string relativePath)
+    {
+        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+        string markdown = File.ReadAllText(Path.Combine(root, relativePath));
+        var snippets = System.Text.RegularExpressions.Regex.Matches(markdown, @"```yaml\r?\n(.*?)```",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        Assert.NotEmpty(snippets);
+        foreach (System.Text.RegularExpressions.Match snippet in snippets)
+        {
+            string yaml = snippet.Groups[1].Value;
+            Assert.Empty(YamlConfigurationDiagnostics.Inspect(yaml));
+            var config = new DeserializerBuilder().WithNamingConvention(UnderscoredNamingConvention.Instance)
+                .Build().Deserialize<MagicQuantYamlConfig>(yaml);
+            ConfigurationShapeValidator.Validate(config);
+        }
+    }
+
     [Fact]
     public void Legacy_inactive_yaml_remains_compatible_with_current_selection_settings()
     {

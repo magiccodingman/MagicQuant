@@ -156,7 +156,7 @@ public sealed class ReadmeGenerationService
         sb.AppendLine($"# MagicQuant Hybrids (v2.0) - {resolvedModelName}");
         sb.AppendLine();
         sb.AppendLine(
-            "MagicQuant is a benchmark driven GGUF hybrid discovery and validation system focused on finding real, practical GGUF quants specific to each architecture.");
+            "[MagicQuant](https://github.com/magiccodingman/MagicQuant) is a benchmark driven GGUF hybrid discovery and validation system focused on finding real, practical GGUF quants specific to each architecture.");
         sb.AppendLine();
         sb.AppendLine(
             "Whether it's a pure baseline model built by llama.cpp, learned tensor configurations from Unsloth, or a custom built MagicQuant hybrid, the model table below shows quants that have won dominance checks, survived collapse spaces, and/or were found to be nonlinearly better. Instead of dumping every quant type possible, MagicQuant tests, validates, and brutally murders anything deemed unworthy.");

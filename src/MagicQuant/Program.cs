@@ -7,6 +7,13 @@ using MQ.DB;
 using MQ.DB.Models;
 using Spectre.Console;
 
+if (args.Length == 1 && args[0] == "--version")
+{
+    Console.WriteLine(typeof(CommandCatalog).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .Cast<System.Reflection.AssemblyInformationalVersionAttribute>().Single().InformationalVersion);
+    return;
+}
+
 var commands = CommandCatalog.Create();
 
 if (args.Length == 0 || CommandCatalog.IsHelp(args[0]))
@@ -48,6 +55,12 @@ try
         args.Skip(1).Any(a => a == "-h"))
     {
         await commandInfo.Factory().Run([new CliArg { Name = "help", Value = string.Empty }]);
+        return;
+    }
+
+    if (commandInput.Equals("init-config", StringComparison.OrdinalIgnoreCase))
+    {
+        await commandInfo.Factory().Run(parsedArgs);
         return;
     }
 

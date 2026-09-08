@@ -12,6 +12,7 @@ public sealed class CliStartupTests
     [InlineData("help")]
     [InlineData("--help")]
     [InlineData("-h")]
+    [InlineData("init-config")]
     [InlineData("pipeline")]
     [InlineData("evolution")]
     [InlineData("build-hybrids")]
@@ -78,6 +79,24 @@ public sealed class CliStartupTests
             File.WriteAllText(Path.Combine(directory, "check.yaml"), "paths:\n  magic_quant_root: runtime-must-not-exist\n"));
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("No runtime setup was performed", result.Output);
+        Assert.Single(result.CreatedFiles);
+    }
+
+    [Fact]
+    public async Task Init_config_copies_the_packaged_profile_without_runtime_setup()
+    {
+        var result = await RunAsync(["init-config", "--output", "my config.yaml"]);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Single(result.CreatedFiles);
+        Assert.Contains("Created", result.Output);
+    }
+
+    [Fact]
+    public async Task Init_config_refuses_to_overwrite_an_existing_file()
+    {
+        var result = await RunAsync(["init-config", "--output", "existing.yaml"], directory =>
+            File.WriteAllText(Path.Combine(directory, "existing.yaml"), "user-owned"));
+        Assert.Equal(1, result.ExitCode);
         Assert.Single(result.CreatedFiles);
     }
 

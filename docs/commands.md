@@ -1,11 +1,15 @@
 # Commands and workflows
 
-Run these examples from the repository root after a Release build. Replace paths and identities with your own. `mq` in older command help is shorthand for invoking the MagicQuant executable; this repository does not install a global `mq` tool.
+Run these examples with the NuGet-installed `magicquant` CLI. Replace paths and identities with your own. For source builds, substitute `dotnet run --project src/MagicQuant -c Release --no-build --` for `magicquant`. `mq` in older help is shorthand, not an installed command.
+
+## Config creation and version
+
+`magicquant init-config --output config.yaml` copies the bundled tuning profile without runtime setup and refuses to overwrite a file. `magicquant --version` prints the application version and available source revision.
 
 ## Full discovery pipeline
 
 ```sh
-dotnet run --project src/MagicQuant -c Release --no-build -- pipeline \
+magicquant pipeline \
   --config config.local.yaml \
   --model-dir /data/models/my-model \
   --architecture-family my-model-family \
@@ -20,7 +24,7 @@ The pipeline converts/loads the native source, reviews tensor groups, resolves i
 ## Clone known tensor configurations
 
 ```sh
-dotnet run --project src/MagicQuant -c Release --no-build -- clone-repository-quants \
+magicquant clone-repository-quants \
   --config config.local.yaml \
   --model-dir /data/models/compatible-model \
   --architecture-family my-model-family \
@@ -35,7 +39,7 @@ By default the manifest must match the target tensor inventory. `--allow-missing
 ## Validate predictions against existing measurements
 
 ```sh
-dotnet run --project src/MagicQuant -c Release --no-build -- validate-predictions \
+magicquant validate-predictions \
   --config config.local.yaml \
   --model-dir /data/models/my-model \
   --architecture-family my-model-family \
@@ -49,7 +53,7 @@ For imatrix measurements supply `--imatrix-path /data/imatrix.dat` or `--imatrix
 ## Rerun and reuse
 
 ```sh
-dotnet run --project src/MagicQuant -c Release --no-build -- pipeline \
+magicquant pipeline \
   --config config.local.yaml --reuse-existing-final-artifacts
 ```
 

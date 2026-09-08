@@ -1,5 +1,7 @@
 # Configuration and paths
 
+Create the complete editable tuning profile with `magicquant init-config --output config.yaml`, then pass it explicitly with `--config config.yaml`. See [best practices](best-practices.md) for scratch storage and optional Unsloth baselines.
+
 ## Loading and precedence
 
 `--config <file>` selects a YAML file; otherwise the executable loads its adjacent `config.default.yaml`. Debug and Release follow the same rule. `config.dev.yaml` is no longer selected automatically.
@@ -8,7 +10,7 @@ The loader deserializes the selected file into `MagicQuantYamlConfig`, whose pro
 
 Unknown CLI options, duplicate options, missing values, and values supplied to presence-only flags are rejected. CLI string options generally override nonblank YAML values. Many boolean switches only enable a feature; use YAML to disable it unless a specific negative CLI switch exists. Use `--name value` or `--name=value`; quote paths with spaces using normal shell quoting.
 
-Unknown or inactive YAML keys produce a warning with their setting path and line number; `--strict-config` rejects them. Compare with the commented default file and `MagicQuant/Configuration/MagicQuantYamlConfig.cs`. CI strictly parses the distributed examples so their keys cannot silently drift.
+Unknown or inactive YAML keys produce a warning with their setting path and line number; `--strict-config` rejects them. Compare with the commented default file and `src/MagicQuant/Configuration/MagicQuantYamlConfig.cs`. CI strictly parses the distributed examples so their keys cannot silently drift.
 
 ## Main sections
 

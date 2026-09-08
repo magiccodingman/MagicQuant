@@ -156,7 +156,7 @@ public static class CliHelpers
         table.AddRow("[green]help[/]", "Show this help information");
 
         AnsiConsole.Write(table);
-        AnsiConsole.MarkupLine("Usage: [bold]dotnet run --project MagicQuant --[/] <command> [blue][[--option value]][/]");
+        AnsiConsole.MarkupLine("Usage: [bold]magicquant[/] <command> [blue][[--option value]][/]");
         AnsiConsole.MarkupLine("Config: [green]--config[/] [grey]<path-to-yaml>[/]  (CLI flags override YAML)");
         AnsiConsole.MarkupLine("Identity: [green]--architecture-family[/] [grey]<family-name>[/] | [green]--allow-architecture-family-alias-override[/]");
         AnsiConsole.WriteLine();

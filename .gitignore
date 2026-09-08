@@ -35,3 +35,47 @@ config.local.yaml
 .MagicQuant_tmp/
 TestResults/
 artifacts/
+
+__pycache__/
+
+# Visual Studio / Rider / VS Code per-user and machine state
+.vs/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+*.DotSettings.user
+*.sln.DotSettings.user
+*.slnx.user
+*.rsuser
+*.sln.docstates
+_ReSharper*/
+*.ncrunch*
+_NCrunch*/
+[Bb]enchmark[Dd]ot[Nn]et.[Aa]rtifacts/
+[Tt]est[Rr]esults/
+coverage/
+*.coverage
+*.coveragexml
+*.testlog
+
+# Local secrets, package output and OS/editor temporary files
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+*.pem
+*.nupkg
+*.snupkg
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+
+# Local campaign configuration and tool installs
+config.yaml
+.tool-install/

@@ -1,6 +1,6 @@
 # Copy to config.local.yaml and edit. Pass explicitly with --config.
 # Omitted settings use C# defaults, not a merge with config.default.yaml.
-# For the full distributed tuning profile, copy MagicQuant/config.default.yaml instead.
+# For the full distributed tuning profile, run magicquant init-config instead.
 paths:
   model_dir: /data/models/my-model
 identity:

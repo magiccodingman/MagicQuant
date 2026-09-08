@@ -50,4 +50,22 @@ A manual GitHub Actions workflow is provided for a trusted self-hosted runner la
 
 The workflow reports failures; branch protection or a ruleset must require its checks to block merges. Configure `main` to require all four Linux/Windows Debug/Release test jobs after the workflow has run. If merge queues are enabled later, add a `merge_group` workflow trigger as well.
 
-The repository's current private-repository plan returned HTTP 403 when branch protection was queried, explaining that an eligible plan or public visibility is required. The code change cannot override that GitHub restriction. Once supported, enable required checks and verify that a deliberately failing test PR cannot merge. Choosing visibility, billing, and the project software license remains a maintainer decision.
+The unified MagicQuant repository is public. At launch preparation, `main` had no branch protection configured. Require the four `test (OS, Configuration)` checks plus `Secret scan` in repository settings if you want failures to block merging. Configure the `release` branch and deployment environment deliberately before publishing; a workflow alone does not prevent bypassing checks.
+
+## Installed-package and release checks
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_*.py'
+dotnet pack src/MagicQuant -c Release --no-restore -p:Version=0.0.0-ci -o artifacts -warnaserror
+python3 scripts/package_smoke.py artifacts/MagicQuant.0.0.0-ci.nupkg
+```
+
+Use `python` instead of `python3` where appropriate. The package smoke installs only from a temporary local feed, verifies shipped assets and native library presence, exercises CLI help/version and config creation outside the checkout, checks paths containing spaces, and confirms preflight is read-only. It never installs a model or native toolchain. Release-version tests use an isolated local bare Git remote; they never push to GitHub.
+
+PR CI runs these checks on both operating systems. [Release documentation](releases.md) explains the separately gated trusted-publishing workflow.
+
+## Secret checks
+
+The `Secret scan` CI job runs a checksum-pinned Gitleaks binary on full fetched history and the current tree. On Linux x64 run `python3 scripts/scan_secrets.py`. Reports redact candidate credentials. `.gitleaks.toml` retains default detectors and narrowly allows only the exact known tensor-name test fixture; do not suppress whole directories to silence new findings.
+
+A scanner is one check, not proof that every kind of sensitive information is absent. Review changes for private model names, personal paths, datasets, and credentials too. Git history preserves deleted files and author metadata. If a real credential is found, rotate it before planning any history rewrite.

@@ -1,6 +1,6 @@
 # Contributing
 
-Start with the [architecture map](docs/architecture.md), [configuration rules](docs/configuration.md), and the [research wiki](https://github.com/magiccodingman/MagicQuant-Wiki). This repository implements benchmark-driven discovery; the `evolution` name survives as a compatibility alias.
+Start with the [architecture map](docs/architecture.md), [configuration rules](docs/configuration.md), and the [research wiki](https://github.com/magiccodingman/MagicQuant). This repository implements benchmark-driven discovery; the `evolution` name survives as a compatibility alias.
 
 ## Local workflow
 
@@ -42,3 +42,9 @@ The maintainer still needs to choose a software license before an open-source re
 See [testing and merge checks](docs/testing.md) for the manual small-model workflow,
 package lock updates, and required-check setup. [Worked examples](docs/extending.md)
 show how to add configuration and test native/process/path changes.
+
+## Repository layout and release safety
+
+Application projects are under `src/`; test projects are under `tests/`. Program guides belong in `docs/`; research explanations belong in `wiki/`. Use relative links so documentation remains useful in checkouts and forks. Source paths are separate from model/runtime data paths.
+
+Run the [installed-package checks](docs/testing.md#installed-package-and-release-checks) when changing paths, packaging, startup, or bundled files. Publication is controlled by [release branch automation](docs/releases.md). Never put NuGet keys or personal configuration into a workflow. Original contributions are accepted under the repository's AGPL-3.0-only license; retain third-party attribution.

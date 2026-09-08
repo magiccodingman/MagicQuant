@@ -9,6 +9,7 @@ public static class CommandCatalog
     public static Dictionary<string, (string Description, Func<ICommand> Factory)> Create() =>
         new(StringComparer.OrdinalIgnoreCase)
         {
+            ["init-config"] = ("Create an editable config from the packaged profile", () => new InitConfig()),
             ["pipeline"] = ("Learn baselines, discover hybrids, validate and export survivors", () => new QuantizationPipeline()),
             ["evolution"] = ("Compatibility alias for pipeline", () => new QuantizationPipeline()),
             ["validate-predictions"] = ("Compare KLD predictions with existing SQLite benchmarks", () => new ValidatePredictions()),

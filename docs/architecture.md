@@ -2,9 +2,9 @@
 
 ## Execution flow
 
-`Program.cs` dispatches through `CommandCatalog`. Help returns before runtime initialization. A normal command reads and validates YAML/CLI/input paths before loading `Config.Current` and run state into `MQ.DB.Cache`. It records provenance, cleans stale scratch, checks dependencies, and invokes an `ICommand`. `--check-config` exits before those runtime changes.
+`src/MagicQuant/Program.cs` dispatches through `CommandCatalog`. Help returns before runtime initialization. A normal command reads and validates YAML/CLI/input paths before loading `Config.Current` and run state into `MQ.DB.Cache`. It records provenance, cleans stale scratch, checks dependencies, and invokes an `ICommand`. `--check-config` exits before those runtime changes.
 
-`Commands/QuantizationPipeline.cs` coordinates full discovery. `Evolution.cs` preserves the historical C# entry point and the CLI registry keeps `evolution` as an alias. The orchestrator should describe stage order; reusable behavior belongs in services.
+`src/MagicQuant/Commands/QuantizationPipeline.cs` coordinates full discovery. `Evolution.cs` preserves the historical C# entry point and the CLI registry keeps `evolution` as an alias. The orchestrator should describe stage order; reusable behavior belongs in services.
 
 1. Validate source model and initialize model-local paths.
 2. Obtain model hash; prepare native GGUF and optional projector; review tensor grouping.
@@ -15,7 +15,7 @@
 7. Fit predictions, investigate contextual evidence, choose candidates, and validate them with real benchmarks.
 8. Finalize survivors and write GGUFs, manifests, benchmark summaries, and model cards.
 
-The [research wiki](https://github.com/magiccodingman/MagicQuant-Wiki) is the source for the mathematical motivation. This guide maps the implementation, not a new algorithm specification.
+The [research wiki](https://github.com/magiccodingman/MagicQuant) is the source for the mathematical motivation. This guide maps the implementation, not a new algorithm specification.
 
 ## Where to change things
 
