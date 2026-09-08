@@ -15,6 +15,14 @@ class DocumentationTests(unittest.TestCase):
         for path in files:
             for match in re.finditer(r'\]\(([^)]+)\)', path.read_text(encoding='utf-8')):
                 url = match.group(1).split(' "')[0].strip('<>')
+                # The shared root README uses absolute canonical URLs so its
+                # links also work on NuGet. Still validate their local targets.
+                for kind in ('blob', 'tree'):
+                    prefix = f'https://github.com/magiccodingman/MagicQuant/{kind}/main/'
+                    if url.startswith(prefix):
+                        target = unquote(url[len(prefix):].split('#')[0])
+                        if not (ROOT / target).exists():
+                            errors.append(f'{path.relative_to(ROOT)}: {url}')
                 if url.startswith(('https:', 'http:', 'mailto:', '#')):
                     continue
                 target = unquote(url.split('#')[0])
