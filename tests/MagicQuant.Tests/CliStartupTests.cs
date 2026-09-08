@@ -100,6 +100,14 @@ public sealed class CliStartupTests
         Assert.Single(result.CreatedFiles);
     }
 
+    [Fact]
+    public async Task Init_config_rejects_a_positional_filename_without_writing_a_default()
+    {
+        var result = await RunAsync(["init-config", "unexpected.yaml"]);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.CreatedFiles);
+    }
+
     private static async Task<(int ExitCode, string Output, string[] CreatedFiles)> RunAsync(string[] args, Action<string>? setup = null)
     {
         string directory = Path.Combine(Path.GetTempPath(), $"mq-cli-{Guid.NewGuid():N}");

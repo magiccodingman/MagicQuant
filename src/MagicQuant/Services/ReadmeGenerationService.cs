@@ -153,7 +153,7 @@ public sealed class ReadmeGenerationService
         AppendHuggingFaceFrontmatter(sb);
 
         string resolvedModelName = ResolveReadmeTitleModelName(modelName);
-        sb.AppendLine($"# MagicQuant Hybrids (v2.0) - {resolvedModelName}");
+        sb.AppendLine($"# MagicQuant Hybrids - {resolvedModelName}");
         sb.AppendLine();
         sb.AppendLine(
             "[MagicQuant](https://github.com/magiccodingman/MagicQuant) is a benchmark driven GGUF hybrid discovery and validation system focused on finding real, practical GGUF quants specific to each architecture.");

@@ -60,6 +60,7 @@ try
 
     if (commandInput.Equals("init-config", StringComparison.OrdinalIgnoreCase))
     {
+        InitConfig.ValidateTokens(args.Skip(1).ToArray());
         await commandInfo.Factory().Run(parsedArgs);
         return;
     }

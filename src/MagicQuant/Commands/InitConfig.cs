@@ -5,6 +5,16 @@ namespace MagicQuant.Commands;
 /// <summary>Copies the packaged profile to a user-owned file without initializing runtime state.</summary>
 public sealed class InitConfig : ICommand
 {
+    public static void ValidateTokens(string[] tokens)
+    {
+        bool valid = tokens.Length == 0
+            || (tokens.Length == 2 && tokens[0].Equals("--output", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(tokens[1]) && !tokens[1].StartsWith("--", StringComparison.Ordinal))
+            || (tokens.Length == 1 && tokens[0].StartsWith("--output=", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(tokens[0][9..]));
+        if (!valid) throw new ArgumentException("Usage: magicquant init-config [--output config.yaml]");
+    }
+
     public async Task Run(List<CliArg> args)
     {
         if (args.Any(a => string.Equals(a.Name, "help", StringComparison.OrdinalIgnoreCase)))

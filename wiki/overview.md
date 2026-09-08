@@ -47,6 +47,8 @@ The following example is Qwen3-4B-2507-Instruct going through MagicQuants pipeli
 | LM-IQ4_XS                                                                                 | llama.cpp  | IQ4_XS       | 0.031300 |      2.11 |
 | UD-Q3_K_XL                                                                                | Unsloth    | UD-Q3_K_XL   | 0.072278 |      1.98 |
 
+## Winner notes
+
 The table above includes a mix of standard llama.cpp quantizations, Unsloth Dynamic GGUF models, and MagicQuant hybrids.
 
 In some cases, dominance is absolute. For example, Unsloth’s **Q5_K_XL** fully replaces the standard llama.cpp **Q5_K**, as MagicQuant determined the baseline offered no meaningful tradeoff in comparison.
