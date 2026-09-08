@@ -79,6 +79,8 @@ External providers are optional. MagicQuant can run using its local baseline cho
 
 **Unsloth is the maintainer's recommended starting point** for external GGUF baselines. MagicQuant can learn their tensor-group patterns, rebuild a controlled equivalent from your local source model, and benchmark it in your campaign. It does not simply trust an external file's label or score. Choose the exact matching model and revision, and review its license. See the [Unsloth configuration walkthrough](docs/best-practices.md#optional-unsloth-baselines) and [research explanation](wiki/docs/Learning-From-Existing-Quantizations.md).
 
+For the same model, prefer linking to the original provider's surviving baselines. For a compatible variant they do not host, cloning can rebuild the full selected set locally. Learning tensor assignments does not automatically reproduce a provider's other processing techniques. See [publishing and cloning guidance](docs/best-practices.md#link-upstream-for-the-same-model-build-locally-for-variants).
+
 ## Documentation
 
 | Start here | What you will find |

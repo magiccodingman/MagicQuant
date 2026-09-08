@@ -34,6 +34,8 @@ magicquant clone-repository-quants \
 
 Use `--source-repo owner/repo` instead to read a Hugging Face repository. `--source-json` also accepts an HTTP(S) URL. Clone mode rebuilds the tensor configurations and benchmarks them locally; it does not establish that the new model passed full discovery.
 
+Clone mode rebuilds all entries present in the manifest, including configurations originally learned from external providers. It does not use `output.export_external_learned_baselines`, which controls the pipeline's choice between local exports and upstream links. This is useful when cloning to a fine-tuned or uncensored variant that the original provider does not host. Review the [upstream-link versus variant-export guidance](best-practices.md#link-upstream-for-the-same-model-build-locally-for-variants) and [limits of tensor-configuration copying](best-practices.md#limits-of-tensor-configuration-copying).
+
 By default the manifest must match the target tensor inventory. `--allow-missing-manifest-tensors` explicitly allows a strict subset; unmatched target tensors use base quantization. `--missing-manifest-base-quant Q8_0` additionally selects that base quant. Use these only when that compatibility tradeoff is intended.
 
 ## Validate predictions against existing measurements

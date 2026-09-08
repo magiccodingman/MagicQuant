@@ -192,6 +192,8 @@ public sealed class ReadmeGenerationService
         sb.AppendLine();
         sb.AppendLine("External/custom baselines are normalized into MagicQuant's controlled comparison flow. MagicQuant rebuilds a learned baseline under native-source / MagicQuant-controlled conditions, including its own imatrix handling, so hybrids or external baselines (like Unsloth) can be judged on a more equal footing. That does **not** mean MagicQuant proved the original upstream artifact or upstream imatrix was worse. These comparisons exist for internal hybrid-search consistency and equal playing field comparisons, not as a universal judgment of the original creator's exact release artifact.");
         sb.AppendLine();
+        sb.AppendLine("MagicQuant learns tensor quantization assignments and rebuilds from local source weights. It does not automatically reproduce a provider's additional weight transformations, calibration recipes, custom processing, or other techniques unless explicitly supported. These results are not a byte-for-byte reproduction or a test of the provider's original GGUF.");
+        sb.AppendLine();
         sb.AppendLine("**Easier to digest explanation:**");
         sb.AppendLine();
         sb.AppendLine("MagicQuant compares and benchmarks the models quant to tensor configurations, but not the original artifact. And there's different reasons MagicQuant chooses to lift up a winning quant, not all winners are purely \"better\". It depends heavily on a variety of factors. Though choices are always documented in the repo under the manifest folder. You can always view what and why decisions were made by the automated system.");

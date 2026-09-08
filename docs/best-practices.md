@@ -47,6 +47,36 @@ MagicQuant resolves the specified files, validates tensor-name parity, learns as
 
 For a provider-free campaign leave `baselines.custom_repositories` empty. See [learning from existing quantizations](../wiki/docs/Learning-From-Existing-Quantizations.md) for the research rationale.
 
+## Link upstream for the same model; build locally for variants
+
+For a release of the **same source model** that an external provider such as Unsloth already hosts, the maintainer recommends leaving this pipeline setting off:
+
+```yaml
+output:
+  export_external_learned_baselines: false
+```
+
+MagicQuant will link external pure-baseline survivors to the provider instead of exporting local copies. This gives the original creator credit and downloads, avoids unnecessary duplicate hosting, and is the friendly default. MagicQuant's comparisons measure locally reconstructed tensor configurations under its own conditions. They do not, by themselves, establish whether the provider's original artifact is better or worse. Finding a useful hybrid or size/fidelity trade is not a reason to claim superiority over an untested upstream release.
+
+For a **different model variant**, such as an uncensored model or another fine-tune, the upstream repository may not host those weights. In that case, build the full selected set locally, including both MagicQuant hybrids and external-derived baseline configurations. If running the pipeline on that variant, enable local external-baseline exports:
+
+```yaml
+output:
+  export_external_learned_baselines: true
+```
+
+The equivalent pipeline switch is `--export-external-learned-baselines`. Retain provider attribution and the applicable licenses even when rebuilding from different weights.
+
+**Clone command distinction:** `clone-repository-quants` already rebuilds every artifact entry in its input clone manifest, including external-derived entries; it does not consult this pipeline export flag. You do not need to enable the flag for that command. A source release can leave external export off and still include those configurations in its clone manifest. Clone mode rebuilds the entries present in that manifest, not every quantization ever offered by the provider.
+
+Cloning is a practical way to reuse a strong set of tensor configurations on a compatible variant without repeating full discovery. In the maintainer's experience, repeating discovery for modest fine-tunes can cost substantial time for little additional improvement. That is a starting assumption, not a guarantee: larger weight changes can shift the useful tradeoffs. Clone mode benchmarks the rebuilt artifacts locally, but does not repeat the full search or prove that inherited choices are optimal. Run discovery again when the model changes substantially, the measurements look poor, or you need stronger evidence for the target model. See the [clone command](commands.md#clone-known-tensor-configurations).
+
+## Limits of tensor-configuration copying
+
+MagicQuant learns quantization assignments for tensors and tensor groups, then rebuilds using the local source weights and its supported toolchain. **It does not automatically reproduce every technique used to create an external artifact.** A provider's extra weight transformations, custom quantization procedures, calibration recipes, or other processing are not reproduced merely because their tensor configuration was learned. Such behavior must be explicitly supported to be reproduced.
+
+Treat external configurations as evidence about useful assignments, not as a byte-for-byte clone of the provider's GGUF or a replication of its entire production process. Keep this distinction clear in release descriptions and benchmark claims. See the [research guide](../wiki/docs/Learning-From-Existing-Quantizations.md).
+
 ## Retain enough evidence to reproduce a result
 
 Pin the MagicQuant package version and provider/model revisions. Keep the YAML, imatrix/evaluation data identity, llama.cpp revision, hardware context, and local `Runs/*/run.json` records. Provenance captures available versions and settings; it is not a complete frozen environment or numerical reproducibility guarantee. Remove private paths or credentials before sharing logs.

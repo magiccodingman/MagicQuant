@@ -346,6 +346,11 @@ output:
   # Set true if you explicitly want MagicQuant to rebuild/export those external learned
   # baselines locally under MagicQuant-controlled conditions (for example when testing a
   # modified model where the upstream artifact does not really exist for your case).
+  # Recommended: leave off when the original provider hosts the same model;
+  # link to their release and credit their work. Enable for pipeline runs on
+  # variants they do not host. clone-repository-quants already rebuilds every
+  # manifest entry locally and does not use this pipeline export setting.
+  # Learning tensor assignments does not reproduce other provider techniques.
   export_external_learned_baselines: false
 
   # false = normal behavior; delete/rebuild final outputs from scratch.
