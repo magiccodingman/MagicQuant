@@ -27,6 +27,22 @@ MagicQuant investigates that space. It can combine one baseline's attention reci
 
 I build and maintain MagicQuant on the side, for free. Developing it and experimenting with quantizations has put a frankly ridiculous amount of terabytes written (TBW) on my drives! My Hugging Face storage is also creeping toward its cap, so there will eventually be more storage to fund. If this project helps you, [supporting the work](https://sayou.biz/support) helps with those costs. Anything helps and is always appreciated. ❤️
 
+## Nonlinear wins: more fidelity for the extra bytes
+
+A hybrid sitting between Q5 and Q6 is useful when it offers a **better trade than the normal step up**. MagicQuant draws a straight-line size/KLD comparison between neighboring survivors, then checks whether a measured hybrid beats that line. On a graph with file size on the horizontal axis and KLD on the vertical axis, a nonlinear winner sits **below the line**: less divergence than the reference trade at that size.
+
+The original 4B campaign makes this concrete:
+
+| Choice | Size (GB) | Measured KLD ↓ |
+| --- | ---: | ---: |
+| UD-Q5_K_XL recipe | 2.73 | 0.009839 |
+| **MQ-Q5_K_1 hybrid** | **2.88** | **0.006632** |
+| LM-Q6_K baseline | 3.08 | 0.004640 |
+
+At 2.88 GB, the straight-line comparison gives about **0.007611 KLD**. The hybrid measures **0.006632—about 12.9% below that line**. Compared with the smaller UD recipe, it buys about **32.6% lower KLD for 5.5% more storage**. Those percentages use the rounded table values.
+
+That is why an intermediate hybrid can earn a download slot. MagicQuant also keeps dominance wins: lower measured KLD at the same or smaller size. Its [selection rules](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/docs/Nonlinear-Winners-And-Survivors.md) explain both cases; the [original worked example](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/overview.md#example) preserves the full table and tensor recipes. The UD result is a controlled reconstruction of the external recipe, not a benchmark of the original uploaded artifact.
+
 ## MagicQuant in the wild
 
 **[Explore the MagicQuant collection on Hugging Face →](https://huggingface.co/collections/magiccodingman/magic-quant)**
@@ -47,8 +63,6 @@ The [Qwen3.6-35B-A3B release](https://huggingface.co/magiccodingman/Qwen3.6-35B-
 | UD-IQ3_S | Unsloth-derived | 13.68 | 0.068376 |
 
 These are measured options at different storage budgets. The full release reaches down to a 9.59 GB hybrid, with a correspondingly larger divergence. The [complete table and pinned evidence](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/showcase.md#discovery-a-35b-moe-release) make that trade visible.
-
-The original 4B worked example shows why the intermediate choices matter: **MQ-Q5_K_1 used about 5.5% more space than the UD-Q5_K_XL recipe for about 32.6% lower measured KLD**, improving on the straight-line trade between neighboring baselines. Its [full results and tensor-group recipe breakdown](https://github.com/magiccodingman/MagicQuant/blob/main/wiki/overview.md#example) remain in the research overview.
 
 ### Take a discovered recipe set to another model
 
