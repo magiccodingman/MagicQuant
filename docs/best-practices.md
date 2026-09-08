@@ -21,7 +21,7 @@ Use existing writable parent locations dedicated to this work. Allow space for s
 
 The maintainer recommends Unsloth as a primary place to look for external GGUF tensor assignments. These sources are optional, and their value depends on model compatibility and measured results. Start with a repository for the exact source model; a similar name or matching architecture alone is insufficient.
 
-In the generated configuration, edit `baselines.custom_repositories`. The following is a structural example, not a promise that a particular upstream file exists. Replace the model/file placeholders, pin `revision` to the provider commit you inspected, and retain the rest of your campaign configuration:
+In the generated configuration, edit `baselines.custom_repositories`. A fuller, explicitly opt-in template is available in [examples/pipeline-external.yaml](../examples/pipeline-external.yaml), including how to add an external baseline to confirmed-anomaly expansion. The following is a structural example, not a promise that a particular upstream file exists. Replace the model/file placeholders, pin `revision` to the provider commit you inspected, and retain the rest of your campaign configuration:
 
 ```yaml
 baselines:

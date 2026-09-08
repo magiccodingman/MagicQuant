@@ -262,7 +262,8 @@ public sealed class RuntimeConfirmedAnomalyExpansionConfig
     public int MaxNeighborsPerConfirmedRule { get; set; } = 6;
     public int MaxTotalExpansionProbes { get; set; } = 12;
     public List<string> AllowedReferenceQuants { get; set; } = ["Q8_0"];
-    public List<string> AllowedCandidateQuants { get; set; } = ["Q6_K", "UD-Q6_K_XL", "Q5_K", "UD-Q5_K_XL"];
+    // External display names are campaign-specific; opt in after configuring that source.
+    public List<string> AllowedCandidateQuants { get; set; } = ["Q6_K", "Q5_K"];
 }
 
 

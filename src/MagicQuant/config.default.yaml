@@ -1,8 +1,10 @@
 # ============================================================
-# MagicQuant - Default Production Configuration
+# MagicQuant - Model-neutral Starter Configuration
 # ============================================================
 #
-# This file is intended to be the safe baseline config for production use.
+# This is a model-neutral starting profile, not a tuned preset for any model.
+# Set the model path and architecture identity deliberately before running.
+# Research thresholds are starting policies, not universal quality guarantees.
 #
 # General rules:
 # - CLI flags override values from this YAML.
@@ -103,7 +105,7 @@ learning:
 
 readme:
   # Optional title model name override used in:
-  #   # MagicQuant Hybrids (v2.0) - <name>
+  #   # MagicQuant Hybrids - <name>
   # If blank, MagicQuant uses identity.architecture_family_name.
   title_model_name_override:
 
@@ -325,11 +327,11 @@ anomaly_detection:
     max_total_expansion_probes: 12
     allowed_reference_quants:
       - Q8_0
+    # Built-in families only. Add exact custom baseline names explicitly after
+    # configuring a compatible provider; see examples/pipeline-external.yaml.
     allowed_candidate_quants:
       - Q6_K
-      - UD-Q6_K_XL
       - Q5_K
-      - UD-Q5_K_XL
 
 output:
   # Optional explicit output directory.
@@ -395,90 +397,10 @@ baselines:
   # enabled_standard_explicit_group_candidates: [Q8_0, Q6_K, Q5_K, Q4_K_M, IQ4_NL, IQ4_XS]
   enabled_standard_explicit_group_candidates: []
 
-  custom_repositories:
-    # ========================================================
-    # Example custom repository entry
-    # ========================================================
-    #
-    # This is for external/custom GGUF baselines such as Unsloth.
-    #
-    # Flow:
-    # 1. MagicQuant resolves included files from the repo
-    # 2. downloads the external GGUF
-    # 3. validates tensor-name parity against the local source model
-    # 4. learns tensor behavior from that external GGUF
-    # 5. rebuilds a MagicQuant-controlled equivalent from the local source model
-    # 6. benchmarks the rebuilt version instead of trusting the original external artifact
-    #
-    # Important:
-    # - "includes" must be plural
-    # - "baseline_family" is the internal MagicQuant family being attached to
-    # - "quantize_base_name" is the quant/base family name used in rebuild logic
-    #
-    # - repo_id: unsloth/Qwen3-4B-Instruct-2507-GGUF
-    #   # Optional branch, tag, or commit. Pin this when a provider rotates files
-    #   # so tensor digestion and later downloads remain reproducible.
-    #   revision:
-    #   enabled: true
-    #   short_source_name: UD
-    #   source_kind: huggingface_gguf_repository
-    #
-    #   # Repository-level defaults:
-    #   allow_as_learning_baseline: true
-    #   allow_as_combination_carrier: false
-    #   allow_as_explicit_group_candidate: false
-    #
-    #   # Validation / download behavior:
-    #   require_all_includes_to_resolve: true
-    #   validate_tensor_names_against_source_model: true
-    #   delete_partial_or_dirty_downloads: true
-    #   resume_or_retry_downloads: true
-    #
-    #   includes:
-    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf
-    #       baseline_family: Q4_K_M
-    #       quantize_base_name: Q4_K_M
-    #       display_name: UD_Q4_K_XL
-    #       # Transient command only. Do not store as DB truth.
-    #       # Deletes/relearns only this custom baseline under the active architecture family + tensor group profile.
-    #       force_relearn: false
-    #       allow_as_learning_baseline: true
-    #       allow_as_combination_carrier: true
-    #       allow_as_explicit_group_candidate: true
-    #       requires_imatrix: false
-    #       banned_group_ids: []
-    #
-    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q5_K_XL.gguf
-    #       baseline_family: Q5_K
-    #       quantize_base_name: Q5_K
-    #       display_name: UD_Q5_K_XL
-    #       force_relearn: false
-    #       allow_as_learning_baseline: true
-    #       allow_as_combination_carrier: true
-    #       allow_as_explicit_group_candidate: true
-    #
-    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q6_K_XL.gguf
-    #       baseline_family: Q6_K
-    #       quantize_base_name: Q6_K
-    #       display_name: UD_Q6_K_XL
-    #       force_relearn: false
-    #       allow_as_learning_baseline: true
-    #       allow_as_combination_carrier: true
-    #       allow_as_explicit_group_candidate: true
-    #
-    #     - file_name: Qwen3-4B-Instruct-2507-UD-Q3_K_XL.gguf
-    #       baseline_family: IQ3_S
-    #       quantize_base_name: IQ3_S
-    #       display_name: UD_Q3_K_XL
-    #       force_relearn: false
-    #       allow_as_learning_baseline: true
-    #       allow_as_combination_carrier: false
-    #       allow_as_explicit_group_candidate: true
-    #
-    #     # Example note:
-    #     # If the repo does not actually contain IQ3_XS, do not reference it.
-    #     # Use only filenames that truly exist in the repository.
-    []
+  # Optional external tensor-configuration sources. No provider/model is selected.
+  # See examples/pipeline-external.yaml and docs/best-practices.md for a template.
+  # Use the exact source model and provider filenames; pin the provider revision.
+  custom_repositories: []
 
 # Counterfactual synergy templates generalize confirmed contextual anomaly evidence.
 # anomaly_detection remains the low-level compatibility section; synergy_detection controls

@@ -25,6 +25,7 @@ public sealed class ConfigurationContractTests
     [InlineData("src/MagicQuant/config.default.yaml")]
     [InlineData("examples/pipeline.yaml")]
     [InlineData("examples/clone.yaml")]
+    [InlineData("examples/pipeline-external.yaml")]
     public void Distributed_configs_have_no_unknown_keys(string relativePath)
     {
         string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
@@ -52,6 +53,32 @@ public sealed class ConfigurationContractTests
             var config = new DeserializerBuilder().WithNamingConvention(UnderscoredNamingConvention.Instance)
                 .Build().Deserialize<MagicQuantYamlConfig>(yaml);
             ConfigurationShapeValidator.Validate(config);
+        }
+    }
+
+    [Fact]
+    public void Starter_and_typed_defaults_do_not_select_a_model_or_external_provider()
+    {
+        var yaml = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.default.yaml"));
+        var starter = new DeserializerBuilder().WithNamingConvention(UnderscoredNamingConvention.Instance)
+            .Build().Deserialize<MagicQuantYamlConfig>(yaml);
+        Assert.DoesNotContain("Qwen", yaml, StringComparison.OrdinalIgnoreCase);
+        foreach (var config in new[] { starter, MagicQuantYamlConfig.CreateDefault() })
+        {
+            Assert.True(string.IsNullOrWhiteSpace(config.Paths.ModelDir));
+            Assert.True(string.IsNullOrWhiteSpace(config.Paths.MagicQuantRoot));
+            Assert.True(string.IsNullOrWhiteSpace(config.Identity.ArchitectureFamilyName));
+            Assert.True(string.IsNullOrWhiteSpace(config.Readme.TitleModelNameOverride));
+            Assert.True(string.IsNullOrWhiteSpace(config.Imatrix.DatasetRepo));
+            Assert.Empty(config.Paths.ScratchRoots);
+            Assert.Empty(config.Hardware.GpuMemoryLimitsGb);
+            Assert.Empty(config.Baselines.CustomRepositories);
+            Assert.False(config.Output.ExportExternalLearnedBaselines);
+            Assert.False(config.Learning.ForceRelearnArchitectureFamily);
+            Assert.True(config.Learning.ConfirmTensorGroupProfile);
+            Assert.Equal(new[] { "Q6_K", "Q5_K" }, config.AnomalyDetection.ConfirmedAnomalyExpansion.AllowedCandidateQuants);
+            Assert.False(config.Readme.Frontmatter.ContainsKey("license"));
+            Assert.False(config.Readme.Frontmatter.ContainsKey("base_model"));
         }
     }
 

@@ -12,6 +12,14 @@ Unknown CLI options, duplicate options, missing values, and values supplied to p
 
 Unknown or inactive YAML keys produce a warning with their setting path and line number; `--strict-config` rejects them. Compare with the commented default file and `src/MagicQuant/Configuration/MagicQuantYamlConfig.cs`. CI strictly parses the distributed examples so their keys cannot silently drift.
 
+## Model-neutral startup
+
+The bundled profile selects no model, architecture, provider repository, imatrix source, GPU limit, or scratch disk. `init-config` produces that same profile. Set model/architecture paths and review output/storage before your first campaign; a blank model is intentionally rejected by preflight.
+
+Standard llama.cpp families and general research thresholds remain populated so the file describes a usable starting policy. These values are not a Qwen preset or a claim that every model shares an optimum. The Qwen/other-family patterns in `src/MQ.DB/tensor_groups.yaml` are model-compatibility rules, not a selected campaign; do not erase them when configuring a different model.
+
+Confirmed-anomaly expansion defaults to built-in Q6_K/Q5_K candidates. Add exact external baseline names only after configuring that source. The [external-provider template](../examples/pipeline-external.yaml) shows this opt-in; it contains placeholders and must be edited before use. Existing explicit local campaign configs are not rewritten.
+
 ## Main sections
 
 | Section | Responsibility |

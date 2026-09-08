@@ -9,8 +9,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 
-def run(args, cwd, success=True):
-    result = subprocess.run(list(map(str, args)), cwd=cwd, capture_output=True, text=True, timeout=120)
+def run(args, cwd, success=True, env=None):
+    result = subprocess.run(list(map(str, args)), cwd=cwd, capture_output=True, text=True, timeout=120, env=env)
     if success and result.returncode != 0:
         raise RuntimeError(result.stdout + result.stderr)
     if not success and result.returncode == 0:
@@ -47,7 +47,7 @@ def main():
         config.write_text('<configuration><packageSources><clear/><add key="local" value="' + str(feed) + '"/></packageSources></configuration>')
         tool = root / "tool"
         run(["dotnet", "tool", "install", "MagicQuant", "--tool-path", tool, "--version", version,
-             "--configfile", config], root)
+             "--configfile", config], root, env={**os.environ, "NUGET_PACKAGES": str(root / "packages")})
         command = tool / ("magicquant.exe" if os.name == "nt" else "magicquant")
         work = root / "unrelated working directory"
         work.mkdir()
