@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>magicquant</ToolCommandName>
+        <PackageId>MagicQuant</PackageId>
+        <Version Condition="'$(Version)' == ''">0.1.0</Version>
+        <Authors>MagicCodingMan</Authors>
+        <Description>Benchmark-driven GGUF quantization and mixed-precision tensor-group hybrid discovery for llama.cpp.</Description>
+        <PackageTags>GGUF;quantization;llama.cpp;LLM;mixed-precision;benchmark</PackageTags>
+        <PackageProjectUrl>https://github.com/magiccodingman/MagicQuant</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/magiccodingman/MagicQuant</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageIcon>icon.png</PackageIcon>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Blake3" Version="2.2.0" />
+      <PackageReference Include="DuckDB.NET.Data.Full" Version="1.4.3" />
+      <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
+      <PackageReference Include="Spectre.Console" Version="0.54.0" />
+      <PackageReference Include="System.Management" Version="10.0.11" />
+      <PackageReference Include="YamlDotNet" Version="17.0.1" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Update="Helpers\pip_runner.py">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </None>
+      <None Update="config.default.yaml">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </None>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\MQ.DB\MQ.DB.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Include="../../docs/nuget-readme.md" Pack="true" PackagePath="README.md" />
+      <None Include="../../assets/icon.png" Pack="true" PackagePath="/" />
+      <None Include="../../licenses/**/*" Pack="true" PackagePath="licenses/%(RecursiveDir)" />
+      <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+      <None Include="../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
+    </ItemGroup>
+</Project>

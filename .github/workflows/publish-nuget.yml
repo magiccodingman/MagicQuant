@@ -1,0 +1,84 @@
+name: Publish NuGet
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/release'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: dotnet restore MagicQuant.sln --locked-mode -warnaserror
+      - run: dotnet build MagicQuant.sln -c Release --no-restore -warnaserror
+      - run: dotnet test MagicQuant.sln -c Release --no-build --blame-hang-timeout 2m --blame-hang-dump-type none
+      - run: python -m unittest discover -s scripts -p "test_*.py"
+      - run: dotnet pack src/MagicQuant -c Release --no-restore -p:Version=0.0.0-ci -o artifacts -warnaserror
+      - run: python scripts/package_smoke.py artifacts/MagicQuant.0.0.0-ci.nupkg
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reserve or reuse the version for this commit
+        id: version
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python scripts/release_version.py --reserve
+      - run: dotnet restore MagicQuant.sln --locked-mode -warnaserror
+      - name: Pack exact release version
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: dotnet pack src/MagicQuant -c Release --no-restore -p:Version="$RELEASE_VERSION" -p:ContinuousIntegrationBuild=true -o artifacts -warnaserror
+      - name: Validate the release package
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: python scripts/package_smoke.py "artifacts/MagicQuant.$RELEASE_VERSION.nupkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-${{ steps.version.outputs.version }}
+          path: artifacts/*.nupkg
+      - name: NuGet login through trusted publishing
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: Publish tested package
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push artifacts/*.nupkg --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+      - name: Create release record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if ! gh release view "v$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release create "v$RELEASE_VERSION" --verify-tag --title "MagicQuant $RELEASE_VERSION" --generate-notes
+          fi

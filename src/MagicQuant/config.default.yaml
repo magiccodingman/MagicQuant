@@ -1,0 +1,453 @@
+# ============================================================
+# MagicQuant - Model-neutral Starter Configuration
+# ============================================================
+#
+# This is a model-neutral starting profile, not a tuned preset for any model.
+# Set the model path and architecture identity deliberately before running.
+# Research thresholds are starting policies, not universal quality guarantees.
+#
+# General rules:
+# - CLI flags override values from this YAML.
+# - Debug and Release use this file unless --config is supplied.
+# - Leave values blank when they must be provided per-machine or per-run.
+#
+# Notes:
+# - "standard_baselines_mode: all" keeps the built-in baseline families active.
+# - Custom repositories can add extra learned baseline sources, such as Unsloth.
+# - External/custom baselines are LEARNED from, then rebuilt by MagicQuant
+#   under MagicQuant-controlled conditions before benchmarking.
+# - The old early learned-baseline pruning logic is disabled in code now,
+#   so the isolation_pruning section mainly controls later tradeoff logic.
+# ============================================================
+
+paths:
+  # Root MagicQuant working directory.
+  # If blank, defaults to <user-home>/MagicQuant.
+  magic_quant_root:
+
+  # REQUIRED for real runs.
+  # This should point to the local source model folder containing safetensors.
+  model_dir:
+
+  # Optional if MagicQuant auto-discovers or bootstraps llama.cpp.
+  llama_root:
+  llama_bin:
+  convert_script:
+
+  # Scratch roots for temporary heavy GGUF writes.
+  # MagicQuant creates .MagicQuant_tmp under each root and enforces one heavy writer per root.
+  # Roots are not validated as separate physical disks; choose paths intentionally.
+  # When blank, MagicQuant falls back to single-root model-local scratch behavior.
+  scratch_roots: []
+
+  # Folder name created under the current model's MagicQuant directory for durable external/custom GGUF downloads.
+  external_baseline_cache_dir_name: ExternalBaselines
+
+flags:
+  # Whether MagicQuant should use an imatrix when supported and configured.
+  use_imatrix: false
+
+  # Force rebuilding the active imatrix artifact even if one already exists.
+  force_imatrix_rebuild: false
+
+  # Force rerunning hardware execution-plan probing.
+  force_refresh_hardware_probe: false
+
+  # Whether exact high-precision hybrid aliases (BF16/F16-style explicit overrides)
+  # are allowed in hybrid generation logic.
+  allow_high_precision_hybrids: false
+
+learning:
+  # Destructive relearn options are intentionally targeted.
+  # These are transient runtime commands and are not persisted as DB state.
+  # When any option below is enabled, MagicQuant prints a count summary and asks
+  # for confirmation before deleting/relearning anything.
+  #
+  # Deletes learned mappings, benchmark truth, dependent benchmark/source rows,
+  # and execution probe cache rows scoped to the active architecture family.
+  # Does not delete AiModelHash, ArchitectureFamily, ImatrixDefinition,
+  # TensorCombo, or BaselineQuantDefinition rows.
+  force_relearn_architecture_family: false
+
+  # Relearn built-in/standard baselines by display/canonical name for the current
+  # architecture family and active tensor group profile.
+  # Example:
+  # force_relearn_standard_baselines:
+  #   - Q6_K
+  #   - IQ4_XS
+  force_relearn_standard_baselines: []
+
+  # Safety gate for tensor group regex/profile changes. After MagicQuant reads the
+  # native BF16 GGUF tensor list, it prints group counts, example tensors,
+  # ambiguous matches, unresolved tensors, and base-quant exception counts, then
+  # asks before continuing. Keep this true unless running fully unattended.
+  confirm_tensor_group_profile: true
+
+  # Safe/idempotent repair mode for accidental regex mistakes.
+  #
+  # Default true: on every run MagicQuant checks whether older DB learned tensor
+  # truth can be copied into the active TensorGroupProfile by reapplying the
+  # current regex/base_quant_exceptions rules. If nothing changed or current rows
+  # already exist, it skips cleanly and does not create duplicates.
+  #
+  # This avoids needless re-download/re-quantization of pure learning baselines
+  # after regex-only regrouping. Old benchmarks/learned rows remain attached to
+  # their original TensorGroupProfile and are ignored unless that profile becomes
+  # active again.
+  #
+  # Disable only when you intentionally want the slower/full path to regenerate
+  # learned grouping truth instead of rebucketing from DB snapshots.
+  # CLI disable aliases:
+  #   --no-rebucket-learned-tensor-groups
+  #   --disable-tensor-group-rebucket
+  #   --full-relearn-tensor-groups
+  rebucket_learned_tensor_groups_from_existing_truth: true
+
+readme:
+  # Optional title model name override used in:
+  #   # MagicQuant Hybrids - <name>
+  # If blank, MagicQuant uses identity.architecture_family_name.
+  title_model_name_override:
+
+  # Hugging Face README frontmatter.
+  # Scalars render as:
+  #   license: apache-2.0
+  # Arrays render as:
+  #   tags:
+  #   - gguf
+  #   - text-generation
+  #
+  # Add more keys freely, such as base_model, datasets, language, pipeline_tag, etc.
+  frontmatter:
+    # Set license and base_model to match the actual source model before publishing.
+    tags:
+      - gguf
+      - text-generation
+      - magicquant
+
+hardware:
+  # Optional per-GPU usable VRAM limits in GB.
+  # Leave empty for automatic/default llama.cpp placement.
+  # When provided and a benchmark slot uses multiple GPUs, MagicQuant will pass
+  # --tensor-split in visible GPU order.
+  #
+  # Example:
+  # gpu_memory_limits_gb:
+  #   0: 19
+  #   1: 23
+  gpu_memory_limits_gb: {}
+
+imatrix:
+  # Optional remote imatrix URL if your flow supports fetching one.
+  imatrix_url:
+
+  # Optional dataset repo for building an imatrix from a dataset source.
+  dataset_repo:
+
+  # Optional dataset split, for example: text, train, validation
+  dataset_split:
+
+  # Optional dataset config / subset name.
+  dataset_config:
+
+  # Optional local dataset file path for imatrix generation.
+  # Example:
+  # dataset_local_file: /data/datasets/imatrix-general-v1-1m.jsonl
+  dataset_local_file:
+
+# Legacy evolution survivor knobs were removed from YAML.
+# Final hybrid selection is now driven by rank-safe isolation prediction plus candidate_selection.
+
+isolation_pruning:
+  # NOTE:
+  # Early learned-baseline pruning has been removed from the code path.
+  # These values still matter for later isolation / bad-trade reasoning,
+  # not for the old "skip candidate because learned tensor usage looked redundant" path.
+
+  # Minimum carrier-relative size reduction required before generating the remaining
+  # candidate-isolation samples for a tensor group. Keep this at 0 when prediction,
+  # contextual probing, or anomaly analysis needs complete isolation truth; later
+  # quality and bad-trade filters still remove unhelpful candidates.
+  minimum_isolation_reduction_to_continue_ratio: 0.00
+
+  # Minimum reduction ratio before BF16 suppression logic is allowed to kick in.
+  minimum_isolation_reduction_to_suppress_bf16_ratio: 0.10
+
+  # Maximum allowed isolation PPL delta percent before considering the trade poor.
+  maximum_isolation_ppl_delta_percent: 5.0
+
+  # Maximum allowed isolation KLD before considering the trade poor.
+  maximum_isolation_kld: 0.1
+
+  # If size savings are below this percent, the trade may be treated as bad.
+  bad_trade_max_size_delta_percent: 4.0
+
+  # Multiplier thresholds for bad-trade reasoning.
+  bad_trade_kld_multiplier: 2.5
+  bad_trade_ppl_multiplier: 3.5
+
+  # Float comparison tolerance.
+  floating_point_epsilon: 1.0e-8
+
+  # Minimum meaningful reduction ratio for base-only comparisons.
+  minimum_meaningful_base_only_reduction_ratio: 0.01
+
+
+prediction:
+  # Rank-safe isolation KLD predictor.
+  #
+  # manual_max_predicted_size_bytes is retained only as an emergency compatibility
+  # field for older helper code. Leave it at 0 for the new chooser.
+  manual_max_predicted_size_bytes: 0
+
+  # Candidate bit-stress thresholds for the low-bit interaction correction.
+  # The predictor fits each candidate threshold against existing category=General
+  # benchmark truth and keeps the best MAE fit for the active model/imatrix bucket.
+  bit_stress_threshold_candidates:
+    - 4.0
+    - 5.0
+    - 6.0
+    - 7.0
+    - 8.0
+    - 9.0
+    - 10.0
+    - 11.0
+    - 12.0
+
+  # Fallback threshold when too few benchmark rows exist to fit the interaction model.
+  default_bit_stress_threshold: 8.0
+
+  # Minimum benchmark rows required before fitting the interaction correction.
+  minimum_fit_rows: 12
+
+candidate_selection:
+  
+  validate_all_anomaly_strict_candidates_after_success: false
+  
+  # Phase 2: a hybrid can replace the smaller/higher-damage anchor when it fits
+  # inside this size premium and beats the real linear KLD improvement line.
+  near_baseline_max_size_growth_percent: 1.0
+
+  # Phase 3: interior windows between adjacent final anchors.
+  # [0.35, 0.35] means test the first 35% of the size span, then the next 35%.
+  interior_window_fractions:
+    - 0.35
+    - 0.35
+
+  # Number of predicted winners to keep per interior window.
+  max_candidates_per_interior_window: 1
+
+  # If the first predicted candidate fails real validation, try this many fallbacks.
+  max_fallback_attempts_per_anchor: 5
+
+  # Conservative SQLite/isolation-truth fallback. This runs only after the
+  # normal DuckDB prediction-guided attempts fail for a strict/premium/interior
+  # phase window. It starts from the anchor baseline blanket and only swaps
+  # tensor groups using surviving isolated group candidates, plus the baseline
+  # itself as the blanket state.
+  smart_fallback_enabled: true
+  smart_fallback_attempts_per_failure: 3
+  smart_fallback_max_higher_fidelity_steps: 2
+
+  # Strict epsilon for lower-KLD comparisons after real benchmark validation.
+  minimum_kld_improvement_epsilon: 1.0e-9
+
+  # Final spacing pass: candidates closer than this fraction of the global survivor
+  # size span are collapsed unless one genuinely earns the slot.
+  minimum_neighbor_gap_fraction_of_global_span: 0.03
+
+  # Extra-brutal zone near the smaller anchor. A candidate this close to the smaller
+  # anchor must provide a stronger KLD gain to justify its existence.
+  near_lower_anchor_brutal_zone_fraction_of_pair_span: 0.02
+  near_anchor_required_kld_gain_fraction_of_pair_gap: 0.05
+
+  # This distributed config enables final prediction/build attempts to replace
+  # 8-bit anchors such as Q8_0 during strict dominance or near-anchor replacement.
+  # Set false to keep Q8 as the highest-fidelity practical anchor.
+  allow_eight_bit_anchor_replacements: true
+
+anomaly_detection:
+  enabled: true
+
+  # One anomaly refinement pass after smoke/probe/rule generation.
+  max_anomaly_refinement_rounds: 1
+
+  # Minimum actual KLD gain versus higher-bit counterfactual twin to confirm anomaly.
+  min_actual_gain_vs_twin_kld: 0.00025
+
+  # Minimum predicted size savings versus higher-bit twin/reference to probe.
+  min_predicted_size_savings_vs_twin_percent: 1.0
+
+  # Max changed groups in a candidate that can seed contextual probes.
+  max_probe_group_count: 4
+
+  # Max probes generated per anomaly seed.
+  max_probes_per_seed: 16
+
+  # Max anomaly probes in one run.
+  max_total_probes_per_run: 32
+
+  # Strong smoke if a monotone downgrade candidate is this close to or better than its twin in prediction space.
+  max_prediction_space_gap_vs_twin_kld: 0.00050
+
+  # Optional relative cap for prediction-space gap normalized by local anchor gap.
+  max_relative_prediction_penalty_vs_twin: 0.35
+
+  # Minimum margin used when forcing confirmed anomalies below their higher-bit twin in prediction space.
+  prediction_space_violation_margin: 0.00005
+
+  # Shrink applied to prediction-space adjustment after a rule is confirmed.
+  anomaly_adjustment_shrink_factor: 0.50
+
+  # Minimum confidence required before applying a confirmed anomaly rule.
+  min_rule_confidence_to_apply: 0.50
+
+  # Absolute cap on total negative anomaly adjustment in prediction-space KLD units.
+  max_negative_adjustment_kld: 0.00075
+
+  # Absolute cap on positive harmful interaction adjustment in prediction-space KLD units.
+  max_positive_adjustment_kld: 0.00075
+
+  # Fractional cap relative to BaseRankSafeKld.
+  max_adjustment_fraction_of_base_kld: 0.75
+
+  # Number of top smoke candidates to consider per reference quant zone.
+  max_smoke_candidates_per_reference_zone: 12
+
+  # Store suppression-only results so false smoke is not repeatedly probed.
+  persist_suppression_results: true
+
+  # Emit detailed anomaly logs.
+  verbose_anomaly_logging: true
+
+  # Small bounded sniff pass around already-confirmed beneficial contextual anomalies.
+  confirmed_anomaly_expansion:
+    enabled: true
+    max_neighbors_per_confirmed_rule: 6
+    max_total_expansion_probes: 12
+    allowed_reference_quants:
+      - Q8_0
+    # Built-in families only. Add exact custom baseline names explicitly after
+    # configuring a compatible provider; see examples/pipeline-external.yaml.
+    allowed_candidate_quants:
+      - Q6_K
+      - Q5_K
+
+output:
+  # Optional explicit output directory.
+  # If blank, MagicQuant will default to:
+  #   <model>/MagicQuant/Final_Outputs
+  output_dir:
+
+  # Prefix used when generating exported GGUF file names.
+  output_name_prefix: Model
+
+  # By default MagicQuant will not locally export pure learned external/custom baselines
+  # such as Unsloth. They remain upstream references in the README/output unless enabled.
+  #
+  # Set true if you explicitly want MagicQuant to rebuild/export those external learned
+  # baselines locally under MagicQuant-controlled conditions (for example when testing a
+  # modified model where the upstream artifact does not really exist for your case).
+  # Recommended: leave off when the original provider hosts the same model;
+  # link to their release and credit their work. Enable for pipeline runs on
+  # variants they do not host. clone-repository-quants already rebuilds every
+  # manifest entry locally and does not use this pipeline export setting.
+  # Learning tensor assignments does not reproduce other provider techniques.
+  export_external_learned_baselines: false
+
+  # false = normal behavior; delete/rebuild final outputs from scratch.
+  # true = preserve valid existing GGUFs and skip rebuilding them only when
+  # exact file name + byte size match benchmark truth.
+  # CLI --reuse-existing-final-artifacts overrides YAML.
+  reuse_existing_final_artifacts: false
+
+# Legacy bit-range bucket survival settings were removed.
+# See candidate_selection above for the active final chooser settings.
+
+identity:
+  architecture_family_name:
+  allow_architecture_family_alias_override: false
+
+baselines:
+  # ----------------------------------------------------------
+  # standard_baselines_mode options
+  # ----------------------------------------------------------
+  # all
+  #   Keep built-in standard baselines active AND allow custom repositories.
+  #
+  # selected
+  #   Use the explicit built-in role lists below; empty lists enable none for that role.
+  #
+  # none
+  #   Disable built-in learning/carrier/explicit-group roles. Internal native anchors
+  #   may still be required. Custom repositories are configured independently.
+  standard_baselines_mode: all
+
+  # These lists apply only in selected mode. In all mode, built-in defaults apply.
+  #
+  # Example:
+  # enabled_standard_learning_baselines: [Q8_0, Q6_K, Q5_K, Q4_K_M]
+  enabled_standard_learning_baselines: []
+
+  # Example:
+  # enabled_standard_combination_carriers: [Q8_0, Q6_K, Q5_K]
+  enabled_standard_combination_carriers: []
+
+  # Example:
+  # enabled_standard_explicit_group_candidates: [Q8_0, Q6_K, Q5_K, Q4_K_M, IQ4_NL, IQ4_XS]
+  enabled_standard_explicit_group_candidates: []
+
+  # Optional external tensor-configuration sources. No provider/model is selected.
+  # See examples/pipeline-external.yaml and docs/best-practices.md for a template.
+  # Use the exact source model and provider filenames; pin the provider revision.
+  custom_repositories: []
+
+# Counterfactual synergy templates generalize confirmed contextual anomaly evidence.
+# anomaly_detection remains the low-level compatibility section; synergy_detection controls
+# template transfer, composition probes, contamination suppression, and wing diagnostics.
+synergy_detection:
+  enabled: true
+  max_refinement_rounds: 1
+  exact_context_confidence_multiplier: 1.00
+  same_selected_groups_confidence_multiplier: 0.55
+  equivalent_quant_family_confidence_multiplier: 0.30
+  group_family_suspicion_confidence_multiplier: 0.15
+  min_confidence_to_apply_adjustment: 0.35
+  min_confidence_to_schedule_transfer_probe: 0.25
+  max_negative_adjustment_kld: 0.002
+  max_negative_adjustment_fraction_of_base_kld: 0.75
+  transfer_probe_enabled: true
+  max_transfer_probes_per_template: 6
+  max_total_transfer_probes_per_run: 24
+  # Controlled all-surrounding-groups blankets. This measures whether a template's
+  # marginal behavior transfers—or flips—without importing an old winning mixture.
+  transfer_probe_context_strata:
+    high_fidelity_reference_quants: [Q6_K, Q5_K]
+    mid_fidelity_reference_quants: [Q4_K_M]
+    low_fidelity_reference_quants: [IQ3_S]
+    low_fidelity_enabled: false
+  # Remeasure the best and closest-size non-equivalent same-bit isolation recipes head-to-head inside
+  # controlled contexts. This detects context-dependent rank flips without replaying
+  # an old winning mixture. Low-fidelity contexts remain governed by the opt-in above.
+  exploratory_context_pair_enabled: true
+  max_exploratory_context_pairs_per_run: 14
+  exploratory_pair_bit_ranges: [4]
+  exploratory_pair_context_strata: [mid-fidelity, low-fidelity]
+  # Match rules against their measured effective surrounding-group context,
+  # independent of the search row's carrier quant. Rule-selected groups are excluded.
+  context_scoped_rule_application_enabled: true
+  max_non_rule_group_context_mismatches: 1
+  verbose_synergy_logging: true
+  min_smoke_score: 0.55
+  max_smoke_gap_kld: 0.004
+  top_rejected_smoke_preview: 25
+  composition_probe_enabled: true
+  max_template_composition_group_count: 4
+  max_composition_probes_per_run: 8
+  max_templates_to_compose: 4
+  min_template_confidence_for_composition: 0.50
+  min_combined_expected_size_savings_percent: 1.0
+  contaminating_passenger_detection_enabled: true
+  min_failure_margin_for_contamination_kld: 0.00050
+  contamination_penalty_confidence_multiplier: 0.45
+  suppress_repeated_contaminated_attempts: true

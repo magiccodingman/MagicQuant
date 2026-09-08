@@ -1,5 +1,7 @@
 # MagicQuant v2 Documentation
 
+For installation and CLI usage see the [project README](../README.md) and [program docs](../docs/index.md). The [research overview](overview.md) retains worked examples and motivation.
+
 MagicQuant is a benchmark-driven GGUF evaluation and hybrid-discovery system. These pages explain not only what the pipeline does, but why its search, measurement, and survivor rules exist.
 
 ## Start Here

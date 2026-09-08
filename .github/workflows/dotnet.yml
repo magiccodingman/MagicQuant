@@ -1,0 +1,47 @@
+name: .NET checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s scripts -p "test_*.py"
+      - run: dotnet restore MagicQuant.sln --locked-mode -warnaserror
+      - run: dotnet build MagicQuant.sln --configuration ${{ matrix.configuration }} --no-restore -warnaserror
+      - run: dotnet test MagicQuant.sln --configuration ${{ matrix.configuration }} --no-build --blame-hang-timeout 2m --blame-hang-dump-type none --logger trx --logger "console;verbosity=normal" --results-directory TestResults
+      - run: dotnet pack src/MagicQuant --configuration ${{ matrix.configuration }} --no-restore -p:Version=0.0.0-ci -o artifacts -warnaserror
+      - run: python scripts/package_smoke.py artifacts/MagicQuant.0.0.0-ci.nupkg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.configuration }}
+          path: TestResults/
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/scan_secrets.py
