@@ -6,6 +6,9 @@ MagicQuant is a benchmark-driven GGUF evaluation and hybrid-discovery system. Th
 
 ## Start Here
 
+- [Published Models: Results and Reusable Recipes](./showcase.md)
+- [Original Research Overview and Worked Example](./overview.md)
+
 - [Learning From Existing Quantizations (Tensor Configuration Sources)](./docs/Learning-From-Existing-Quantizations.md)
 - [Prediction Engine](./docs/Prediction-Engine.md)
 - [Nonlinear Winners and Survivor Selection](./docs/Nonlinear-Winners-And-Survivors.md)
