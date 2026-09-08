@@ -67,3 +67,5 @@ Evidence: [pinned method and model card](https://huggingface.co/magiccodingman/Q
 The [original research overview](overview.md) retains the 4B survivor table, tensor-group recipe breakdown, nonlinear-trade example, methodology diagram, and context and GPU scheduling discussion. The project README draws on that material and links here for newer published results.
 
 Its MQ-Q5_K_1 comparison uses the displayed values: `(2.88 / 2.73 - 1) × 100 ≈ 5.5%` additional storage and `(1 - 0.006632 / 0.009839) × 100 ≈ 32.6%` lower KLD. The [survivor-selection guide](docs/Nonlinear-Winners-And-Survivors.md) explains why a useful interior trade can deserve publication.
+
+For the same example, linear interpolation at 2.88 GB between the UD-Q5_K_XL and LM-Q6_K anchors gives `0.009839 + (2.88 - 2.73) / (3.08 - 2.73) × (0.004640 - 0.009839) ≈ 0.007611`. The measured `0.006632` is about 12.9% below that reference line.
