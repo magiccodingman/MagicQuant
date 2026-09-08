@@ -4,6 +4,7 @@ Start with the [project briefing and quick start](../README.md). These guides de
 
 - [Setup](setup.md): NuGet installation, toolchain preparation, source builds, troubleshooting.
 - [Configuration](configuration.md): YAML profile, CLI overrides and path rules.
+- [Manifests and cloning](manifests-and-cloning.md): release upload layout, JSON evidence and cloning from other repositories.
 - [Commands](commands.md): discovery, clone/export and prediction validation.
 - [Best practices](best-practices.md): scratch disks, optional Unsloth baselines and reproducibility.
 - [Storage](storage.md): runtime/model directories, caches, scratch and provenance.

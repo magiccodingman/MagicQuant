@@ -23,6 +23,8 @@ The pipeline converts/loads the native source, reviews tensor groups, resolves i
 
 ## Clone known tensor configurations
 
+For the complete publisher-to-user walkthrough, including manifest filenames and pointing at another Hugging Face release, see [manifests and cloning](manifests-and-cloning.md).
+
 ```sh
 magicquant clone-repository-quants \
   --config config.local.yaml \

@@ -1,6 +1,6 @@
 # NuGet releases
 
-MagicQuant is packaged as a .NET tool, package ID `MagicQuant`, executable `magicquant`. `.github/workflows/publish-nuget.yml` publishes when a commit reaches `release`, normally through a merged PR. Pushes directly to `release` also trigger it; use branch protection to require PRs if desired. Manual dispatch is available to retry publication and only runs on `release`.
+MagicQuant is packaged as a .NET tool, package ID `MagicQuant`, executable `magicquant`. The package embeds the root `README.md` and `assets/icon.png`; package checks verify both files byte-for-byte and validate their NuGet metadata. Keep root README links absolute so the same content works on GitHub and NuGet. `.github/workflows/publish-nuget.yml` publishes when a commit reaches `release`, normally through a merged PR. Pushes directly to `release` also trigger it; use branch protection to require PRs if desired. Manual dispatch is available to retry publication and only runs on `release`.
 
 ## Trusted publishing setup
 

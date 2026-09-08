@@ -23,7 +23,7 @@ The runtime root and model work directory are different things. With default set
     PredictionValidation/   # prediction report default
 ```
 
-Output is configurable and only directories needed by a run are created. Other service-specific files may also appear. Final exports put JSON evidence under `magicquant-manifest/`, including clone configurations, final survivors, replacements, hybrid maps, isolation samples, and bad-trade reports as appropriate to the workflow. `MagicQuantManifestPathService` owns those filenames and links.
+Output is configurable and only directories needed by a run are created. Other service-specific files may also appear. Final exports put JSON evidence under `magicquant-manifest/`, including clone configurations, final survivors, replacements, hybrid maps, isolation samples, and bad-trade reports as appropriate to the workflow. `MagicQuantManifestPathService` owns those filenames and links. See [manifests and cloning](manifests-and-cloning.md) for each file's role and the layout to upload.
 
 ## Durable truth
 
